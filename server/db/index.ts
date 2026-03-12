@@ -51,8 +51,21 @@ db.exec(`
     raw_event TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS watched_wallets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_hex_id TEXT NOT NULL REFERENCES users(nostr_hex_id),
+    wallet_id TEXT NOT NULL,
+    wallet_type TEXT,
+    note TEXT,
+    last_balance REAL,
+    last_balance_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_hex_id, wallet_id)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_users_wallet_id ON users(wallet_id);
   CREATE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name);
+  CREATE INDEX IF NOT EXISTS idx_watched_wallets_user ON watched_wallets(user_hex_id);
 `);
 
 // --- Seed kind_38888 with bootstrap fallback data ---
@@ -118,6 +131,21 @@ export function getRelaysFromDb(): string[] {
     try { return JSON.parse(row.relays); } catch {}
   }
   return ['wss://relay.lanavault.space', 'wss://relay.lanacoin-eternity.com'];
+}
+
+export function getElectrumServersFromDb(): Array<{ host: string; port: number }> {
+  const row = db.prepare('SELECT electrum_servers FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
+  if (row?.electrum_servers) {
+    try {
+      const servers = JSON.parse(row.electrum_servers);
+      return servers.map((s: any) => ({ host: s.host, port: parseInt(s.port) || 5097 }));
+    } catch {}
+  }
+  return [
+    { host: 'electrum1.lanacoin.com', port: 5097 },
+    { host: 'electrum2.lanacoin.com', port: 5097 },
+    { host: 'electrum3.lanacoin.com', port: 5097 },
+  ];
 }
 
 export function getTrustedSignersFromDb(): Record<string, string[]> {

@@ -199,3 +199,99 @@ export async function fetchKind0(pubkey: string, relays?: string[]): Promise<Nos
   // Return newest
   return events.reduce((a, b) => a.created_at > b.created_at ? a : b);
 }
+
+// ---------------------------------------------------------------------------
+// KIND 30889 — Registered Wallets (same logic as MejmoseFajn)
+// ---------------------------------------------------------------------------
+
+export interface WalletData {
+  walletId: string;
+  walletType: string;
+  note?: string;
+  amountUnregistered?: string;
+  eventId?: string;
+  createdAt?: number;
+  registrarPubkey?: string;
+  status?: string;
+  freezeStatus?: string;
+}
+
+/**
+ * Fetch user wallets from KIND 30889 events.
+ * Uses 3 parallel filter strategies for robust matching.
+ * Only the newest event from a trusted registrar is authoritative.
+ */
+export async function fetchUserWallets(
+  pubkey: string,
+  relays: string[],
+  trustedSigners: string[] = []
+): Promise<WalletData[]> {
+  console.log(`[lana-discount] Fetching wallets (KIND 30889) for: ${pubkey.slice(0, 12)}...`);
+
+  // Query by both #d and #p for robust matching (registrars use different d-tag formats)
+  const [eventsByD, eventsByWalletD, eventsByP] = await Promise.all([
+    queryEventsFromRelays(relays, { kinds: [30889], '#d': [pubkey] }),
+    queryEventsFromRelays(relays, { kinds: [30889], '#d': [`wallet-list-${pubkey}`] }),
+    queryEventsFromRelays(relays, { kinds: [30889], '#p': [pubkey] }),
+  ]);
+
+  // Merge and deduplicate by event id
+  const eventMap = new Map<string, NostrEvent>();
+  [...eventsByD, ...eventsByWalletD, ...eventsByP].forEach(e => eventMap.set(e.id, e));
+  const events = Array.from(eventMap.values());
+
+  console.log(`[lana-discount] Received ${events.length} KIND 30889 events (d:${eventsByD.length}, wallet-d:${eventsByWalletD.length}, p:${eventsByP.length})`);
+
+  // Filter by trusted signers if configured
+  const filteredEvents = trustedSigners.length === 0
+    ? events
+    : events.filter(event => trustedSigners.includes(event.pubkey));
+
+  // Only keep events that have w tags (wallet-list events)
+  const walletListEvents = filteredEvents.filter(event =>
+    event.tags.some((t: string[]) => t[0] === 'w')
+  );
+
+  if (walletListEvents.length === 0) {
+    console.log('[lana-discount] No wallet-list events found');
+    return [];
+  }
+
+  // CRITICAL: Use ONLY the newest wallet-list event.
+  walletListEvents.sort((a, b) => b.created_at - a.created_at);
+  const latestEvent = walletListEvents[0];
+
+  const statusTag = latestEvent.tags.find((t: string[]) => t[0] === 'status');
+  const status = statusTag?.[1] || 'active';
+  const isAccountFrozen = status === 'frozen';
+
+  const walletTags = latestEvent.tags.filter((t: string[]) => t[0] === 'w');
+  const wallets: WalletData[] = [];
+
+  for (const tag of walletTags) {
+    if (tag.length >= 6) {
+      const perWalletFreeze = tag.length >= 7 ? (tag[6] || '') : '';
+      let freezeStatus = '';
+      if (isAccountFrozen) {
+        freezeStatus = perWalletFreeze || 'frozen';
+      } else if (perWalletFreeze) {
+        freezeStatus = perWalletFreeze;
+      }
+
+      wallets.push({
+        walletId: tag[1],
+        walletType: tag[2],
+        note: tag[4] || '',
+        amountUnregistered: tag[5],
+        status,
+        freezeStatus,
+        registrarPubkey: latestEvent.pubkey,
+        eventId: latestEvent.id,
+        createdAt: latestEvent.created_at,
+      });
+    }
+  }
+
+  console.log(`[lana-discount] Found ${wallets.length} wallets (status: ${status})`);
+  return wallets;
+}

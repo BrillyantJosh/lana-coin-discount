@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 
 const Dashboard = () => {
@@ -83,7 +83,7 @@ const Dashboard = () => {
           </div>
 
           {/* Option 2: Register Wallets for Monitoring */}
-          <div className="group relative rounded-2xl border-2 border-border bg-card p-8 hover:border-primary transition-colors cursor-pointer">
+          <Link to="/wallets" className="group relative rounded-2xl border-2 border-border bg-card p-8 hover:border-primary transition-colors cursor-pointer block">
             <div className="space-y-4">
               <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center">
                 <svg className="h-7 w-7 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -105,7 +105,7 @@ const Dashboard = () => {
                 </span>
               </div>
             </div>
-          </div>
+          </Link>
         </div>
       </div>
 
