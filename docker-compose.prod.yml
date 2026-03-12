@@ -7,10 +7,16 @@ services:
     restart: unless-stopped
     environment:
       - VIRTUAL_HOST=www.lana.discount,lana.discount
+      - VIRTUAL_PORT=3000
       - LETSENCRYPT_HOST=www.lana.discount,lana.discount
       - LETSENCRYPT_EMAIL=josh@lanaworld.app
+    volumes:
+      - lana-discount-data:/app/data
     networks:
       - webproxy
+
+volumes:
+  lana-discount-data:
 
 networks:
   webproxy:

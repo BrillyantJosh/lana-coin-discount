@@ -11,10 +11,10 @@ const Navbar = () => {
           <a href="#sustainability" className="hover:text-foreground transition-colors">Sustainability</a>
         </div>
         <a
-          href="#how-it-works"
+          href="/login"
           className="rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
         >
-          Get Started
+          Sign In
         </a>
       </div>
     </nav>
