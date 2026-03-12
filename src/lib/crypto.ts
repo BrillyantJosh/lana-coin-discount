@@ -77,17 +77,17 @@ function wifToPrivateKey(wif: string): { privateKeyHex: string; isCompressed: bo
 }
 
 export function generatePublicKey(privateKeyHex: string): string {
-  const pubBytes = secp.getPublicKey(privateKeyHex, false); // uncompressed (65 bytes)
+  const pubBytes = secp.getPublicKey(hexToBytes(privateKeyHex), false); // uncompressed (65 bytes)
   return bytesToHex(pubBytes);
 }
 
 export function generateCompressedPublicKey(privateKeyHex: string): string {
-  const pubBytes = secp.getPublicKey(privateKeyHex, true); // compressed (33 bytes)
+  const pubBytes = secp.getPublicKey(hexToBytes(privateKeyHex), true); // compressed (33 bytes)
   return bytesToHex(pubBytes);
 }
 
 export function deriveNostrPublicKey(privateKeyHex: string): string {
-  const pubBytes = secp.getPublicKey(privateKeyHex, true); // compressed
+  const pubBytes = secp.getPublicKey(hexToBytes(privateKeyHex), true); // compressed
   return bytesToHex(pubBytes.slice(1)); // x-only (remove prefix byte)
 }
 
