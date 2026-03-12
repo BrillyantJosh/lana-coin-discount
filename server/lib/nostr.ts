@@ -10,6 +10,22 @@ export interface NostrEvent {
   sig: string;
 }
 
+export interface Kind38888Data {
+  event_id: string;
+  pubkey: string;
+  created_at: number;
+  relays: string[];
+  electrum_servers: Array<{ host: string; port: string }>;
+  exchange_rates: { EUR: number; USD: number; GBP: number };
+  split: string;
+  split_target_lana?: number;
+  split_started_at?: number;
+  version: string;
+  valid_from: number;
+  trusted_signers: Record<string, string[]>;
+  raw_event: string;
+}
+
 const DEFAULT_RELAYS = [
   'wss://relay.lanavault.space',
   'wss://relay.lanacoin-eternity.com',
@@ -88,9 +104,66 @@ export async function queryEventsFromRelays(
 }
 
 /**
- * Fetch KIND 38888 system parameters
+ * Parse KIND 38888 event into structured data (same as MejmoseFajn)
  */
-export async function fetchKind38888(): Promise<{ relays: string[]; rawEvent: NostrEvent | null }> {
+function parseKind38888Event(event: NostrEvent): Kind38888Data {
+  let content: any = {};
+  try {
+    content = typeof event.content === 'string' && event.content.trim().startsWith('{')
+      ? JSON.parse(event.content)
+      : {};
+  } catch {
+    console.warn('[lana-discount] Failed to parse KIND 38888 content as JSON, using tags only');
+  }
+
+  const tags = event.tags;
+
+  const relays = tags
+    .filter(t => t[0] === 'relay')
+    .map(t => t[1]);
+
+  const electrum_servers = tags
+    .filter(t => t[0] === 'electrum')
+    .map(t => ({ host: t[1], port: t[2] || '5097' }));
+
+  const fxTags = tags.filter(t => t[0] === 'fx');
+  const exchange_rates = {
+    EUR: parseFloat(fxTags.find(t => t[1] === 'EUR')?.[2] || '0'),
+    USD: parseFloat(fxTags.find(t => t[1] === 'USD')?.[2] || '0'),
+    GBP: parseFloat(fxTags.find(t => t[1] === 'GBP')?.[2] || '0'),
+  };
+
+  const split = tags.find(t => t[0] === 'split')?.[1] || content.split || '';
+  const split_target_lana = parseInt(tags.find(t => t[0] === 'split_target_lana')?.[1] || content.split_target_lana || '0');
+  const split_started_at = parseInt(tags.find(t => t[0] === 'split_started_at')?.[1] || content.split_started_at || '0');
+  const version = tags.find(t => t[0] === 'version')?.[1] || content.version || '1';
+  const valid_from = parseInt(tags.find(t => t[0] === 'valid_from')?.[1] || content.valid_from || '0');
+
+  const trusted_signers = content.trusted_signers || {};
+
+  return {
+    event_id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    relays: relays.length > 0 ? relays : content.relays || DEFAULT_RELAYS,
+    electrum_servers: electrum_servers.length > 0 ? electrum_servers : content.electrum || [],
+    exchange_rates,
+    split,
+    split_target_lana,
+    split_started_at,
+    version,
+    valid_from,
+    trusted_signers,
+    raw_event: JSON.stringify(event),
+  };
+}
+
+/**
+ * Fetch KIND 38888 system parameters from Nostr relays
+ */
+export async function fetchKind38888(): Promise<Kind38888Data | null> {
+  console.log('[lana-discount] Fetching KIND 38888 from Lana relays...');
+
   const events = await queryEventsFromRelays(DEFAULT_RELAYS, {
     kinds: [38888],
     authors: [AUTHORIZED_PUBKEY],
@@ -98,19 +171,15 @@ export async function fetchKind38888(): Promise<{ relays: string[]; rawEvent: No
   }, 15000);
 
   if (events.length === 0) {
-    return { relays: DEFAULT_RELAYS, rawEvent: null };
+    console.error('[lana-discount] No valid KIND 38888 events received from any relay');
+    return null;
   }
 
   // Pick newest
   const newest = events.reduce((a, b) => a.created_at > b.created_at ? a : b);
+  console.log(`[lana-discount] Using KIND 38888 event: ${newest.id} (created_at: ${newest.created_at})`);
 
-  try {
-    const content = JSON.parse(newest.content);
-    const relays = content.relays || DEFAULT_RELAYS;
-    return { relays, rawEvent: newest };
-  } catch {
-    return { relays: DEFAULT_RELAYS, rawEvent: newest };
-  }
+  return parseKind38888Event(newest);
 }
 
 /**

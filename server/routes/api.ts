@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import db from '../db/index.js';
+import db, { getRelaysFromDb } from '../db/index.js';
 import { fetchKind38888, fetchKind0 } from '../lib/nostr.js';
 
 const router = Router();
@@ -103,15 +103,27 @@ router.get('/relays', (_req: Request, res: Response) => {
  */
 router.post('/sync-kind-38888', async (_req: Request, res: Response) => {
   try {
-    const { relays, rawEvent } = await fetchKind38888();
+    const data = await fetchKind38888();
 
-    if (rawEvent) {
+    if (data) {
+      db.prepare('DELETE FROM kind_38888').run();
       db.prepare(`
-        INSERT OR IGNORE INTO kind_38888 (event_id, pubkey, relays, raw_event)
-        VALUES (?, ?, ?, ?)
-      `).run(rawEvent.id, rawEvent.pubkey, JSON.stringify(relays), JSON.stringify(rawEvent));
+        INSERT INTO kind_38888 (
+          id, event_id, pubkey, created_at, relays, electrum_servers,
+          exchange_rates, split, version, valid_from, split_started_at,
+          split_target_lana, trusted_signers, raw_event
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'live_' + data.event_id, data.event_id, data.pubkey, data.created_at,
+        JSON.stringify(data.relays), JSON.stringify(data.electrum_servers),
+        JSON.stringify(data.exchange_rates), data.split || null,
+        data.version || null, data.valid_from || null,
+        data.split_started_at || null, data.split_target_lana || null,
+        JSON.stringify(data.trusted_signers), data.raw_event
+      );
     }
 
+    const relays = getRelaysFromDb();
     return res.json({ relays });
   } catch (error) {
     console.error('Sync KIND 38888 error:', error);
@@ -126,13 +138,5 @@ router.get('/health', (_req: Request, res: Response) => {
   const userCount = (db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count;
   return res.json({ status: 'ok', users: userCount, timestamp: new Date().toISOString() });
 });
-
-function getRelaysFromDb(): string[] {
-  const row = db.prepare('SELECT relays FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
-  if (row?.relays) {
-    try { return JSON.parse(row.relays); } catch {}
-  }
-  return ['wss://relay.lanavault.space', 'wss://relay.lanacoin-eternity.com'];
-}
 
 export default router;
