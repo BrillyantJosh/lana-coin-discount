@@ -59,6 +59,7 @@ const AdminPayouts = () => {
   const [payoutAmount, setPayoutAmount] = useState('');
   const [payoutNote, setPayoutNote] = useState('');
   const [payoutAccount, setPayoutAccount] = useState('');
+  const [nextPayoutId, setNextPayoutId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -103,7 +104,20 @@ const AdminPayouts = () => {
     }
   };
 
-  const openPayoutForm = (sale: SaleEntry, userPayoutAccount: any) => {
+  const fetchNextPayoutId = async () => {
+    if (!session) return;
+    try {
+      const res = await fetch('/api/admin/next-payout-id', {
+        headers: { 'x-admin-hex-id': session.nostrHexId },
+      });
+      const data = await res.json();
+      if (data.payoutId) setNextPayoutId(data.payoutId);
+    } catch {
+      setNextPayoutId(null);
+    }
+  };
+
+  const openPayoutForm = async (sale: SaleEntry, userPayoutAccount: any) => {
     setPayoutFormSaleId(sale.id);
     setPayoutAmount(sale.remaining.toFixed(2));
     setPayoutNote('');
@@ -116,6 +130,9 @@ const AdminPayouts = () => {
     } else {
       setPayoutAccount('');
     }
+
+    // Fetch the next payout ID for preview
+    await fetchNextPayoutId();
   };
 
   const submitPayout = async (sale: SaleEntry) => {
@@ -154,6 +171,7 @@ const AdminPayouts = () => {
 
       toast.success(`Payout ${data.payout.payoutId} recorded successfully!`);
       setPayoutFormSaleId(null);
+      setNextPayoutId(null);
 
       // Refresh data
       await fetchPayouts();
@@ -162,6 +180,13 @@ const AdminPayouts = () => {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  /** Resolve user display name: DB name → payout account holder → Anonymous */
+  const resolveDisplayName = (user: UserWithSales): string => {
+    if (user.displayName && user.displayName !== 'Anonymous') return user.displayName;
+    if (user.payoutAccount?.fields?.account_holder) return user.payoutAccount.fields.account_holder;
+    return user.displayName || 'Anonymous';
   };
 
   const formatDate = (iso: string) => {
@@ -182,6 +207,18 @@ const AdminPayouts = () => {
   };
 
   if (authLoading || !session || !isAdmin) return null;
+
+  // Sort sales within each user: unpaid/partial first, then fully paid
+  const sortedUsers = users.map(user => ({
+    ...user,
+    sales: [...user.sales].sort((a, b) => {
+      // Paid last
+      if (a.status === 'paid' && b.status !== 'paid') return 1;
+      if (a.status !== 'paid' && b.status === 'paid') return -1;
+      // Among same status, most remaining first
+      return b.remaining - a.remaining;
+    }),
+  }));
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -224,7 +261,7 @@ const AdminPayouts = () => {
         <div className="mb-8 space-y-2">
           <h1 className="text-3xl font-bold text-foreground">Payout Management</h1>
           <p className="text-muted-foreground">
-            Record payout installments per user transaction. Payouts are tracked with auto-generated IDs.
+            Record payout installments per user transaction. Unpaid transactions appear first.
           </p>
         </div>
 
@@ -235,7 +272,7 @@ const AdminPayouts = () => {
               <p className="text-muted-foreground">Loading payouts data...</p>
             </div>
           </div>
-        ) : users.length === 0 ? (
+        ) : sortedUsers.length === 0 ? (
           <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
             <p className="text-lg text-muted-foreground">No completed transactions yet.</p>
             <p className="text-sm text-muted-foreground/70 mt-1">
@@ -244,13 +281,14 @@ const AdminPayouts = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            {users.map(user => {
+            {sortedUsers.map(user => {
               const isUserExpanded = expandedUser === user.hexId;
               const userTotalOwed = user.sales.reduce((s, sale) => s + sale.netFiat, 0);
               const userTotalPaid = user.sales.reduce((s, sale) => s + sale.totalPaid, 0);
               const userRemaining = Math.round((userTotalOwed - userTotalPaid) * 100) / 100;
               const mainCurrency = user.sales.length > 0 ? user.sales[0].currency : 'EUR';
               const sym = CURRENCY_SYMBOLS[mainCurrency] || mainCurrency;
+              const displayName = resolveDisplayName(user);
 
               return (
                 <div key={user.hexId} className="rounded-2xl border-2 border-border bg-card overflow-hidden">
@@ -269,19 +307,16 @@ const AdminPayouts = () => {
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="font-bold text-foreground">{user.displayName}</span>
+                          <span className="font-bold text-foreground">{displayName}</span>
                           <span className="text-xs text-muted-foreground font-mono">
                             {user.hexId.slice(0, 8)}...{user.hexId.slice(-6)}
                           </span>
                         </div>
                         {user.payoutAccount && (
                           <div className="text-xs text-muted-foreground mt-0.5">
-                            Payout: <span className="font-mono">{user.payoutAccount.scheme}</span>
+                            <span className="font-mono">{user.payoutAccount.scheme}</span>
                             {user.payoutAccount.fields?.iban && (
                               <span className="font-mono ml-1">{user.payoutAccount.fields.iban}</span>
-                            )}
-                            {user.payoutAccount.fields?.account_holder && (
-                              <span className="ml-1">({user.payoutAccount.fields.account_holder})</span>
                             )}
                           </div>
                         )}
@@ -298,7 +333,7 @@ const AdminPayouts = () => {
                         </div>
                         <div className="text-right">
                           <div className="text-xs text-muted-foreground">Remaining</div>
-                          <div className={`font-mono font-bold ${userRemaining > 0 ? 'text-amber-600' : 'text-green-600'}`}>
+                          <div className={`font-mono font-bold text-lg ${userRemaining > 0 ? 'text-amber-600' : 'text-green-600'}`}>
                             {sym}{userRemaining.toFixed(2)}
                           </div>
                         </div>
@@ -314,13 +349,14 @@ const AdminPayouts = () => {
                         const progress = sale.netFiat > 0 ? Math.min((sale.totalPaid / sale.netFiat) * 100, 100) : 0;
                         const saleSym = CURRENCY_SYMBOLS[sale.currency] || sale.currency;
                         const isFormOpen = payoutFormSaleId === sale.id;
+                        const isFullyPaid = sale.status === 'paid' || sale.remaining <= 0;
 
                         return (
-                          <div key={sale.id} className="border-b border-border/50 last:border-b-0">
+                          <div key={sale.id} className={`border-b border-border/50 last:border-b-0 ${isFullyPaid ? 'opacity-40' : ''}`}>
                             {/* Sale row */}
                             <button
                               onClick={() => setExpandedSale(isSaleExpanded ? null : sale.id)}
-                              className="w-full px-6 py-3 text-left hover:bg-muted/20 transition-colors"
+                              className={`w-full px-6 py-3 text-left transition-colors ${isFullyPaid ? 'hover:bg-muted/10' : 'hover:bg-muted/20'}`}
                             >
                               <div className="flex items-center gap-4 pl-8">
                                 <svg
@@ -334,7 +370,7 @@ const AdminPayouts = () => {
                                   {formatDate(sale.createdAt)}
                                 </span>
 
-                                <span className="font-mono text-sm font-bold text-foreground flex-1 min-w-0">
+                                <span className={`font-mono text-sm font-bold flex-1 min-w-0 ${isFullyPaid ? 'text-muted-foreground' : 'text-foreground'}`}>
                                   {sale.lanaAmount.toLocaleString()} LANA
                                 </span>
 
@@ -353,25 +389,37 @@ const AdminPayouts = () => {
                                   </div>
                                 </div>
 
-                                <span className="font-mono text-sm font-bold text-primary w-20 text-right flex-shrink-0">
-                                  {saleSym}{sale.netFiat.toFixed(2)}
-                                </span>
+                                {/* Remaining — bold and clear */}
+                                {!isFullyPaid ? (
+                                  <div className="w-28 text-right flex-shrink-0">
+                                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Remaining</div>
+                                    <div className="font-mono text-sm font-bold text-amber-600">
+                                      {saleSym}{sale.remaining.toFixed(2)}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="w-28 text-right flex-shrink-0">
+                                    <div className="font-mono text-sm text-muted-foreground">
+                                      {saleSym}{sale.netFiat.toFixed(2)}
+                                    </div>
+                                  </div>
+                                )}
 
                                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex-shrink-0 ${
-                                  sale.status === 'paid'
+                                  isFullyPaid
                                     ? 'bg-green-100 text-green-700'
                                     : sale.totalPaid > 0
                                     ? 'bg-amber-100 text-amber-700'
-                                    : 'bg-blue-100 text-blue-700'
+                                    : 'bg-red-100 text-red-700'
                                 }`}>
-                                  {sale.status === 'paid' ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Pending'}
+                                  {isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
                                 </span>
                               </div>
                             </button>
 
                             {/* Sale expanded — payouts + add form */}
                             {isSaleExpanded && (
-                              <div className="px-6 pb-4 pl-20 space-y-3">
+                              <div className={`px-6 pb-4 pl-20 space-y-3 ${isFullyPaid ? 'opacity-100' : ''}`}>
                                 {/* Existing payouts */}
                                 {sale.payouts.length > 0 && (
                                   <div className="rounded-lg border border-border overflow-hidden">
@@ -406,8 +454,8 @@ const AdminPayouts = () => {
                                   </div>
                                 )}
 
-                                {/* Add Payout button / form */}
-                                {sale.remaining > 0 && (
+                                {/* Add Payout button / form — only for unpaid */}
+                                {sale.remaining > 0 && !isFullyPaid && (
                                   <>
                                     {!isFormOpen ? (
                                       <button
@@ -420,11 +468,21 @@ const AdminPayouts = () => {
                                         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                           <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                                         </svg>
-                                        Record Payout
+                                        Record Payout ({saleSym}{sale.remaining.toFixed(2)} remaining)
                                       </button>
                                     ) : (
                                       <div className="rounded-xl border-2 border-primary/30 bg-primary/5 p-4 space-y-3">
-                                        <h5 className="text-sm font-bold text-foreground">Record Payout for TX #{sale.id}</h5>
+                                        <div className="flex items-center justify-between">
+                                          <h5 className="text-sm font-bold text-foreground">Record Payout for TX #{sale.id}</h5>
+                                          {nextPayoutId && (
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-xs text-muted-foreground">Payout ID:</span>
+                                              <span className="font-mono text-sm font-bold text-primary bg-primary/10 px-2 py-0.5 rounded">
+                                                {nextPayoutId}
+                                              </span>
+                                            </div>
+                                          )}
+                                        </div>
 
                                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                           {/* Amount */}
@@ -443,7 +501,7 @@ const AdminPayouts = () => {
                                               placeholder="0.00"
                                             />
                                             <p className="text-[10px] text-muted-foreground mt-0.5">
-                                              Max remaining: {saleSym}{sale.remaining.toFixed(2)}
+                                              Remaining: <span className="font-bold text-amber-600">{saleSym}{sale.remaining.toFixed(2)}</span>
                                             </p>
                                           </div>
 
@@ -497,7 +555,7 @@ const AdminPayouts = () => {
                                             )}
                                           </button>
                                           <button
-                                            onClick={() => setPayoutFormSaleId(null)}
+                                            onClick={() => { setPayoutFormSaleId(null); setNextPayoutId(null); }}
                                             className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
                                           >
                                             Cancel
@@ -508,12 +566,12 @@ const AdminPayouts = () => {
                                   </>
                                 )}
 
-                                {sale.remaining <= 0 && sale.status === 'paid' && (
+                                {isFullyPaid && (
                                   <p className="text-xs text-green-600 font-medium flex items-center gap-1">
                                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                       <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
-                                    Fully paid
+                                    Fully paid — {saleSym}{sale.totalPaid.toFixed(2)}
                                   </p>
                                 )}
                               </div>

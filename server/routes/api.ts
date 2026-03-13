@@ -387,6 +387,16 @@ router.delete('/admin/users/:hexId', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 /**
+ * GET /api/admin/next-payout-id
+ * Preview the next auto-generated payout ID.
+ */
+router.get('/admin/next-payout-id', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+  return res.json({ payoutId: generatePayoutId() });
+});
+
+/**
  * GET /api/admin/payouts
  * Returns all sales grouped by user with payouts and user profile info.
  */
