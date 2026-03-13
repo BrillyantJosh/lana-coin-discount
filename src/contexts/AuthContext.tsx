@@ -21,12 +21,14 @@ export interface UserSession {
   profileName?: string;
   profileDisplayName?: string;
   profilePicture?: string;
+  isAdmin?: boolean;
   expiresAt: number;
 }
 
 interface AuthContextType {
   session: UserSession | null;
   isLoading: boolean;
+  isAdmin: boolean;
   login: (wif: string, relays?: string[], rememberMe?: boolean) => Promise<void>;
   logout: () => void;
 }
@@ -145,6 +147,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Server registration is non-blocking - user can still use the app
     }
 
+    // Check admin status
+    let adminStatus = false;
+    try {
+      const adminRes = await fetch(`/api/admin/check/${derivedIds.nostrHexId}`);
+      const adminData = await adminRes.json();
+      adminStatus = adminData.isAdmin === true;
+    } catch {
+      // Admin check is non-blocking
+    }
+
     const expirationDays = rememberMe ? 90 : 30;
     const userSession: UserSession = {
       lanaPrivateKey: derivedIds.lanaPrivateKey,
@@ -159,6 +171,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       profileName,
       profileDisplayName,
       profilePicture,
+      isAdmin: adminStatus,
       expiresAt: Date.now() + expirationDays * 24 * 60 * 60 * 1000,
     };
 
@@ -171,8 +184,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem(SESSION_KEY);
   };
 
+  const isAdmin = session?.isAdmin === true;
+
   return (
-    <AuthContext.Provider value={{ session, isLoading, login, logout }}>
+    <AuthContext.Provider value={{ session, isLoading, isAdmin, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

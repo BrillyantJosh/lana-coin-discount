@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb } from '../db/index.js';
+import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins } from '../db/index.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets } from '../lib/nostr.js';
 import { fetchBatchBalances } from '../lib/electrum.js';
 
@@ -229,6 +229,130 @@ router.post('/user/:hexId/watched-wallets', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Save watched wallets error:', error);
     return res.status(500).json({ error: 'Failed to save watched wallets' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Admin endpoints
+// ---------------------------------------------------------------------------
+
+/** Admin auth helper — reads x-admin-hex-id header and verifies against admin_users table */
+function requireAdmin(req: Request, res: Response): string | null {
+  const hexId = req.headers['x-admin-hex-id'] as string;
+  if (!hexId || !isAdminUser(hexId)) {
+    res.status(403).json({ error: 'Admin access required' });
+    return null;
+  }
+  return hexId;
+}
+
+/**
+ * GET /api/admin/check/:hexId
+ * Public — check if a hex ID is an admin.
+ */
+router.get('/admin/check/:hexId', (req: Request, res: Response) => {
+  return res.json({ isAdmin: isAdminUser(req.params.hexId) });
+});
+
+/**
+ * GET /api/admin/stats
+ * Returns buyback dashboard statistics (mock data for now).
+ */
+router.get('/admin/stats', (_req: Request, res: Response) => {
+  const adminHex = requireAdmin(_req, res);
+  if (!adminHex) return;
+
+  // Mock buyback data
+  const stats = {
+    totalLanaBoughtBack: 2_450_000,
+    totalEurOwed: 19.60,
+    totalTransactions: 12,
+    usersServed: 5,
+    recentTransactions: [
+      { id: 1, date: '2026-03-10', user: 'Brilly(ant) Josh', hexId: '56e8670a...a362061', lanaAmount: 500_000, eurPayout: 4.00, status: 'paid' },
+      { id: 2, date: '2026-03-09', user: 'LanaFan42', hexId: 'a1b2c3d4...e5f6a7b8', lanaAmount: 350_000, eurPayout: 2.80, status: 'paid' },
+      { id: 3, date: '2026-03-08', user: 'CryptoMax', hexId: 'f9e8d7c6...b5a49382', lanaAmount: 600_000, eurPayout: 4.80, status: 'pending' },
+      { id: 4, date: '2026-03-07', user: 'SatoshiSi', hexId: '11223344...55667788', lanaAmount: 200_000, eurPayout: 1.60, status: 'paid' },
+      { id: 5, date: '2026-03-05', user: 'NodeRunner', hexId: 'aabbccdd...eeff0011', lanaAmount: 800_000, eurPayout: 6.40, status: 'pending' },
+    ],
+  };
+
+  return res.json(stats);
+});
+
+/**
+ * GET /api/admin/users
+ * List all admin users.
+ */
+router.get('/admin/users', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  return res.json({ admins: getAllAdmins() });
+});
+
+/**
+ * POST /api/admin/users
+ * Add a new admin user.
+ */
+router.post('/admin/users', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const { hexId, label } = req.body;
+
+    if (!hexId || typeof hexId !== 'string' || !/^[0-9a-f]{64}$/.test(hexId)) {
+      return res.status(400).json({ error: 'Invalid hex ID — must be 64 lowercase hex characters' });
+    }
+
+    // Check duplicate
+    if (isAdminUser(hexId)) {
+      return res.status(409).json({ error: 'This user is already an admin' });
+    }
+
+    db.prepare('INSERT INTO admin_users (hex_id, label, added_by) VALUES (?, ?, ?)')
+      .run(hexId, label || null, adminHex);
+
+    console.log(`[lana-discount] Admin added: ${hexId.slice(0, 12)}... by ${adminHex.slice(0, 12)}...`);
+    return res.json({ success: true, admins: getAllAdmins() });
+  } catch (error) {
+    console.error('Add admin error:', error);
+    return res.status(500).json({ error: 'Failed to add admin' });
+  }
+});
+
+/**
+ * DELETE /api/admin/users/:hexId
+ * Remove an admin user. Cannot remove yourself or the last admin.
+ */
+router.delete('/admin/users/:hexId', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const { hexId } = req.params;
+
+    if (hexId === adminHex) {
+      return res.status(400).json({ error: 'Cannot remove yourself' });
+    }
+
+    const allAdmins = getAllAdmins();
+    if (allAdmins.length <= 1) {
+      return res.status(400).json({ error: 'Cannot remove the last admin' });
+    }
+
+    if (!isAdminUser(hexId)) {
+      return res.status(404).json({ error: 'Admin not found' });
+    }
+
+    db.prepare('DELETE FROM admin_users WHERE hex_id = ?').run(hexId);
+
+    console.log(`[lana-discount] Admin removed: ${hexId.slice(0, 12)}... by ${adminHex.slice(0, 12)}...`);
+    return res.json({ success: true, admins: getAllAdmins() });
+  } catch (error) {
+    console.error('Remove admin error:', error);
+    return res.status(500).json({ error: 'Failed to remove admin' });
   }
 });
 

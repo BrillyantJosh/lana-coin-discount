@@ -63,6 +63,13 @@ db.exec(`
     UNIQUE(user_hex_id, wallet_id)
   );
 
+  CREATE TABLE IF NOT EXISTS admin_users (
+    hex_id TEXT PRIMARY KEY,
+    label TEXT,
+    added_by TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_users_wallet_id ON users(wallet_id);
   CREATE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name);
   CREATE INDEX IF NOT EXISTS idx_watched_wallets_user ON watched_wallets(user_hex_id);
@@ -123,6 +130,14 @@ if (kind38888Count === 0) {
   console.log('[lana-discount] Seeded kind_38888 with bootstrap fallback data');
 }
 
+// --- Seed admin_users with first administrator ---
+const adminCount = (db.prepare('SELECT COUNT(*) as count FROM admin_users').get() as any).count;
+if (adminCount === 0) {
+  db.prepare('INSERT INTO admin_users (hex_id, label, added_by) VALUES (?, ?, ?)')
+    .run('56e8670aa65491f8595dc3a71c94aa7445dcdca755ca5f77c07218498a362061', 'Brilly(ant) Josh', 'system');
+  console.log('[lana-discount] Seeded first admin user');
+}
+
 // --- Helpers ---
 
 export function getRelaysFromDb(): string[] {
@@ -154,6 +169,15 @@ export function getTrustedSignersFromDb(): Record<string, string[]> {
     try { return JSON.parse(row.trusted_signers); } catch {}
   }
   return {};
+}
+
+export function isAdminUser(hexId: string): boolean {
+  const row = db.prepare('SELECT 1 FROM admin_users WHERE hex_id = ?').get(hexId);
+  return !!row;
+}
+
+export function getAllAdmins(): Array<{ hex_id: string; label: string | null; added_by: string | null; created_at: string }> {
+  return db.prepare('SELECT * FROM admin_users ORDER BY created_at ASC').all() as any[];
 }
 
 export function closeDb(): void {

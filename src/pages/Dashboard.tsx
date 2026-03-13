@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 
 const Dashboard = () => {
-  const { session, logout } = useAuth();
+  const { session, isAdmin, logout } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -107,6 +107,29 @@ const Dashboard = () => {
             </div>
           </Link>
         </div>
+
+        {/* Admin panel link — only visible to admins */}
+        {isAdmin && (
+          <div className="max-w-4xl mx-auto mt-8">
+            <Link to="/admin" className="group relative rounded-2xl border-2 border-dashed border-red-300 bg-red-50/30 p-6 hover:border-red-400 transition-colors block">
+              <div className="flex items-center gap-4">
+                <div className="h-12 w-12 rounded-xl bg-red-100 flex items-center justify-center">
+                  <svg className="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-lg font-bold text-red-700">Admin Panel</h3>
+                  <p className="text-sm text-red-600/80">View buyback stats, manage admins</p>
+                </div>
+                <svg className="h-5 w-5 text-red-400 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </div>
+            </Link>
+          </div>
+        )}
       </div>
 
       {/* Footer */}
