@@ -415,6 +415,24 @@ const AdminPayouts = () => {
                                 }`}>
                                   {isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
                                 </span>
+
+                                {/* Quick Pay button — directly on the row for unpaid transactions */}
+                                {!isFullyPaid && (
+                                  <span
+                                    role="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setExpandedSale(sale.id);
+                                      openPayoutForm(sale, user.payoutAccount);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-green-600 text-white text-xs font-bold hover:bg-green-700 transition-colors flex-shrink-0 cursor-pointer"
+                                  >
+                                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                                    </svg>
+                                    Pay
+                                  </span>
+                                )}
                               </div>
                             </button>
 
