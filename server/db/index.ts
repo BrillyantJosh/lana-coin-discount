@@ -102,8 +102,20 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_users_wallet_id ON users(wallet_id);
   CREATE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name);
   CREATE INDEX IF NOT EXISTS idx_watched_wallets_user ON watched_wallets(user_hex_id);
+  CREATE TABLE IF NOT EXISTS sale_payouts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id INTEGER NOT NULL REFERENCES buyback_transactions(id),
+    amount REAL NOT NULL,
+    currency TEXT NOT NULL,
+    reference TEXT,
+    note TEXT,
+    paid_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_buyback_user ON buyback_transactions(user_hex_id);
   CREATE INDEX IF NOT EXISTS idx_buyback_status ON buyback_transactions(status);
+  CREATE INDEX IF NOT EXISTS idx_sale_payouts_tx ON sale_payouts(transaction_id);
 `);
 
 // --- Seed kind_38888 with bootstrap fallback data ---
@@ -335,6 +347,138 @@ export function getRecentBuybackTransactions(limit = 20): any[] {
     ORDER BY bt.created_at DESC
     LIMIT ?
   `).all(limit) as any[];
+}
+
+export function getUserSalesWithPayouts(hexId: string): any[] {
+  // Get all completed/paid sales for this user (exclude failed)
+  const sales = db.prepare(`
+    SELECT * FROM buyback_transactions
+    WHERE user_hex_id = ? AND status IN ('completed', 'paid')
+    ORDER BY created_at DESC
+  `).all(hexId) as any[];
+
+  // Get all payouts for each sale
+  const getPayouts = db.prepare(`
+    SELECT * FROM sale_payouts
+    WHERE transaction_id = ?
+    ORDER BY paid_at ASC
+  `);
+
+  return sales.map(sale => {
+    const payouts = getPayouts.all(sale.id) as any[];
+    const totalPaid = payouts.reduce((sum: number, p: any) => sum + p.amount, 0);
+    const remaining = Math.round((sale.net_fiat - totalPaid) * 100) / 100;
+
+    return {
+      id: sale.id,
+      lanaAmount: sale.lana_amount_display,
+      lanaAmountLanoshis: sale.lana_amount_lanoshis,
+      currency: sale.currency,
+      exchangeRate: sale.exchange_rate,
+      split: sale.split,
+      grossFiat: sale.gross_fiat,
+      commissionPercent: sale.commission_percent,
+      commissionFiat: sale.commission_fiat,
+      netFiat: sale.net_fiat,
+      txHash: sale.tx_hash,
+      txFeeLanoshis: sale.tx_fee_lanoshis,
+      status: sale.status,
+      createdAt: sale.created_at,
+      completedAt: sale.completed_at,
+      senderWallet: sale.sender_wallet_id,
+      buybackWallet: sale.buyback_wallet_id,
+      totalPaid: Math.round(totalPaid * 100) / 100,
+      remaining: remaining <= 0 ? 0 : remaining,
+      payouts: payouts.map(p => ({
+        id: p.id,
+        amount: p.amount,
+        currency: p.currency,
+        reference: p.reference,
+        note: p.note,
+        paidAt: p.paid_at,
+      })),
+    };
+  });
+}
+
+// --- Seed mock sales data for testing ---
+const MOCK_USER_HEX = '56e8670aa65491f8595dc3a71c94aa7445dcdca755ca5f77c07218498a362061';
+const mockSalesCount = (db.prepare(
+  'SELECT COUNT(*) as count FROM buyback_transactions WHERE user_hex_id = ?'
+).get(MOCK_USER_HEX) as any).count;
+
+if (mockSalesCount === 0) {
+  const insertTx = db.prepare(`
+    INSERT INTO buyback_transactions (
+      user_hex_id, sender_wallet_id, buyback_wallet_id,
+      lana_amount_lanoshis, lana_amount_display, currency, exchange_rate,
+      split, gross_fiat, commission_percent, commission_fiat, net_fiat,
+      tx_hash, tx_fee_lanoshis, status, error_message,
+      created_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const insertPayout = db.prepare(`
+    INSERT INTO sale_payouts (transaction_id, amount, currency, reference, note, paid_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  // Sale 1: 500,000 LANA → 4.00 EUR gross → 1.20 commission → 2.80 net → FULLY PAID
+  const sale1Id = Number(insertTx.run(
+    MOCK_USER_HEX,
+    'LWmockSender1xxxxxxxxxxxxxxxxxxxxxx',
+    'LBuybackWalletxxxxxxxxxxxxxxxxxxxxxxxxx',
+    50000000000000, // 500,000 LANA in lanoshis
+    500000,
+    'EUR', 0.000008,
+    '4',
+    4.00, 30, 1.20, 2.80,
+    'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+    1500000,
+    'paid', null,
+    '2026-01-15 10:30:00', '2026-01-15 10:30:45'
+  ).lastInsertRowid);
+
+  insertPayout.run(sale1Id, 1.00, 'EUR', 'SEPA-2026-001', 'First installment', '2026-01-20 14:00:00');
+  insertPayout.run(sale1Id, 1.00, 'EUR', 'SEPA-2026-002', 'Second installment', '2026-02-10 11:30:00');
+  insertPayout.run(sale1Id, 0.80, 'EUR', 'SEPA-2026-003', 'Final installment', '2026-02-28 09:15:00');
+
+  // Sale 2: 1,000,000 LANA → 8.00 EUR gross → 2.40 commission → 5.60 net → PARTIALLY PAID
+  const sale2Id = Number(insertTx.run(
+    MOCK_USER_HEX,
+    'LWmockSender2xxxxxxxxxxxxxxxxxxxxxx',
+    'LBuybackWalletxxxxxxxxxxxxxxxxxxxxxxxxx',
+    100000000000000, // 1,000,000 LANA in lanoshis
+    1000000,
+    'EUR', 0.000008,
+    '4',
+    8.00, 30, 2.40, 5.60,
+    'b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3',
+    2800000,
+    'completed', null,
+    '2026-02-20 16:45:00', '2026-02-20 16:45:30'
+  ).lastInsertRowid);
+
+  insertPayout.run(sale2Id, 2.00, 'EUR', 'SEPA-2026-004', 'First installment', '2026-03-05 10:00:00');
+  insertPayout.run(sale2Id, 1.50, 'EUR', 'SEPA-2026-005', 'Second installment', '2026-03-12 14:30:00');
+
+  // Sale 3: 250,000 LANA → 2.00 EUR gross → 0.60 commission → 1.40 net → PENDING PAYOUT
+  insertTx.run(
+    MOCK_USER_HEX,
+    'LWmockSender3xxxxxxxxxxxxxxxxxxxxxx',
+    'LBuybackWalletxxxxxxxxxxxxxxxxxxxxxxxxx',
+    25000000000000, // 250,000 LANA in lanoshis
+    250000,
+    'EUR', 0.000008,
+    '4',
+    2.00, 30, 0.60, 1.40,
+    'c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
+    750000,
+    'completed', null,
+    '2026-03-13 08:20:00', '2026-03-13 08:20:25'
+  );
+
+  console.log('[lana-discount] Seeded mock sales data for user', MOCK_USER_HEX.slice(0, 8) + '...');
 }
 
 export function closeDb(): void {

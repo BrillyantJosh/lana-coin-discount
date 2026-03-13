@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions } from '../db/index.js';
+import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getUserSalesWithPayouts } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets } from '../lib/nostr.js';
 import { fetchBatchBalances } from '../lib/electrum.js';
@@ -489,6 +489,20 @@ router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
       }
     } catch {}
     return res.json({ profile: null });
+  }
+});
+
+/**
+ * GET /api/user/:hexId/sales
+ * Returns all completed sales for this user with their payout installments.
+ */
+router.get('/user/:hexId/sales', (req: Request, res: Response) => {
+  try {
+    const sales = getUserSalesWithPayouts(req.params.hexId);
+    return res.json({ sales });
+  } catch (err) {
+    console.error('Sales fetch error:', err);
+    return res.status(500).json({ error: 'Failed to fetch sales' });
   }
 });
 
