@@ -5,9 +5,13 @@ import { toast } from 'sonner';
 
 interface BuybackStats {
   totalLanaBoughtBack: number;
-  totalEurOwed: number;
+  totalOwed: number;
+  totalPaidOut: number;
+  totalRemaining: number;
   totalTransactions: number;
   usersServed: number;
+  buybackWalletBalance: number | null;
+  buybackWalletId: string;
   recentTransactions: Array<{
     id: number;
     date: string;
@@ -72,6 +76,9 @@ const AdminDashboard = () => {
             <Link to="/admin" className="text-sm text-foreground font-medium">
               Admin
             </Link>
+            <Link to="/admin/payouts" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+              Payouts
+            </Link>
             <Link to="/admin/settings" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Settings
             </Link>
@@ -106,8 +113,8 @@ const AdminDashboard = () => {
           </div>
         ) : stats ? (
           <>
-            {/* Stats cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
+            {/* Stats cards — row 1 */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
               <StatCard
                 label="Total LANA Bought Back"
                 value={stats.totalLanaBoughtBack.toLocaleString()}
@@ -115,27 +122,60 @@ const AdminDashboard = () => {
                 color="text-primary"
               />
               <StatCard
-                label="Total EUR Owed"
-                value={stats.totalEurOwed.toFixed(2)}
+                label="Total Owed"
+                value={stats.totalOwed.toFixed(2)}
                 unit="EUR"
-                color="text-red-600"
-              />
-              <StatCard
-                label="Transactions"
-                value={stats.totalTransactions.toString()}
                 color="text-foreground"
               />
               <StatCard
-                label="Users Served"
-                value={stats.usersServed.toString()}
-                color="text-foreground"
+                label="Total Paid Out"
+                value={stats.totalPaidOut.toFixed(2)}
+                unit="EUR"
+                color="text-green-600"
               />
+            </div>
+
+            {/* Stats cards — row 2 */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-10">
+              <StatCard
+                label="Remaining to Pay"
+                value={stats.totalRemaining.toFixed(2)}
+                unit="EUR"
+                color={stats.totalRemaining > 0 ? 'text-amber-600' : 'text-green-600'}
+              />
+              <StatCard
+                label="Buyback Wallet Balance"
+                value={stats.buybackWalletBalance !== null ? stats.buybackWalletBalance.toLocaleString() : '—'}
+                unit="LANA"
+                color="text-primary"
+                subtitle={stats.buybackWalletId ? stats.buybackWalletId.slice(0, 12) + '...' : 'Not configured'}
+              />
+              <div className="rounded-2xl border-2 border-border bg-card p-6">
+                <p className="text-sm text-muted-foreground mb-2">Transactions / Users</p>
+                <div className="flex items-baseline gap-4">
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-3xl font-bold font-mono text-foreground">{stats.totalTransactions}</span>
+                    <span className="text-sm text-muted-foreground">tx</span>
+                  </div>
+                  <span className="text-muted-foreground">/</span>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-3xl font-bold font-mono text-foreground">{stats.usersServed}</span>
+                    <span className="text-sm text-muted-foreground">users</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Recent transactions */}
             <div className="rounded-2xl border-2 border-border bg-card overflow-hidden">
-              <div className="px-6 py-4 border-b border-border">
+              <div className="px-6 py-4 border-b border-border flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-foreground">Recent Buyback Transactions</h2>
+                <Link
+                  to="/admin/payouts"
+                  className="text-sm text-primary hover:text-primary/80 font-medium transition-colors"
+                >
+                  Manage Payouts &rarr;
+                </Link>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -144,7 +184,7 @@ const AdminDashboard = () => {
                       <th className="text-left px-6 py-3 font-medium text-muted-foreground">Date</th>
                       <th className="text-left px-6 py-3 font-medium text-muted-foreground">User</th>
                       <th className="text-right px-6 py-3 font-medium text-muted-foreground">LANA Amount</th>
-                      <th className="text-right px-6 py-3 font-medium text-muted-foreground">EUR Payout</th>
+                      <th className="text-right px-6 py-3 font-medium text-muted-foreground">Payout</th>
                       <th className="text-center px-6 py-3 font-medium text-muted-foreground">Status</th>
                     </tr>
                   </thead>
@@ -177,10 +217,6 @@ const AdminDashboard = () => {
                 </table>
               </div>
             </div>
-
-            <p className="mt-4 text-xs text-muted-foreground text-center">
-              * Dashboard data is currently mock data for development purposes.
-            </p>
           </>
         ) : (
           <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
@@ -197,13 +233,14 @@ const AdminDashboard = () => {
   );
 };
 
-const StatCard = ({ label, value, unit, color }: { label: string; value: string; unit?: string; color: string }) => (
+const StatCard = ({ label, value, unit, color, subtitle }: { label: string; value: string; unit?: string; color: string; subtitle?: string }) => (
   <div className="rounded-2xl border-2 border-border bg-card p-6">
     <p className="text-sm text-muted-foreground mb-2">{label}</p>
     <div className="flex items-baseline gap-2">
       <span className={`text-3xl font-bold font-mono ${color}`}>{value}</span>
       {unit && <span className="text-sm text-muted-foreground">{unit}</span>}
     </div>
+    {subtitle && <p className="text-xs text-muted-foreground font-mono mt-1">{subtitle}</p>}
   </div>
 );
 

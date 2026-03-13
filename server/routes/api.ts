@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getUserSalesWithPayouts } from '../db/index.js';
+import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets } from '../lib/nostr.js';
 import { fetchBatchBalances } from '../lib/electrum.js';
@@ -257,30 +257,53 @@ router.get('/admin/check/:hexId', (req: Request, res: Response) => {
 
 /**
  * GET /api/admin/stats
- * Returns buyback dashboard statistics (mock data for now).
+ * Returns buyback dashboard statistics with payout progress and live wallet balance.
  */
-router.get('/admin/stats', (_req: Request, res: Response) => {
+router.get('/admin/stats', async (_req: Request, res: Response) => {
   const adminHex = requireAdmin(_req, res);
   if (!adminHex) return;
 
-  const stats = getBuybackStats();
-  const recentTxs = getRecentBuybackTransactions(10);
+  try {
+    const stats = getAdminPayoutStats();
+    const recentTxs = getRecentBuybackTransactions(10);
 
-  const recentTransactions = recentTxs.map((tx: any) => ({
-    id: tx.id,
-    date: tx.created_at?.split('T')[0] || tx.created_at?.split(' ')[0] || '',
-    user: tx.display_name || tx.full_name || 'Anonymous',
-    hexId: tx.user_hex_id.slice(0, 8) + '...' + tx.user_hex_id.slice(-6),
-    lanaAmount: tx.lana_amount_display,
-    eurPayout: tx.net_fiat,
-    currency: tx.currency,
-    status: tx.status,
-  }));
+    const recentTransactions = recentTxs.map((tx: any) => ({
+      id: tx.id,
+      date: tx.created_at?.split('T')[0] || tx.created_at?.split(' ')[0] || '',
+      user: tx.display_name || tx.full_name || 'Anonymous',
+      hexId: tx.user_hex_id.slice(0, 8) + '...' + tx.user_hex_id.slice(-6),
+      lanaAmount: tx.lana_amount_display,
+      eurPayout: tx.net_fiat,
+      currency: tx.currency,
+      status: tx.status,
+    }));
 
-  return res.json({
-    ...stats,
-    recentTransactions,
-  });
+    // Fetch live buyback wallet LANA balance via Electrum
+    let buybackWalletBalance: number | null = null;
+    const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
+    if (buybackWalletId) {
+      try {
+        const electrumServers = getElectrumServersFromDb();
+        const balances = await fetchBatchBalances(electrumServers, [buybackWalletId]);
+        const bal = balances[buybackWalletId];
+        if (bal) {
+          buybackWalletBalance = (bal.confirmed + bal.unconfirmed) / 100000000; // lanoshis to LANA
+        }
+      } catch (err) {
+        console.error('Failed to fetch buyback wallet balance:', err);
+      }
+    }
+
+    return res.json({
+      ...stats,
+      buybackWalletBalance,
+      buybackWalletId,
+      recentTransactions,
+    });
+  } catch (err) {
+    console.error('Admin stats error:', err);
+    return res.status(500).json({ error: 'Failed to load stats' });
+  }
 });
 
 /**
@@ -356,6 +379,134 @@ router.delete('/admin/users/:hexId', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Remove admin error:', error);
     return res.status(500).json({ error: 'Failed to remove admin' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Admin Payouts endpoints
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/payouts
+ * Returns all sales grouped by user with payouts and user profile info.
+ */
+router.get('/admin/payouts', async (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const users = getAllSalesWithPayouts();
+    return res.json({ users });
+  } catch (err) {
+    console.error('Admin payouts fetch error:', err);
+    return res.status(500).json({ error: 'Failed to fetch payouts' });
+  }
+});
+
+/**
+ * POST /api/admin/payouts
+ * Record a new payout installment for a transaction.
+ */
+router.post('/admin/payouts', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const { transactionId, amount, currency, paidToAccount, note } = req.body;
+
+    if (!transactionId || typeof transactionId !== 'number') {
+      return res.status(400).json({ error: 'Invalid transaction ID' });
+    }
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Amount must be greater than 0' });
+    }
+    if (!currency) {
+      return res.status(400).json({ error: 'Currency is required' });
+    }
+
+    // Verify transaction exists and is completed/paid
+    const tx = db.prepare(
+      "SELECT * FROM buyback_transactions WHERE id = ? AND status IN ('completed', 'paid')"
+    ).get(transactionId) as any;
+
+    if (!tx) {
+      return res.status(404).json({ error: 'Transaction not found or not in completed state' });
+    }
+
+    // Check remaining amount
+    const totalPaid = (db.prepare(
+      'SELECT COALESCE(SUM(amount), 0) as total FROM sale_payouts WHERE transaction_id = ?'
+    ).get(transactionId) as any).total;
+
+    const remaining = Math.round((tx.net_fiat - totalPaid) * 100) / 100;
+    if (amount > remaining + 0.01) { // small tolerance for rounding
+      return res.status(400).json({ error: `Amount exceeds remaining (${remaining.toFixed(2)} ${currency})` });
+    }
+
+    // Generate payout ID and insert
+    const payoutId = generatePayoutId();
+    const payout = insertSalePayout({
+      transactionId,
+      payoutId,
+      amount,
+      currency,
+      paidToAccount: paidToAccount || null,
+      note: note || null,
+    });
+
+    console.log(`[lana-discount] Payout recorded: ${payoutId} — ${amount} ${currency} for TX#${transactionId} by admin ${adminHex.slice(0, 12)}...`);
+
+    return res.json({
+      success: true,
+      payout,
+    });
+  } catch (err) {
+    console.error('Admin payout create error:', err);
+    return res.status(500).json({ error: 'Failed to record payout' });
+  }
+});
+
+/**
+ * GET /api/user/:hexId/payout-account
+ * Fetch user's payout account from KIND 0 profile (payment_methods with scope payout/both).
+ */
+router.get('/user/:hexId/payout-account', async (req: Request, res: Response) => {
+  try {
+    const hexId = req.params.hexId;
+    const relays = getRelaysFromDb();
+    const kind0Event = await fetchKind0(hexId, relays);
+
+    let payoutAccount: any = null;
+
+    if (kind0Event) {
+      const content = JSON.parse(kind0Event.content);
+      const paymentMethods = content.payment_methods || [];
+      // Find method with scope 'payout' or 'both'
+      const payoutMethod = paymentMethods.find(
+        (m: any) => m.scope === 'payout' || m.scope === 'both'
+      );
+      if (payoutMethod) {
+        payoutAccount = payoutMethod;
+      }
+    }
+
+    // Fallback to cached DB data
+    if (!payoutAccount) {
+      const user = db.prepare('SELECT raw_kind0 FROM users WHERE nostr_hex_id = ?').get(hexId) as any;
+      if (user?.raw_kind0) {
+        const profile = JSON.parse(user.raw_kind0);
+        const paymentMethods = profile.payment_methods || [];
+        const payoutMethod = paymentMethods.find(
+          (m: any) => m.scope === 'payout' || m.scope === 'both'
+        );
+        if (payoutMethod) payoutAccount = payoutMethod;
+      }
+    }
+
+    return res.json({ payoutAccount });
+  } catch (err) {
+    console.error('Payout account fetch error:', err);
+    return res.json({ payoutAccount: null });
   }
 });
 

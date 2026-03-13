@@ -105,8 +105,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS sale_payouts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     transaction_id INTEGER NOT NULL REFERENCES buyback_transactions(id),
+    payout_id TEXT NOT NULL,
     amount REAL NOT NULL,
     currency TEXT NOT NULL,
+    paid_to_account TEXT,
     reference TEXT,
     note TEXT,
     paid_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -391,8 +393,10 @@ export function getUserSalesWithPayouts(hexId: string): any[] {
       remaining: remaining <= 0 ? 0 : remaining,
       payouts: payouts.map(p => ({
         id: p.id,
+        payoutId: p.payout_id,
         amount: p.amount,
         currency: p.currency,
+        paidToAccount: p.paid_to_account,
         reference: p.reference,
         note: p.note,
         paidAt: p.paid_at,
@@ -419,8 +423,8 @@ if (mockSalesCount === 0) {
   `);
 
   const insertPayout = db.prepare(`
-    INSERT INTO sale_payouts (transaction_id, amount, currency, reference, note, paid_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO sale_payouts (transaction_id, payout_id, amount, currency, paid_to_account, reference, note, paid_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   // Sale 1: 500,000 LANA → 4.00 EUR gross → 1.20 commission → 2.80 net → FULLY PAID
@@ -439,9 +443,9 @@ if (mockSalesCount === 0) {
     '2026-01-15 10:30:00', '2026-01-15 10:30:45'
   ).lastInsertRowid);
 
-  insertPayout.run(sale1Id, 1.00, 'EUR', 'SEPA-2026-001', 'First installment', '2026-01-20 14:00:00');
-  insertPayout.run(sale1Id, 1.00, 'EUR', 'SEPA-2026-002', 'Second installment', '2026-02-10 11:30:00');
-  insertPayout.run(sale1Id, 0.80, 'EUR', 'SEPA-2026-003', 'Final installment', '2026-02-28 09:15:00');
+  insertPayout.run(sale1Id, 'PAY-2026-001', 1.00, 'EUR', 'DE89370400440532013000', 'SEPA-2026-001', 'First installment', '2026-01-20 14:00:00');
+  insertPayout.run(sale1Id, 'PAY-2026-002', 1.00, 'EUR', 'DE89370400440532013000', 'SEPA-2026-002', 'Second installment', '2026-02-10 11:30:00');
+  insertPayout.run(sale1Id, 'PAY-2026-003', 0.80, 'EUR', 'DE89370400440532013000', 'SEPA-2026-003', 'Final installment', '2026-02-28 09:15:00');
 
   // Sale 2: 1,000,000 LANA → 8.00 EUR gross → 2.40 commission → 5.60 net → PARTIALLY PAID
   const sale2Id = Number(insertTx.run(
@@ -459,8 +463,8 @@ if (mockSalesCount === 0) {
     '2026-02-20 16:45:00', '2026-02-20 16:45:30'
   ).lastInsertRowid);
 
-  insertPayout.run(sale2Id, 2.00, 'EUR', 'SEPA-2026-004', 'First installment', '2026-03-05 10:00:00');
-  insertPayout.run(sale2Id, 1.50, 'EUR', 'SEPA-2026-005', 'Second installment', '2026-03-12 14:30:00');
+  insertPayout.run(sale2Id, 'PAY-2026-004', 2.00, 'EUR', 'DE89370400440532013000', 'SEPA-2026-004', 'First installment', '2026-03-05 10:00:00');
+  insertPayout.run(sale2Id, 'PAY-2026-005', 1.50, 'EUR', 'DE89370400440532013000', 'SEPA-2026-005', 'Second installment', '2026-03-12 14:30:00');
 
   // Sale 3: 250,000 LANA → 2.00 EUR gross → 0.60 commission → 1.40 net → PENDING PAYOUT
   insertTx.run(
@@ -479,6 +483,155 @@ if (mockSalesCount === 0) {
   );
 
   console.log('[lana-discount] Seeded mock sales data for user', MOCK_USER_HEX.slice(0, 8) + '...');
+}
+
+// --- Admin Payout Helpers ---
+
+/** Generate a unique payout ID in format PAY-YYYY-NNN */
+export function generatePayoutId(): string {
+  const year = new Date().getFullYear();
+  const count = (db.prepare('SELECT COUNT(*) as count FROM sale_payouts').get() as any).count;
+  const seq = (count + 1).toString().padStart(3, '0');
+  return `PAY-${year}-${seq}`;
+}
+
+/** Insert a payout installment and auto-update transaction status if fully paid */
+export function insertSalePayout(data: {
+  transactionId: number;
+  payoutId: string;
+  amount: number;
+  currency: string;
+  paidToAccount: string | null;
+  reference?: string;
+  note?: string;
+}): any {
+  const result = db.prepare(`
+    INSERT INTO sale_payouts (transaction_id, payout_id, amount, currency, paid_to_account, reference, note)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    data.transactionId, data.payoutId, data.amount, data.currency,
+    data.paidToAccount || null, data.reference || null, data.note || null
+  );
+
+  // Check if fully paid — update buyback_transactions status
+  const tx = db.prepare('SELECT net_fiat FROM buyback_transactions WHERE id = ?').get(data.transactionId) as any;
+  const totalPaid = (db.prepare(
+    'SELECT COALESCE(SUM(amount), 0) as total FROM sale_payouts WHERE transaction_id = ?'
+  ).get(data.transactionId) as any).total;
+
+  if (tx && totalPaid >= tx.net_fiat) {
+    db.prepare("UPDATE buyback_transactions SET status = 'paid' WHERE id = ?").run(data.transactionId);
+  }
+
+  return {
+    id: Number(result.lastInsertRowid),
+    payoutId: data.payoutId,
+    amount: data.amount,
+    currency: data.currency,
+    paidToAccount: data.paidToAccount,
+  };
+}
+
+/** Get admin payout stats — totalPaidOut and totalRemaining */
+export function getAdminPayoutStats(): {
+  totalLanaBoughtBack: number;
+  totalOwed: number;
+  totalPaidOut: number;
+  totalRemaining: number;
+  totalTransactions: number;
+  usersServed: number;
+} {
+  const txStats = db.prepare(`
+    SELECT
+      COALESCE(SUM(lana_amount_display), 0) as totalLana,
+      COALESCE(SUM(net_fiat), 0) as totalFiat,
+      COUNT(*) as txCount,
+      COUNT(DISTINCT user_hex_id) as userCount
+    FROM buyback_transactions
+    WHERE status IN ('completed', 'paid')
+  `).get() as any;
+
+  const payoutTotal = (db.prepare(`
+    SELECT COALESCE(SUM(sp.amount), 0) as total
+    FROM sale_payouts sp
+    JOIN buyback_transactions bt ON sp.transaction_id = bt.id
+    WHERE bt.status IN ('completed', 'paid')
+  `).get() as any).total;
+
+  const totalOwed = Math.round((txStats.totalFiat || 0) * 100) / 100;
+  const totalPaidOut = Math.round((payoutTotal || 0) * 100) / 100;
+
+  return {
+    totalLanaBoughtBack: txStats.totalLana || 0,
+    totalOwed,
+    totalPaidOut,
+    totalRemaining: Math.round((totalOwed - totalPaidOut) * 100) / 100,
+    totalTransactions: txStats.txCount || 0,
+    usersServed: txStats.userCount || 0,
+  };
+}
+
+/** Get all sales with payouts for admin view — grouped by user */
+export function getAllSalesWithPayouts(): any[] {
+  // Get all users who have completed/paid transactions
+  const users = db.prepare(`
+    SELECT DISTINCT bt.user_hex_id, u.display_name, u.full_name
+    FROM buyback_transactions bt
+    LEFT JOIN users u ON bt.user_hex_id = u.nostr_hex_id
+    WHERE bt.status IN ('completed', 'paid')
+    ORDER BY bt.user_hex_id
+  `).all() as any[];
+
+  const getSales = db.prepare(`
+    SELECT * FROM buyback_transactions
+    WHERE user_hex_id = ? AND status IN ('completed', 'paid')
+    ORDER BY created_at DESC
+  `);
+
+  const getPayouts = db.prepare(`
+    SELECT * FROM sale_payouts WHERE transaction_id = ? ORDER BY paid_at ASC
+  `);
+
+  return users.map(user => {
+    const sales = getSales.all(user.user_hex_id) as any[];
+
+    return {
+      hexId: user.user_hex_id,
+      displayName: user.display_name || user.full_name || 'Anonymous',
+      sales: sales.map(sale => {
+        const payouts = getPayouts.all(sale.id) as any[];
+        const totalPaid = payouts.reduce((sum: number, p: any) => sum + p.amount, 0);
+        const remaining = Math.round((sale.net_fiat - totalPaid) * 100) / 100;
+
+        return {
+          id: sale.id,
+          lanaAmount: sale.lana_amount_display,
+          lanaAmountLanoshis: sale.lana_amount_lanoshis,
+          currency: sale.currency,
+          exchangeRate: sale.exchange_rate,
+          grossFiat: sale.gross_fiat,
+          commissionPercent: sale.commission_percent,
+          commissionFiat: sale.commission_fiat,
+          netFiat: sale.net_fiat,
+          txHash: sale.tx_hash,
+          status: sale.status,
+          createdAt: sale.created_at,
+          totalPaid: Math.round(totalPaid * 100) / 100,
+          remaining: remaining <= 0 ? 0 : remaining,
+          payouts: payouts.map(p => ({
+            id: p.id,
+            payoutId: p.payout_id,
+            amount: p.amount,
+            currency: p.currency,
+            paidToAccount: p.paid_to_account,
+            reference: p.reference,
+            note: p.note,
+            paidAt: p.paid_at,
+          })),
+        };
+      }),
+    };
+  });
 }
 
 export function closeDb(): void {

@@ -11,6 +11,7 @@ import Wallets from "./pages/Wallets";
 import AdminDashboard from "./pages/AdminDashboard";
 import AdminUsers from "./pages/AdminUsers";
 import AdminSettings from "./pages/AdminSettings";
+import AdminPayouts from "./pages/AdminPayouts";
 import SellLana from "./pages/SellLana";
 import NotFound from "./pages/NotFound";
 
@@ -30,6 +31,7 @@ const App = () => (
             <Route path="/wallets" element={<Wallets />} />
             <Route path="/sell" element={<SellLana />} />
             <Route path="/admin" element={<AdminDashboard />} />
+            <Route path="/admin/payouts" element={<AdminPayouts />} />
             <Route path="/admin/settings" element={<AdminSettings />} />
             <Route path="/admin/admins" element={<AdminUsers />} />
             <Route path="*" element={<NotFound />} />

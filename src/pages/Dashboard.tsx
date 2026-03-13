@@ -8,8 +8,10 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
 
 interface Payout {
   id: number;
+  payoutId: string;
   amount: number;
   currency: string;
+  paidToAccount: string | null;
   reference: string | null;
   note: string | null;
   paidAt: string;
@@ -368,21 +370,27 @@ const Dashboard = () => {
                                 <table className="w-full text-xs">
                                   <thead className="bg-muted/40">
                                     <tr>
+                                      <th className="text-left px-3 py-2 font-medium text-muted-foreground">Payout ID</th>
                                       <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
                                       <th className="text-right px-3 py-2 font-medium text-muted-foreground">Amount</th>
-                                      <th className="text-left px-3 py-2 font-medium text-muted-foreground hidden sm:table-cell">Reference</th>
+                                      <th className="text-left px-3 py-2 font-medium text-muted-foreground hidden sm:table-cell">Paid To</th>
                                       <th className="text-left px-3 py-2 font-medium text-muted-foreground hidden sm:table-cell">Note</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-border">
                                     {sale.payouts.map(payout => (
                                       <tr key={payout.id} className="hover:bg-muted/20">
+                                        <td className="px-3 py-2 font-mono text-foreground font-medium">{payout.payoutId}</td>
                                         <td className="px-3 py-2 text-foreground">{formatDate(payout.paidAt)}</td>
                                         <td className="px-3 py-2 text-right font-mono font-medium text-green-600">
                                           +{saleSym}{payout.amount.toFixed(2)}
                                         </td>
                                         <td className="px-3 py-2 font-mono text-muted-foreground hidden sm:table-cell">
-                                          {payout.reference || '—'}
+                                          {payout.paidToAccount
+                                            ? (payout.paidToAccount.length > 10
+                                                ? payout.paidToAccount.slice(0, 4) + '...' + payout.paidToAccount.slice(-4)
+                                                : payout.paidToAccount)
+                                            : '—'}
                                         </td>
                                         <td className="px-3 py-2 text-muted-foreground hidden sm:table-cell">
                                           {payout.note || '—'}
