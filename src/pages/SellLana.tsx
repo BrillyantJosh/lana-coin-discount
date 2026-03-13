@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
+
+const QrScanner = lazy(() => import('@/components/QrScanner'));
 
 interface RegisteredWallet {
   walletId: string;
@@ -74,7 +76,6 @@ const SellLana = () => {
   const [balances, setBalances] = useState<Record<string, number>>({});
   const [balancesLoading, setBalancesLoading] = useState(false);
   const [selectedWallet, setSelectedWallet] = useState<string>('');
-  const [manualAddress, setManualAddress] = useState('');
 
   // Step 2 state
   const [systemParams, setSystemParams] = useState<SystemParams | null>(null);
@@ -90,6 +91,7 @@ const SellLana = () => {
   // Step 4 state
   const [privateKey, setPrivateKey] = useState('');
   const [executing, setExecuting] = useState(false);
+  const [showQrScanner, setShowQrScanner] = useState(false);
 
   // Step 5 state
   const [txResult, setTxResult] = useState<any>(null);
@@ -173,7 +175,7 @@ const SellLana = () => {
     }
   };
 
-  const getSenderAddress = () => selectedWallet || manualAddress.trim();
+  const getSenderAddress = () => selectedWallet;
 
   const getPayoutInfo = () => {
     if (!selectedCurrency) return null;
@@ -274,7 +276,7 @@ const SellLana = () => {
         <div className="container mx-auto px-6 flex items-center justify-between h-16">
           <Link to="/dashboard" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
             <img src="/lana-logo.png" alt="Lana" className="h-8 w-8" />
-            Lana<span className="text-gold">.Discount</span>
+            <span>Lana<span className="text-gold">.Discount</span></span>
           </Link>
           <div className="flex items-center gap-4">
             <Link to="/dashboard" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
@@ -340,7 +342,7 @@ const SellLana = () => {
                         return (
                           <button
                             key={w.walletId}
-                            onClick={() => { setSelectedWallet(w.walletId); setManualAddress(''); }}
+                            onClick={() => setSelectedWallet(w.walletId)}
                             className={`w-full rounded-xl border-2 px-5 py-4 text-left transition-all ${
                               selectedWallet === w.walletId
                                 ? 'border-primary bg-primary/5'
@@ -393,23 +395,15 @@ const SellLana = () => {
                       })}
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground mb-4">
-                      No registered wallets found. Enter an address manually below.
-                    </p>
+                    <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 text-center">
+                      <p className="text-sm text-amber-700 font-medium mb-1">No registered wallets found</p>
+                      <p className="text-xs text-amber-600">
+                        Please register your wallets first via the{' '}
+                        <Link to="/wallets" className="underline font-medium hover:text-amber-800">Register Wallets</Link>{' '}
+                        page.
+                      </p>
+                    </div>
                   )}
-
-                  <div className="border-t border-border pt-4">
-                    <label className="block text-sm font-medium text-foreground mb-1.5">
-                      Or enter wallet address manually
-                    </label>
-                    <input
-                      type="text"
-                      value={manualAddress}
-                      onChange={e => { setManualAddress(e.target.value); setSelectedWallet(''); }}
-                      placeholder="L..."
-                      className="w-full rounded-lg border border-border bg-background px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
-                    />
-                  </div>
                 </div>
 
                 <div className="flex justify-between">
@@ -469,10 +463,13 @@ const SellLana = () => {
                         const info = getPayoutInfo();
                         if (!info) {
                           return (
-                            <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3">
-                              <p className="text-sm text-amber-700">
-                                No payout account found for {selectedCurrency} in your Nostr profile.
-                                Please update your profile with payment information.
+                            <div className="rounded-lg border border-red-200 bg-red-50/50 p-4">
+                              <p className="text-sm text-red-700 font-medium mb-1">
+                                No payout account found for {selectedCurrency}
+                              </p>
+                              <p className="text-xs text-red-600">
+                                Your Nostr profile does not contain payment information for this currency.
+                                Please update your profile with payout details (e.g. IBAN) before proceeding.
                               </p>
                             </div>
                           );
@@ -528,9 +525,9 @@ const SellLana = () => {
                   </button>
                   <button
                     onClick={() => setStep(3)}
-                    disabled={!selectedCurrency}
+                    disabled={!selectedCurrency || !getPayoutInfo()}
                     className={`rounded-xl px-6 py-3 font-semibold text-white transition-all ${
-                      selectedCurrency ? 'bg-primary hover:bg-primary/90 shadow-lg' : 'bg-muted-foreground/30 cursor-not-allowed'
+                      selectedCurrency && getPayoutInfo() ? 'bg-primary hover:bg-primary/90 shadow-lg' : 'bg-muted-foreground/30 cursor-not-allowed'
                     }`}
                   >
                     Next
@@ -673,17 +670,49 @@ const SellLana = () => {
                     <label className="block text-sm font-medium text-foreground mb-1.5">
                       WIF Private Key
                     </label>
-                    <input
-                      type="password"
-                      value={privateKey}
-                      onChange={e => setPrivateKey(e.target.value)}
-                      placeholder="Enter your WIF private key to authorize the transaction"
-                      className="w-full rounded-lg border border-border bg-background px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="password"
+                        value={privateKey}
+                        onChange={e => setPrivateKey(e.target.value)}
+                        placeholder="Enter your WIF private key"
+                        className="flex-1 rounded-lg border border-border bg-background px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowQrScanner(true)}
+                        className="rounded-lg border border-border bg-background px-4 py-3 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors flex items-center gap-1.5"
+                        title="Scan QR code"
+                      >
+                        <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 6.75h.75v.75h-.75v-.75zM6.75 16.5h.75v.75h-.75v-.75zM16.5 6.75h.75v.75h-.75v-.75zM13.5 13.5h.75v.75h-.75v-.75zM13.5 19.5h.75v.75h-.75v-.75zM19.5 13.5h.75v.75h-.75v-.75zM19.5 19.5h.75v.75h-.75v-.75zM16.5 16.5h3v3h-3v-3z" />
+                        </svg>
+                        <span className="text-sm font-medium hidden sm:inline">Scan</span>
+                      </button>
+                    </div>
                     <p className="mt-1.5 text-xs text-muted-foreground">
                       Your private key is used only to sign this transaction. It is never stored.
                     </p>
                   </div>
+
+                  {/* QR Scanner Modal */}
+                  {showQrScanner && (
+                    <Suspense fallback={
+                      <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center">
+                        <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                      </div>
+                    }>
+                      <QrScanner
+                        onScan={(value) => {
+                          setPrivateKey(value);
+                          setShowQrScanner(false);
+                          toast.success('QR code scanned successfully');
+                        }}
+                        onClose={() => setShowQrScanner(false)}
+                      />
+                    </Suspense>
+                  )}
                 </div>
 
                 <div className="flex justify-between">

@@ -62,7 +62,7 @@ const AdminDashboard = () => {
         <div className="container mx-auto px-6 flex items-center justify-between h-16">
           <Link to="/admin" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
             <img src="/lana-logo.png" alt="Lana" className="h-8 w-8" />
-            Lana<span className="text-gold">.Discount</span>
+            <span>Lana<span className="text-gold">.Discount</span></span>
             <span className="ml-2 text-xs font-mono bg-red-100 text-red-700 px-2 py-0.5 rounded-full uppercase tracking-wider">Admin</span>
           </Link>
           <div className="flex items-center gap-4">

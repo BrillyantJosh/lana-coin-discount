@@ -452,16 +452,42 @@ router.get('/system-params', (_req: Request, res: Response) => {
 /**
  * GET /api/user/:hexId/profile
  * Returns parsed KIND 0 profile including payment_methods.
+ * Fetches LIVE from Nostr relays to ensure fresh data (payment methods may have been
+ * added after the user logged in, so the cached raw_kind0 in DB can be stale).
  */
-router.get('/user/:hexId/profile', (req: Request, res: Response) => {
-  const user = db.prepare('SELECT raw_kind0 FROM users WHERE nostr_hex_id = ?').get(req.params.hexId) as any;
-  if (!user || !user.raw_kind0) {
-    return res.json({ profile: null });
-  }
+router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
+  const hexId = req.params.hexId;
   try {
-    const profile = JSON.parse(user.raw_kind0);
-    return res.json({ profile });
-  } catch {
+    const relays = getRelaysFromDb();
+    const kind0Event = await fetchKind0(hexId, relays);
+
+    if (kind0Event) {
+      const content = JSON.parse(kind0Event.content);
+
+      // Also update the cached raw_kind0 in DB so it stays fresh
+      db.prepare('UPDATE users SET raw_kind0 = ?, updated_at = datetime(\'now\') WHERE nostr_hex_id = ?')
+        .run(JSON.stringify(content), hexId);
+
+      return res.json({ profile: content });
+    }
+
+    // Fallback to cached DB data if relay fetch fails
+    const user = db.prepare('SELECT raw_kind0 FROM users WHERE nostr_hex_id = ?').get(hexId) as any;
+    if (user?.raw_kind0) {
+      const profile = JSON.parse(user.raw_kind0);
+      return res.json({ profile });
+    }
+
+    return res.json({ profile: null });
+  } catch (err) {
+    console.error('Profile fetch error:', err);
+    // Fallback to cached DB data on error
+    try {
+      const user = db.prepare('SELECT raw_kind0 FROM users WHERE nostr_hex_id = ?').get(hexId) as any;
+      if (user?.raw_kind0) {
+        return res.json({ profile: JSON.parse(user.raw_kind0) });
+      }
+    } catch {}
     return res.json({ profile: null });
   }
 });
