@@ -187,7 +187,7 @@ const Wallets = () => {
         <div className="container mx-auto px-6 flex items-center justify-between h-16">
           <Link to="/dashboard" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
             <img src="/lana-logo.png" alt="Lana" className="h-8 w-8" />
-            Lana<span className="text-gold">.discount</span>
+            Lana<span className="text-gold">.Discount</span>
           </Link>
           <div className="flex items-center gap-4">
             <Link to="/dashboard" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
@@ -342,7 +342,7 @@ const Wallets = () => {
 
       {/* Footer */}
       <footer className="border-t border-border py-6 text-center text-sm text-muted-foreground">
-        Lana.discount — Instant LanaCoin Buyback
+        Lana.Discount — Instant LanaCoin Buyback
       </footer>
     </div>
   );

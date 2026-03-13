@@ -3,11 +3,13 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
-interface WatchedWallet {
-  id: number;
-  wallet_id: string;
-  wallet_type: string | null;
-  note: string | null;
+interface RegisteredWallet {
+  walletId: string;
+  walletType: string;
+  note?: string;
+  amountUnregistered?: string;
+  status?: string;
+  freezeStatus?: string;
 }
 
 interface WalletBalance {
@@ -68,8 +70,9 @@ const SellLana = () => {
   const [loading, setLoading] = useState(true);
 
   // Step 1 state
-  const [wallets, setWallets] = useState<WatchedWallet[]>([]);
+  const [wallets, setWallets] = useState<RegisteredWallet[]>([]);
   const [balances, setBalances] = useState<Record<string, number>>({});
+  const [balancesLoading, setBalancesLoading] = useState(false);
   const [selectedWallet, setSelectedWallet] = useState<string>('');
   const [manualAddress, setManualAddress] = useState('');
 
@@ -105,9 +108,9 @@ const SellLana = () => {
     if (!session) return;
     setLoading(true);
     try {
-      // Fetch watched wallets, system params, and profile in parallel
+      // Fetch registered wallets (KIND 30889), system params, and profile in parallel
       const [walletsRes, paramsRes, profileRes] = await Promise.all([
-        fetch(`/api/user/${session.nostrHexId}/watched-wallets`),
+        fetch(`/api/user/${session.nostrHexId}/wallets`),
         fetch('/api/system-params'),
         fetch(`/api/user/${session.nostrHexId}/profile`),
       ]);
@@ -116,7 +119,7 @@ const SellLana = () => {
       const paramsData = await paramsRes.json();
       const profileData = await profileRes.json();
 
-      const fetchedWallets = walletsData.watchedWallets || [];
+      const fetchedWallets: RegisteredWallet[] = walletsData.wallets || [];
       setWallets(fetchedWallets);
       setSystemParams(paramsData);
 
@@ -135,20 +138,27 @@ const SellLana = () => {
         }
       }
 
-      // Fetch balances for all wallets
+      // Fetch live balances for all wallets
       if (fetchedWallets.length > 0) {
-        const addresses = fetchedWallets.map((w: WatchedWallet) => w.wallet_id);
-        const balRes = await fetch('/api/wallets/balances', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ addresses }),
-        });
-        const balData = await balRes.json();
-        const balMap: Record<string, number> = {};
-        (balData.balances || []).forEach((b: WalletBalance) => {
-          balMap[b.wallet_id] = b.balance;
-        });
-        setBalances(balMap);
+        setBalancesLoading(true);
+        try {
+          const addresses = fetchedWallets.map((w: RegisteredWallet) => w.walletId);
+          const balRes = await fetch('/api/wallets/balances', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ addresses }),
+          });
+          const balData = await balRes.json();
+          const balMap: Record<string, number> = {};
+          (balData.balances || []).forEach((b: WalletBalance) => {
+            balMap[b.wallet_id] = b.balance;
+          });
+          setBalances(balMap);
+        } catch (e) {
+          console.error('Balance fetch failed:', e);
+        } finally {
+          setBalancesLoading(false);
+        }
       }
 
       // Pre-select first active currency
@@ -264,7 +274,7 @@ const SellLana = () => {
         <div className="container mx-auto px-6 flex items-center justify-between h-16">
           <Link to="/dashboard" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
             <img src="/lana-logo.png" alt="Lana" className="h-8 w-8" />
-            Lana<span className="text-gold">.discount</span>
+            Lana<span className="text-gold">.Discount</span>
           </Link>
           <div className="flex items-center gap-4">
             <Link to="/dashboard" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
@@ -324,37 +334,63 @@ const SellLana = () => {
 
                   {wallets.length > 0 ? (
                     <div className="space-y-3 mb-6">
-                      {wallets.map(w => (
-                        <button
-                          key={w.wallet_id}
-                          onClick={() => { setSelectedWallet(w.wallet_id); setManualAddress(''); }}
-                          className={`w-full rounded-xl border-2 px-4 py-4 text-left transition-all ${
-                            selectedWallet === w.wallet_id
-                              ? 'border-primary bg-primary/5'
-                              : 'border-border hover:border-muted-foreground/30'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className="font-mono text-sm font-medium text-foreground">
-                                {w.wallet_id.slice(0, 12)}...{w.wallet_id.slice(-8)}
+                      {wallets.map(w => {
+                        const shortAddr = w.walletId.slice(0, 10) + '...' + w.walletId.slice(-6);
+                        const isFrozen = !!w.freezeStatus;
+                        return (
+                          <button
+                            key={w.walletId}
+                            onClick={() => { setSelectedWallet(w.walletId); setManualAddress(''); }}
+                            className={`w-full rounded-xl border-2 px-5 py-4 text-left transition-all ${
+                              selectedWallet === w.walletId
+                                ? 'border-primary bg-primary/5'
+                                : 'border-border hover:border-muted-foreground/30'
+                            } ${isFrozen ? 'opacity-60' : ''}`}
+                          >
+                            <div className="flex items-start gap-4">
+                              {/* Wallet info */}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="font-mono text-sm font-medium text-foreground">{shortAddr}</span>
+                                  {isFrozen && (
+                                    <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                                      Frozen
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                                  <span className="inline-flex items-center gap-1">
+                                    <span className="font-medium text-foreground/70">Type:</span>
+                                    {w.walletType}
+                                  </span>
+                                  {w.note && (
+                                    <span className="inline-flex items-center gap-1">
+                                      <span className="font-medium text-foreground/70">Note:</span>
+                                      {w.note}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                              {w.wallet_type && (
-                                <span className="text-xs text-muted-foreground">{w.wallet_type}</span>
-                              )}
-                              {w.note && (
-                                <span className="text-xs text-muted-foreground ml-2">({w.note})</span>
-                              )}
-                            </div>
-                            <div className="text-right">
-                              <div className="text-lg font-bold font-mono text-foreground">
-                                {(balances[w.wallet_id] || 0).toLocaleString()}
+
+                              {/* Balance */}
+                              <div className="text-right flex-shrink-0">
+                                {balancesLoading && balances[w.walletId] === undefined ? (
+                                  <div className="h-4 w-20 animate-pulse bg-muted rounded" />
+                                ) : balances[w.walletId] !== undefined ? (
+                                  <div>
+                                    <span className="font-mono text-sm font-bold text-foreground">
+                                      {balances[w.walletId].toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground ml-1">LANA</span>
+                                  </div>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">—</span>
+                                )}
                               </div>
-                              <div className="text-xs text-muted-foreground">LANA</div>
                             </div>
-                          </div>
-                        </button>
-                      ))}
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="text-sm text-muted-foreground mb-4">
@@ -747,7 +783,7 @@ const SellLana = () => {
 
       {/* Footer */}
       <footer className="border-t border-border py-6 text-center text-sm text-muted-foreground">
-        Lana.discount — Instant LanaCoin Buyback
+        Lana.Discount — Instant LanaCoin Buyback
       </footer>
     </div>
   );

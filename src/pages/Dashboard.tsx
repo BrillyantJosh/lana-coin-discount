@@ -22,7 +22,7 @@ const Dashboard = () => {
         <div className="container mx-auto px-6 flex items-center justify-between h-16">
           <a href="/" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
             <img src="/lana-logo.png" alt="Lana" className="h-8 w-8" />
-            Lana<span className="text-gold">.discount</span>
+            Lana<span className="text-gold">.Discount</span>
           </a>
           <div className="flex items-center gap-4">
             <div className="hidden sm:flex items-center gap-2">
@@ -134,7 +134,7 @@ const Dashboard = () => {
 
       {/* Footer */}
       <footer className="border-t border-border py-6 text-center text-sm text-muted-foreground">
-        Lana.discount — Instant LanaCoin Buyback
+        Lana.Discount — Instant LanaCoin Buyback
       </footer>
     </div>
   );

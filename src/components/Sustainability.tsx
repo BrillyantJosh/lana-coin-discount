@@ -12,7 +12,7 @@ const Sustainability = () => {
             Your Discount Powers <span className="text-primary">Sustainable Commerce</span>
           </h2>
           <p className="text-lg text-muted-foreground leading-relaxed mb-10">
-            By selling through Lana.discount, your 30% discount directly supports sustainable 
+            By selling through Lana.Discount, your 30% discount directly supports sustainable 
             shopping and eco-conscious merchants. Every coin you sell helps build a greener 
             economy — perhaps making a bigger impact than you realize.
           </p>
