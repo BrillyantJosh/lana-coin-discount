@@ -17,6 +17,7 @@ interface BuybackStats {
     date: string;
     user: string;
     hexId: string;
+    fullHexId: string;
     lanaAmount: number;
     eurPayout: number;
     currency?: string;
@@ -29,6 +30,7 @@ const AdminDashboard = () => {
   const navigate = useNavigate();
   const [stats, setStats] = useState<BuybackStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [resolvedNames, setResolvedNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -46,6 +48,30 @@ const AdminDashboard = () => {
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         setStats(data);
+
+        // Resolve names for Anonymous users via payout-account endpoint
+        const anonymousTxs = (data.recentTransactions || []).filter(
+          (tx: any) => tx.user === 'Anonymous' && tx.fullHexId
+        );
+        // Deduplicate by fullHexId
+        const uniqueHexIds = [...new Set(anonymousTxs.map((tx: any) => tx.fullHexId))] as string[];
+        if (uniqueHexIds.length > 0) {
+          const names: Record<string, string> = {};
+          await Promise.all(
+            uniqueHexIds.map(async (hexId) => {
+              try {
+                const accRes = await fetch(`/api/user/${hexId}/payout-account`);
+                const accData = await accRes.json();
+                if (accData.payoutAccount?.fields?.account_holder) {
+                  names[hexId] = accData.payoutAccount.fields.account_holder;
+                }
+              } catch {}
+            })
+          );
+          if (Object.keys(names).length > 0) {
+            setResolvedNames(names);
+          }
+        }
       } catch (err) {
         console.error('Failed to fetch admin stats:', err);
         toast.error('Failed to load dashboard stats');
@@ -56,6 +82,13 @@ const AdminDashboard = () => {
 
     fetchStats();
   }, [session, isAdmin]);
+
+  /** Resolve user display name, falling back to payout account holder */
+  const getUserName = (tx: BuybackStats['recentTransactions'][0]) => {
+    if (tx.user !== 'Anonymous') return tx.user;
+    if (tx.fullHexId && resolvedNames[tx.fullHexId]) return resolvedNames[tx.fullHexId];
+    return 'Anonymous';
+  };
 
   if (authLoading || !session || !isAdmin) return null;
 
@@ -189,30 +222,40 @@ const AdminDashboard = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {stats.recentTransactions.map(tx => (
-                      <tr key={tx.id} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                        <td className="px-6 py-4 text-foreground">{tx.date}</td>
-                        <td className="px-6 py-4">
-                          <div className="text-foreground font-medium">{tx.user}</div>
-                          <div className="text-xs text-muted-foreground font-mono">{tx.hexId}</div>
-                        </td>
-                        <td className="px-6 py-4 text-right font-mono text-foreground">
-                          {tx.lanaAmount.toLocaleString()}
-                        </td>
-                        <td className="px-6 py-4 text-right font-mono text-foreground">
-                          {tx.eurPayout.toFixed(2)} {tx.currency || 'EUR'}
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
-                            tx.status === 'paid'
-                              ? 'bg-green-100 text-green-700'
-                              : 'bg-amber-100 text-amber-700'
-                          }`}>
-                            {tx.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                    {[...stats.recentTransactions]
+                      .sort((a, b) => {
+                        // Unpaid/completed first, paid last
+                        if (a.status === 'paid' && b.status !== 'paid') return 1;
+                        if (a.status !== 'paid' && b.status === 'paid') return -1;
+                        return 0;
+                      })
+                      .map(tx => {
+                        const isPaid = tx.status === 'paid';
+                        return (
+                          <tr key={tx.id} className={`border-b border-border/50 transition-colors ${isPaid ? 'opacity-40' : 'hover:bg-muted/20'}`}>
+                            <td className="px-6 py-4 text-foreground">{tx.date}</td>
+                            <td className="px-6 py-4">
+                              <div className={`font-medium ${isPaid ? 'text-muted-foreground' : 'text-foreground'}`}>{getUserName(tx)}</div>
+                              <div className="text-xs text-muted-foreground font-mono">{tx.hexId}</div>
+                            </td>
+                            <td className={`px-6 py-4 text-right font-mono ${isPaid ? 'text-muted-foreground' : 'text-foreground'}`}>
+                              {tx.lanaAmount.toLocaleString()}
+                            </td>
+                            <td className={`px-6 py-4 text-right font-mono ${isPaid ? 'text-muted-foreground' : 'text-foreground'}`}>
+                              {tx.eurPayout.toFixed(2)} {tx.currency || 'EUR'}
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+                                isPaid
+                                  ? 'bg-green-100 text-green-700'
+                                  : 'bg-amber-100 text-amber-700'
+                              }`}>
+                                {tx.status}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                   </tbody>
                 </table>
               </div>

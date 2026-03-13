@@ -209,16 +209,27 @@ const AdminPayouts = () => {
   if (authLoading || !session || !isAdmin) return null;
 
   // Sort sales within each user: unpaid/partial first, then fully paid
-  const sortedUsers = users.map(user => ({
-    ...user,
-    sales: [...user.sales].sort((a, b) => {
-      // Paid last
-      if (a.status === 'paid' && b.status !== 'paid') return 1;
-      if (a.status !== 'paid' && b.status === 'paid') return -1;
-      // Among same status, most remaining first
-      return b.remaining - a.remaining;
-    }),
-  }));
+  // Sort users: those with remaining > 0 first, fully paid last
+  const sortedUsers = users.map(user => {
+    const totalOwed = user.sales.reduce((s, sale) => s + sale.netFiat, 0);
+    const totalPaid = user.sales.reduce((s, sale) => s + sale.totalPaid, 0);
+    const remaining = Math.round((totalOwed - totalPaid) * 100) / 100;
+    return {
+      ...user,
+      _remaining: remaining,
+      sales: [...user.sales].sort((a, b) => {
+        if (a.status === 'paid' && b.status !== 'paid') return 1;
+        if (a.status !== 'paid' && b.status === 'paid') return -1;
+        return b.remaining - a.remaining;
+      }),
+    };
+  }).sort((a, b) => {
+    // Users with remaining > 0 first
+    if (a._remaining > 0 && b._remaining <= 0) return -1;
+    if (a._remaining <= 0 && b._remaining > 0) return 1;
+    // Among same group, highest remaining first
+    return b._remaining - a._remaining;
+  });
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -291,7 +302,7 @@ const AdminPayouts = () => {
               const displayName = resolveDisplayName(user);
 
               return (
-                <div key={user.hexId} className="rounded-2xl border-2 border-border bg-card overflow-hidden">
+                <div key={user.hexId} className={`rounded-2xl border-2 border-border bg-card overflow-hidden ${userRemaining <= 0 ? 'opacity-40' : ''}`}>
                   {/* User header */}
                   <button
                     onClick={() => setExpandedUser(isUserExpanded ? null : user.hexId)}
@@ -307,7 +318,7 @@ const AdminPayouts = () => {
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="font-bold text-foreground">{displayName}</span>
+                          <span className={`font-bold ${userRemaining > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>{displayName}</span>
                           <span className="text-xs text-muted-foreground font-mono">
                             {user.hexId.slice(0, 8)}...{user.hexId.slice(-6)}
                           </span>
@@ -322,20 +333,10 @@ const AdminPayouts = () => {
                         )}
                       </div>
 
-                      <div className="flex items-center gap-6 flex-shrink-0">
-                        <div className="text-right">
-                          <div className="text-xs text-muted-foreground">Owed</div>
-                          <div className="font-mono font-bold text-foreground">{sym}{userTotalOwed.toFixed(2)}</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-xs text-muted-foreground">Paid</div>
-                          <div className="font-mono font-bold text-green-600">{sym}{userTotalPaid.toFixed(2)}</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-xs text-muted-foreground">Remaining</div>
-                          <div className={`font-mono font-bold text-lg ${userRemaining > 0 ? 'text-amber-600' : 'text-green-600'}`}>
-                            {sym}{userRemaining.toFixed(2)}
-                          </div>
+                      <div className="text-right flex-shrink-0">
+                        <div className="text-xs text-muted-foreground">Remaining</div>
+                        <div className={`font-mono font-bold text-xl ${userRemaining > 0 ? 'text-amber-600' : 'text-muted-foreground'}`}>
+                          {sym}{userRemaining.toFixed(2)}
                         </div>
                       </div>
                     </div>
