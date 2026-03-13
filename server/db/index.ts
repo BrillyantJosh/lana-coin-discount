@@ -53,7 +53,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS watched_wallets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_hex_id TEXT NOT NULL REFERENCES users(nostr_hex_id),
+    user_hex_id TEXT NOT NULL,
     wallet_id TEXT NOT NULL,
     wallet_type TEXT,
     note TEXT,
