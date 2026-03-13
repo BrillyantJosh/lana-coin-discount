@@ -286,9 +286,10 @@ router.get('/admin/stats', async (_req: Request, res: Response) => {
       try {
         const electrumServers = getElectrumServersFromDb();
         const balances = await fetchBatchBalances(electrumServers, [buybackWalletId]);
-        const bal = balances[buybackWalletId];
-        if (bal) {
-          buybackWalletBalance = (bal.confirmed + bal.unconfirmed) / 100000000; // lanoshis to LANA
+        // fetchBatchBalances returns WalletBalance[] — get the first (and only) entry
+        const bal = balances[0];
+        if (bal && !bal.error) {
+          buybackWalletBalance = bal.balance; // already converted from lanoshis to LANA
         }
       } catch (err) {
         console.error('Failed to fetch buyback wallet balance:', err);
