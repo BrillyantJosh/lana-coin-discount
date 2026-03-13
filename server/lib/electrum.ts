@@ -41,6 +41,60 @@ async function connectElectrum(servers: ElectrumServer[], maxRetries = 2): Promi
 }
 
 /**
+ * Single Electrum JSON-RPC call (for UTXO fetch, raw tx, broadcast, etc.)
+ */
+export async function electrumCall(
+  method: string,
+  params: any[],
+  servers: ElectrumServer[],
+  timeout = 30000
+): Promise<any> {
+  let socket: net.Socket | null = null;
+  try {
+    socket = await connectElectrum(servers);
+    const request = { id: Date.now(), method, params };
+    const requestData = JSON.stringify(request) + '\n';
+
+    return await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Electrum call timeout after ${timeout}ms`));
+      }, timeout);
+
+      let responseText = '';
+
+      socket!.on('data', (data: Buffer) => {
+        responseText += data.toString();
+        if (responseText.includes('\n')) {
+          clearTimeout(timer);
+          try {
+            responseText = responseText.trim();
+            const response = JSON.parse(responseText);
+            if (response.error) {
+              reject(new Error(`Electrum error: ${JSON.stringify(response.error)}`));
+            } else {
+              resolve(response.result);
+            }
+          } catch (e) {
+            reject(new Error(`Failed to parse Electrum response: ${e}`));
+          }
+        }
+      });
+
+      socket!.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+
+      socket!.write(requestData);
+    });
+  } finally {
+    if (socket) {
+      try { socket.destroy(); } catch {}
+    }
+  }
+}
+
+/**
  * Batch fetch balances for multiple wallet addresses over a single TCP connection.
  * Converts lanoshis to LANA (÷ 100,000,000), rounds to 2 decimal places.
  */

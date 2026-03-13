@@ -59,7 +59,7 @@ const Dashboard = () => {
         {/* Two main options */}
         <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
           {/* Option 1: Sell Registered Lana */}
-          <div className="group relative rounded-2xl border-2 border-border bg-card p-8 hover:border-primary transition-colors cursor-pointer">
+          <Link to="/sell" className="group relative rounded-2xl border-2 border-border bg-card p-8 hover:border-primary transition-colors cursor-pointer block">
             <div className="space-y-4">
               <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center">
                 <svg className="h-7 w-7 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -80,7 +80,7 @@ const Dashboard = () => {
                 </span>
               </div>
             </div>
-          </div>
+          </Link>
 
           {/* Option 2: Register Wallets for Monitoring */}
           <Link to="/wallets" className="group relative rounded-2xl border-2 border-border bg-card p-8 hover:border-primary transition-colors cursor-pointer block">

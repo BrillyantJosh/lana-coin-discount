@@ -77,9 +77,33 @@ db.exec(`
     updated_by TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS buyback_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_hex_id TEXT NOT NULL,
+    sender_wallet_id TEXT NOT NULL,
+    buyback_wallet_id TEXT NOT NULL,
+    lana_amount_lanoshis INTEGER NOT NULL,
+    lana_amount_display REAL NOT NULL,
+    currency TEXT NOT NULL,
+    exchange_rate REAL NOT NULL,
+    split TEXT,
+    gross_fiat REAL NOT NULL,
+    commission_percent REAL NOT NULL DEFAULT 30,
+    commission_fiat REAL NOT NULL,
+    net_fiat REAL NOT NULL,
+    tx_hash TEXT,
+    tx_fee_lanoshis INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+  );
+
   CREATE INDEX IF NOT EXISTS idx_users_wallet_id ON users(wallet_id);
   CREATE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name);
   CREATE INDEX IF NOT EXISTS idx_watched_wallets_user ON watched_wallets(user_hex_id);
+  CREATE INDEX IF NOT EXISTS idx_buyback_user ON buyback_transactions(user_hex_id);
+  CREATE INDEX IF NOT EXISTS idx_buyback_status ON buyback_transactions(status);
 `);
 
 // --- Seed kind_38888 with bootstrap fallback data ---
@@ -223,6 +247,94 @@ export function setAppSetting(key: string, value: string, updatedBy: string): vo
       updated_at = datetime('now'),
       updated_by = excluded.updated_by
   `).run(key, value, updatedBy);
+}
+
+export function getExchangeRatesFromDb(): Record<string, number> {
+  const row = db.prepare('SELECT exchange_rates FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
+  if (row?.exchange_rates) {
+    try { return JSON.parse(row.exchange_rates); } catch {}
+  }
+  return { EUR: 0.00001 };
+}
+
+export function getSplitFromDb(): string | null {
+  const row = db.prepare('SELECT split FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
+  return row?.split ?? null;
+}
+
+export interface BuybackTransactionData {
+  user_hex_id: string;
+  sender_wallet_id: string;
+  buyback_wallet_id: string;
+  lana_amount_lanoshis: number;
+  lana_amount_display: number;
+  currency: string;
+  exchange_rate: number;
+  split: string | null;
+  gross_fiat: number;
+  commission_percent: number;
+  commission_fiat: number;
+  net_fiat: number;
+  tx_hash?: string;
+  tx_fee_lanoshis?: number;
+  status: string;
+  error_message?: string;
+}
+
+export function insertBuybackTransaction(data: BuybackTransactionData): number {
+  const result = db.prepare(`
+    INSERT INTO buyback_transactions (
+      user_hex_id, sender_wallet_id, buyback_wallet_id,
+      lana_amount_lanoshis, lana_amount_display, currency, exchange_rate,
+      split, gross_fiat, commission_percent, commission_fiat, net_fiat,
+      tx_hash, tx_fee_lanoshis, status, error_message,
+      completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${data.status === 'completed' ? "datetime('now')" : 'NULL'})
+  `).run(
+    data.user_hex_id, data.sender_wallet_id, data.buyback_wallet_id,
+    data.lana_amount_lanoshis, data.lana_amount_display, data.currency, data.exchange_rate,
+    data.split, data.gross_fiat, data.commission_percent, data.commission_fiat, data.net_fiat,
+    data.tx_hash || null, data.tx_fee_lanoshis || null, data.status, data.error_message || null
+  );
+  return Number(result.lastInsertRowid);
+}
+
+export function getUserBuybackTransactions(hexId: string): any[] {
+  return db.prepare('SELECT * FROM buyback_transactions WHERE user_hex_id = ? ORDER BY created_at DESC').all(hexId) as any[];
+}
+
+export function getBuybackStats(): {
+  totalLanaBoughtBack: number;
+  totalEurOwed: number;
+  totalTransactions: number;
+  usersServed: number;
+} {
+  const stats = db.prepare(`
+    SELECT
+      COALESCE(SUM(lana_amount_display), 0) as totalLana,
+      COALESCE(SUM(net_fiat), 0) as totalFiat,
+      COUNT(*) as txCount,
+      COUNT(DISTINCT user_hex_id) as userCount
+    FROM buyback_transactions
+    WHERE status = 'completed'
+  `).get() as any;
+
+  return {
+    totalLanaBoughtBack: stats.totalLana || 0,
+    totalEurOwed: Math.round((stats.totalFiat || 0) * 100) / 100,
+    totalTransactions: stats.txCount || 0,
+    usersServed: stats.userCount || 0,
+  };
+}
+
+export function getRecentBuybackTransactions(limit = 20): any[] {
+  return db.prepare(`
+    SELECT bt.*, u.display_name, u.full_name
+    FROM buyback_transactions bt
+    LEFT JOIN users u ON bt.user_hex_id = u.nostr_hex_id
+    ORDER BY bt.created_at DESC
+    LIMIT ?
+  `).all(limit) as any[];
 }
 
 export function closeDb(): void {

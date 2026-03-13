@@ -11,6 +11,7 @@ import Wallets from "./pages/Wallets";
 import AdminDashboard from "./pages/AdminDashboard";
 import AdminUsers from "./pages/AdminUsers";
 import AdminSettings from "./pages/AdminSettings";
+import SellLana from "./pages/SellLana";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -27,6 +28,7 @@ const App = () => (
             <Route path="/login" element={<Login />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/wallets" element={<Wallets />} />
+            <Route path="/sell" element={<SellLana />} />
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/admin/settings" element={<AdminSettings />} />
             <Route path="/admin/admins" element={<AdminUsers />} />

@@ -15,6 +15,7 @@ interface BuybackStats {
     hexId: string;
     lanaAmount: number;
     eurPayout: number;
+    currency?: string;
     status: string;
   }>;
 }
@@ -159,7 +160,7 @@ const AdminDashboard = () => {
                           {tx.lanaAmount.toLocaleString()}
                         </td>
                         <td className="px-6 py-4 text-right font-mono text-foreground">
-                          €{tx.eurPayout.toFixed(2)}
+                          {tx.eurPayout.toFixed(2)} {tx.currency || 'EUR'}
                         </td>
                         <td className="px-6 py-4 text-center">
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${

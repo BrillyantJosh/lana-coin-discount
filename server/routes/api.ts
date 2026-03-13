@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
-import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting } from '../db/index.js';
+import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions } from '../db/index.js';
+import { sendLanaTransaction } from '../lib/transaction.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets } from '../lib/nostr.js';
 import { fetchBatchBalances } from '../lib/electrum.js';
 
@@ -262,22 +263,24 @@ router.get('/admin/stats', (_req: Request, res: Response) => {
   const adminHex = requireAdmin(_req, res);
   if (!adminHex) return;
 
-  // Mock buyback data
-  const stats = {
-    totalLanaBoughtBack: 2_450_000,
-    totalEurOwed: 19.60,
-    totalTransactions: 12,
-    usersServed: 5,
-    recentTransactions: [
-      { id: 1, date: '2026-03-10', user: 'Brilly(ant) Josh', hexId: '56e8670a...a362061', lanaAmount: 500_000, eurPayout: 4.00, status: 'paid' },
-      { id: 2, date: '2026-03-09', user: 'LanaFan42', hexId: 'a1b2c3d4...e5f6a7b8', lanaAmount: 350_000, eurPayout: 2.80, status: 'paid' },
-      { id: 3, date: '2026-03-08', user: 'CryptoMax', hexId: 'f9e8d7c6...b5a49382', lanaAmount: 600_000, eurPayout: 4.80, status: 'pending' },
-      { id: 4, date: '2026-03-07', user: 'SatoshiSi', hexId: '11223344...55667788', lanaAmount: 200_000, eurPayout: 1.60, status: 'paid' },
-      { id: 5, date: '2026-03-05', user: 'NodeRunner', hexId: 'aabbccdd...eeff0011', lanaAmount: 800_000, eurPayout: 6.40, status: 'pending' },
-    ],
-  };
+  const stats = getBuybackStats();
+  const recentTxs = getRecentBuybackTransactions(10);
 
-  return res.json(stats);
+  const recentTransactions = recentTxs.map((tx: any) => ({
+    id: tx.id,
+    date: tx.created_at?.split('T')[0] || tx.created_at?.split(' ')[0] || '',
+    user: tx.display_name || tx.full_name || 'Anonymous',
+    hexId: tx.user_hex_id.slice(0, 8) + '...' + tx.user_hex_id.slice(-6),
+    lanaAmount: tx.lana_amount_display,
+    eurPayout: tx.net_fiat,
+    currency: tx.currency,
+    status: tx.status,
+  }));
+
+  return res.json({
+    ...stats,
+    recentTransactions,
+  });
 });
 
 /**
@@ -417,6 +420,235 @@ router.put('/admin/settings', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Update settings error:', error);
     return res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// System params & Sell endpoints
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/system-params
+ * Public — exchange rates, active currencies, buyback wallet, commission.
+ */
+router.get('/system-params', (_req: Request, res: Response) => {
+  const exchangeRates = getExchangeRatesFromDb();
+  const split = getSplitFromDb();
+  let activeCurrencies: string[] = ['EUR'];
+  try {
+    activeCurrencies = JSON.parse(getAppSetting('active_currencies') || '["EUR"]');
+  } catch {}
+  const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
+
+  return res.json({
+    exchangeRates,
+    split,
+    activeCurrencies,
+    buybackWalletId,
+    commissionPercent: 30,
+  });
+});
+
+/**
+ * GET /api/user/:hexId/profile
+ * Returns parsed KIND 0 profile including payment_methods.
+ */
+router.get('/user/:hexId/profile', (req: Request, res: Response) => {
+  const user = db.prepare('SELECT raw_kind0 FROM users WHERE nostr_hex_id = ?').get(req.params.hexId) as any;
+  if (!user || !user.raw_kind0) {
+    return res.json({ profile: null });
+  }
+  try {
+    const profile = JSON.parse(user.raw_kind0);
+    return res.json({ profile });
+  } catch {
+    return res.json({ profile: null });
+  }
+});
+
+/**
+ * POST /api/sell/preview
+ * Calculate payout preview before execution.
+ */
+router.post('/sell/preview', (req: Request, res: Response) => {
+  try {
+    const { lanaAmount, currency } = req.body;
+
+    if (!lanaAmount || lanaAmount <= 0) {
+      return res.status(400).json({ error: 'Invalid LANA amount' });
+    }
+    if (!currency) {
+      return res.status(400).json({ error: 'Currency is required' });
+    }
+
+    // Check currency is active
+    let activeCurrencies: string[] = ['EUR'];
+    try { activeCurrencies = JSON.parse(getAppSetting('active_currencies') || '["EUR"]'); } catch {}
+    if (!activeCurrencies.includes(currency)) {
+      return res.status(400).json({ error: `Currency ${currency} is not active` });
+    }
+
+    // Check buyback wallet configured
+    const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
+    if (!buybackWalletId) {
+      return res.status(400).json({ error: 'Buyback wallet not configured. Contact admin.' });
+    }
+
+    // Get exchange rate
+    const exchangeRates = getExchangeRatesFromDb();
+    const exchangeRate = exchangeRates[currency];
+    if (!exchangeRate) {
+      return res.status(400).json({ error: `No exchange rate available for ${currency}` });
+    }
+
+    const split = getSplitFromDb();
+    const lanaAmountLanoshis = Math.floor(lanaAmount * 100000000);
+    const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
+    const commissionPercent = 30;
+    const commissionFiat = Math.round(grossFiat * commissionPercent / 100 * 100) / 100;
+    const netFiat = Math.round((grossFiat - commissionFiat) * 100) / 100;
+
+    // Estimate fee (1 input, 2 outputs is typical)
+    const estimatedFee = Math.floor((1 * 180 + 2 * 34 + 10) * 100 * 1.5);
+
+    return res.json({
+      lanaAmount,
+      lanaAmountLanoshis,
+      currency,
+      exchangeRate,
+      split,
+      grossFiat,
+      commissionPercent,
+      commissionFiat,
+      netFiat,
+      buybackWalletId,
+      estimatedFee,
+    });
+  } catch (error) {
+    console.error('Sell preview error:', error);
+    return res.status(500).json({ error: 'Failed to calculate preview' });
+  }
+});
+
+/**
+ * POST /api/sell/execute
+ * Execute the buyback transaction.
+ */
+router.post('/sell/execute', async (req: Request, res: Response) => {
+  try {
+    const { hexId, senderAddress, lanaAmount, currency, privateKey } = req.body;
+
+    if (!hexId || !senderAddress || !lanaAmount || !currency || !privateKey) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (lanaAmount <= 0) {
+      return res.status(400).json({ error: 'Invalid LANA amount' });
+    }
+
+    // Validate currency
+    let activeCurrencies: string[] = ['EUR'];
+    try { activeCurrencies = JSON.parse(getAppSetting('active_currencies') || '["EUR"]'); } catch {}
+    if (!activeCurrencies.includes(currency)) {
+      return res.status(400).json({ error: `Currency ${currency} is not active` });
+    }
+
+    // Validate buyback wallet
+    const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
+    if (!buybackWalletId) {
+      return res.status(400).json({ error: 'Buyback wallet not configured' });
+    }
+
+    // Get exchange rate
+    const exchangeRates = getExchangeRatesFromDb();
+    const exchangeRate = exchangeRates[currency];
+    if (!exchangeRate) {
+      return res.status(400).json({ error: `No exchange rate for ${currency}` });
+    }
+
+    const split = getSplitFromDb();
+    const lanaAmountLanoshis = Math.floor(lanaAmount * 100000000);
+    const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
+    const commissionPercent = 30;
+    const commissionFiat = Math.round(grossFiat * commissionPercent / 100 * 100) / 100;
+    const netFiat = Math.round((grossFiat - commissionFiat) * 100) / 100;
+
+    // Get Electrum servers
+    const electrumServers = getElectrumServersFromDb();
+
+    console.log(`[lana-discount] Sell execute: ${lanaAmount} LANA from ${senderAddress} to ${buybackWalletId}`);
+
+    // Execute transaction
+    const txResult = await sendLanaTransaction({
+      senderAddress,
+      recipientAddress: buybackWalletId,
+      amount: lanaAmount,
+      privateKey,
+      electrumServers,
+    });
+
+    if (txResult.success) {
+      // Record successful transaction
+      const txId = insertBuybackTransaction({
+        user_hex_id: hexId,
+        sender_wallet_id: senderAddress,
+        buyback_wallet_id: buybackWalletId,
+        lana_amount_lanoshis: lanaAmountLanoshis,
+        lana_amount_display: lanaAmount,
+        currency,
+        exchange_rate: exchangeRate,
+        split,
+        gross_fiat: grossFiat,
+        commission_percent: commissionPercent,
+        commission_fiat: commissionFiat,
+        net_fiat: netFiat,
+        tx_hash: txResult.txHash,
+        tx_fee_lanoshis: txResult.fee,
+        status: 'completed',
+      });
+
+      console.log(`[lana-discount] Sell completed: TX ${txResult.txHash}, ID ${txId}`);
+
+      return res.json({
+        success: true,
+        txHash: txResult.txHash,
+        lanaAmount,
+        currency,
+        grossFiat,
+        commissionFiat,
+        netFiat,
+        fee: txResult.fee,
+        transactionId: txId,
+      });
+    } else {
+      // Record failed transaction
+      const txId = insertBuybackTransaction({
+        user_hex_id: hexId,
+        sender_wallet_id: senderAddress,
+        buyback_wallet_id: buybackWalletId,
+        lana_amount_lanoshis: lanaAmountLanoshis,
+        lana_amount_display: lanaAmount,
+        currency,
+        exchange_rate: exchangeRate,
+        split,
+        gross_fiat: grossFiat,
+        commission_percent: commissionPercent,
+        commission_fiat: commissionFiat,
+        net_fiat: netFiat,
+        status: 'failed',
+        error_message: txResult.error,
+      });
+
+      console.error(`[lana-discount] Sell failed: ${txResult.error}, ID ${txId}`);
+
+      return res.status(400).json({
+        success: false,
+        error: txResult.error,
+        transactionId: txId,
+      });
+    }
+  } catch (error) {
+    console.error('Sell execute error:', error);
+    return res.status(500).json({ error: 'Failed to execute transaction' });
   }
 });
 
