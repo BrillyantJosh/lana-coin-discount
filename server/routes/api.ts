@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins } from '../db/index.js';
+import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting } from '../db/index.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets } from '../lib/nostr.js';
 import { fetchBatchBalances } from '../lib/electrum.js';
 
@@ -353,6 +353,70 @@ router.delete('/admin/users/:hexId', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Remove admin error:', error);
     return res.status(500).json({ error: 'Failed to remove admin' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// App Settings endpoints
+// ---------------------------------------------------------------------------
+
+const AVAILABLE_CURRENCIES = ['EUR', 'USD', 'GBP', 'CHF', 'CZK', 'PLN', 'HRK', 'RSD', 'HUF', 'BAM'];
+
+/**
+ * GET /api/admin/settings
+ * Get all app settings.
+ */
+router.get('/admin/settings', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  const settings = getAllAppSettings();
+  return res.json({
+    settings,
+    availableCurrencies: AVAILABLE_CURRENCIES,
+  });
+});
+
+/**
+ * PUT /api/admin/settings
+ * Update one or more app settings.
+ */
+router.put('/admin/settings', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const { buyback_wallet_id, active_currencies } = req.body;
+
+    if (buyback_wallet_id !== undefined) {
+      if (typeof buyback_wallet_id !== 'string') {
+        return res.status(400).json({ error: 'buyback_wallet_id must be a string' });
+      }
+      // Allow empty string (no wallet set) or valid LanaCoin address (starts with L, 26-35 chars)
+      if (buyback_wallet_id !== '' && !/^L[a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(buyback_wallet_id)) {
+        return res.status(400).json({ error: 'Invalid wallet address — must start with L' });
+      }
+      setAppSetting('buyback_wallet_id', buyback_wallet_id, adminHex);
+    }
+
+    if (active_currencies !== undefined) {
+      if (!Array.isArray(active_currencies) || active_currencies.length === 0) {
+        return res.status(400).json({ error: 'At least one currency must be selected' });
+      }
+      // Validate all currencies
+      const invalid = active_currencies.filter((c: string) => !AVAILABLE_CURRENCIES.includes(c));
+      if (invalid.length > 0) {
+        return res.status(400).json({ error: `Invalid currencies: ${invalid.join(', ')}` });
+      }
+      setAppSetting('active_currencies', JSON.stringify(active_currencies), adminHex);
+    }
+
+    const settings = getAllAppSettings();
+    console.log(`[lana-discount] Settings updated by ${adminHex.slice(0, 12)}...`);
+    return res.json({ success: true, settings });
+  } catch (error) {
+    console.error('Update settings error:', error);
+    return res.status(500).json({ error: 'Failed to update settings' });
   }
 });
 

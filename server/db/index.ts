@@ -70,6 +70,13 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now')),
+    updated_by TEXT
+  );
+
   CREATE INDEX IF NOT EXISTS idx_users_wallet_id ON users(wallet_id);
   CREATE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name);
   CREATE INDEX IF NOT EXISTS idx_watched_wallets_user ON watched_wallets(user_hex_id);
@@ -138,6 +145,21 @@ if (adminCount === 0) {
   console.log('[lana-discount] Seeded first admin user');
 }
 
+// --- Seed app_settings with defaults ---
+const settingsCount = (db.prepare('SELECT COUNT(*) as count FROM app_settings').get() as any).count;
+if (settingsCount === 0) {
+  const defaults: Array<[string, string]> = [
+    ['buyback_wallet_id', ''],
+    ['active_currencies', JSON.stringify(['EUR'])],
+  ];
+
+  const insertSetting = db.prepare('INSERT INTO app_settings (key, value, updated_by) VALUES (?, ?, ?)');
+  for (const [key, value] of defaults) {
+    insertSetting.run(key, value, 'system');
+  }
+  console.log('[lana-discount] Seeded app_settings with defaults');
+}
+
 // --- Helpers ---
 
 export function getRelaysFromDb(): string[] {
@@ -178,6 +200,29 @@ export function isAdminUser(hexId: string): boolean {
 
 export function getAllAdmins(): Array<{ hex_id: string; label: string | null; added_by: string | null; created_at: string }> {
   return db.prepare('SELECT * FROM admin_users ORDER BY created_at ASC').all() as any[];
+}
+
+export function getAppSetting(key: string): string | null {
+  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as any;
+  return row?.value ?? null;
+}
+
+export function getAllAppSettings(): Record<string, string> {
+  const rows = db.prepare('SELECT key, value FROM app_settings ORDER BY key ASC').all() as any[];
+  const result: Record<string, string> = {};
+  for (const row of rows) result[row.key] = row.value;
+  return result;
+}
+
+export function setAppSetting(key: string, value: string, updatedBy: string): void {
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at, updated_by)
+    VALUES (?, ?, datetime('now'), ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = datetime('now'),
+      updated_by = excluded.updated_by
+  `).run(key, value, updatedBy);
 }
 
 export function closeDb(): void {
