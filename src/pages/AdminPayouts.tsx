@@ -25,6 +25,8 @@ interface SaleEntry {
   netFiat: number;
   txHash: string | null;
   status: string;
+  source: 'internal' | 'external';
+  verifiedAt: string | null;
   createdAt: string;
   totalPaid: number;
   remaining: number;
@@ -61,6 +63,9 @@ const AdminPayouts = () => {
   const [payoutAccount, setPayoutAccount] = useState('');
   const [nextPayoutId, setNextPayoutId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [verifyingId, setVerifyingId] = useState<number | null>(null);
+  const [rejectingId, setRejectingId] = useState<number | null>(null);
+  const [confirmRejectId, setConfirmRejectId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -182,6 +187,49 @@ const AdminPayouts = () => {
     }
   };
 
+  const verifyTx = async (txId: number) => {
+    if (!session) return;
+    setVerifyingId(txId);
+    try {
+      const res = await fetch(`/api/admin/verify-transaction/${txId}`, {
+        method: 'POST',
+        headers: { 'x-admin-hex-id': session.nostrHexId },
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      toast.success(`Transaction #${txId} verified`);
+      await fetchPayouts();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to verify');
+    } finally {
+      setVerifyingId(null);
+    }
+  };
+
+  const rejectTx = async (txId: number) => {
+    if (!session) return;
+    setRejectingId(txId);
+    try {
+      const res = await fetch(`/api/admin/reject-transaction/${txId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-hex-id': session.nostrHexId,
+        },
+        body: JSON.stringify({ reason: 'Rejected by admin' }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      toast.success(`Transaction #${txId} rejected`);
+      setConfirmRejectId(null);
+      await fetchPayouts();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to reject');
+    } finally {
+      setRejectingId(null);
+    }
+  };
+
   /** Resolve user display name: DB name → payout account holder → Anonymous */
   const resolveDisplayName = (user: UserWithSales): string => {
     if (user.displayName && user.displayName !== 'Anonymous') return user.displayName;
@@ -253,6 +301,9 @@ const AdminPayouts = () => {
             </Link>
             <Link to="/admin/settings" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Settings
+            </Link>
+            <Link to="/admin/api-keys" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+              API Keys
             </Link>
             <Link to="/admin/admins" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Admins
@@ -351,6 +402,8 @@ const AdminPayouts = () => {
                         const saleSym = CURRENCY_SYMBOLS[sale.currency] || sale.currency;
                         const isFormOpen = payoutFormSaleId === sale.id;
                         const isFullyPaid = sale.status === 'paid' || sale.remaining <= 0;
+                        const isPendingVerification = sale.status === 'pending_verification';
+                        const isExternal = sale.source === 'external';
 
                         return (
                           <div key={sale.id} className={`border-b border-border/50 last:border-b-0 ${isFullyPaid ? 'opacity-40' : ''}`}>
@@ -406,18 +459,69 @@ const AdminPayouts = () => {
                                   </div>
                                 )}
 
+                                {/* Source badge */}
+                                {isExternal && !isPendingVerification && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-blue-100 text-blue-600 flex-shrink-0">
+                                    EXT
+                                  </span>
+                                )}
+
+                                {/* Status badge */}
                                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex-shrink-0 ${
-                                  isFullyPaid
+                                  isPendingVerification
+                                    ? 'bg-orange-100 text-orange-700'
+                                    : isFullyPaid
                                     ? 'bg-green-100 text-green-700'
                                     : sale.totalPaid > 0
                                     ? 'bg-amber-100 text-amber-700'
                                     : 'bg-red-100 text-red-700'
                                 }`}>
-                                  {isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
+                                  {isPendingVerification ? 'Pending' : isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
                                 </span>
 
-                                {/* Quick Pay button — directly on the row for unpaid transactions */}
-                                {!isFullyPaid && (
+                                {/* Verify / Reject buttons for pending external transactions */}
+                                {isPendingVerification && (
+                                  <div className="flex items-center gap-1 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                                    <span
+                                      role="button"
+                                      onClick={() => verifyTx(sale.id)}
+                                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                                        verifyingId === sale.id ? 'bg-green-400 text-white' : 'bg-green-600 text-white hover:bg-green-700'
+                                      }`}
+                                    >
+                                      {verifyingId === sale.id ? '...' : 'Verify'}
+                                    </span>
+                                    {confirmRejectId === sale.id ? (
+                                      <>
+                                        <span
+                                          role="button"
+                                          onClick={() => rejectTx(sale.id)}
+                                          className="inline-flex items-center px-2.5 py-1 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-700 transition-colors cursor-pointer"
+                                        >
+                                          {rejectingId === sale.id ? '...' : 'Confirm'}
+                                        </span>
+                                        <span
+                                          role="button"
+                                          onClick={() => setConfirmRejectId(null)}
+                                          className="inline-flex items-center px-2 py-1 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                                        >
+                                          No
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span
+                                        role="button"
+                                        onClick={() => setConfirmRejectId(sale.id)}
+                                        className="inline-flex items-center px-2.5 py-1 rounded-lg border border-red-200 text-red-600 text-xs font-bold hover:bg-red-50 transition-colors cursor-pointer"
+                                      >
+                                        Reject
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Quick Pay button — only for verified/completed unpaid transactions */}
+                                {!isFullyPaid && !isPendingVerification && (
                                   <span
                                     role="button"
                                     onClick={(e) => {
@@ -473,8 +577,8 @@ const AdminPayouts = () => {
                                   </div>
                                 )}
 
-                                {/* Add Payout button / form — only for unpaid */}
-                                {sale.remaining > 0 && !isFullyPaid && (
+                                {/* Add Payout button / form — only for verified unpaid */}
+                                {sale.remaining > 0 && !isFullyPaid && !isPendingVerification && (
                                   <>
                                     {!isFormOpen ? (
                                       <button

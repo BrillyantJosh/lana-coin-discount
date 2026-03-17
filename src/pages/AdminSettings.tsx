@@ -145,6 +145,9 @@ const AdminSettings = () => {
             <Link to="/admin/settings" className="text-sm text-foreground font-medium">
               Settings
             </Link>
+            <Link to="/admin/api-keys" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+              API Keys
+            </Link>
             <Link to="/admin/admins" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Admins
             </Link>

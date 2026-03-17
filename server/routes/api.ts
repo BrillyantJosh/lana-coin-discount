@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
-import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout } from '../db/index.js';
+import { createHash, randomBytes } from 'crypto';
+import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets } from '../lib/nostr.js';
 import { fetchBatchBalances } from '../lib/electrum.js';
@@ -852,6 +853,304 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Sell execute error:', error);
     return res.status(500).json({ error: 'Failed to execute transaction' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// API Key Management + External API
+// ---------------------------------------------------------------------------
+
+/** API key auth helper — reads Authorization: Bearer ldk_xxx header */
+function requireApiKey(req: Request, res: Response): { apiKeyId: number; appName: string } | null {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ldk_')) {
+    res.status(401).json({ error: 'Missing or invalid API key. Use: Authorization: Bearer ldk_...' });
+    return null;
+  }
+
+  const apiKey = authHeader.replace('Bearer ', '');
+  const keyHash = createHash('sha256').update(apiKey).digest('hex');
+  const row = getApiKeyByHash(keyHash);
+
+  if (!row) {
+    res.status(401).json({ error: 'Invalid API key' });
+    return null;
+  }
+
+  if (!row.is_active) {
+    res.status(403).json({ error: 'API key is disabled' });
+    return null;
+  }
+
+  updateApiKeyLastUsed(row.id);
+  return { apiKeyId: row.id, appName: row.app_name };
+}
+
+/**
+ * GET /api/admin/api-keys
+ * List all API keys (without hashes).
+ */
+router.get('/admin/api-keys', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+  return res.json({ apiKeys: getAllApiKeys() });
+});
+
+/**
+ * POST /api/admin/api-keys
+ * Create a new API key. Returns the plaintext key ONCE.
+ */
+router.post('/admin/api-keys', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const { appName, label } = req.body;
+
+    if (!appName || typeof appName !== 'string' || appName.trim().length === 0) {
+      return res.status(400).json({ error: 'App name is required' });
+    }
+
+    // Generate key: ldk_ + 48 random hex chars
+    const plaintextKey = 'ldk_' + randomBytes(24).toString('hex');
+    const keyHash = createHash('sha256').update(plaintextKey).digest('hex');
+
+    const id = insertApiKey(keyHash, appName.trim(), label?.trim() || null, adminHex);
+
+    console.log(`[lana-discount] API key created for "${appName.trim()}" by ${adminHex.slice(0, 12)}...`);
+
+    return res.json({
+      success: true,
+      apiKey: {
+        id,
+        appName: appName.trim(),
+        label: label?.trim() || null,
+        key: plaintextKey, // shown ONCE
+      },
+    });
+  } catch (error) {
+    console.error('Create API key error:', error);
+    return res.status(500).json({ error: 'Failed to create API key' });
+  }
+});
+
+/**
+ * PUT /api/admin/api-keys/:id
+ * Toggle API key active/inactive.
+ */
+router.put('/admin/api-keys/:id', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const id = parseInt(req.params.id);
+    const { isActive } = req.body;
+
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid key ID' });
+    if (typeof isActive !== 'boolean') return res.status(400).json({ error: 'isActive must be a boolean' });
+
+    toggleApiKeyActive(id, isActive);
+    console.log(`[lana-discount] API key #${id} ${isActive ? 'activated' : 'deactivated'} by ${adminHex.slice(0, 12)}...`);
+    return res.json({ success: true, apiKeys: getAllApiKeys() });
+  } catch (error) {
+    console.error('Toggle API key error:', error);
+    return res.status(500).json({ error: 'Failed to update API key' });
+  }
+});
+
+/**
+ * DELETE /api/admin/api-keys/:id
+ * Delete an API key.
+ */
+router.delete('/admin/api-keys/:id', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid key ID' });
+
+    deleteApiKey(id);
+    console.log(`[lana-discount] API key #${id} deleted by ${adminHex.slice(0, 12)}...`);
+    return res.json({ success: true, apiKeys: getAllApiKeys() });
+  } catch (error) {
+    console.error('Delete API key error:', error);
+    return res.status(500).json({ error: 'Failed to delete API key' });
+  }
+});
+
+/**
+ * POST /api/admin/verify-transaction/:id
+ * Verify an external transaction (pending_verification → completed).
+ */
+router.post('/admin/verify-transaction/:id', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const txId = parseInt(req.params.id);
+    if (isNaN(txId)) return res.status(400).json({ error: 'Invalid transaction ID' });
+
+    const success = verifyTransaction(txId, adminHex);
+    if (!success) {
+      return res.status(404).json({ error: 'Transaction not found or not in pending_verification status' });
+    }
+
+    console.log(`[lana-discount] Transaction #${txId} verified by ${adminHex.slice(0, 12)}...`);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Verify transaction error:', error);
+    return res.status(500).json({ error: 'Failed to verify transaction' });
+  }
+});
+
+/**
+ * POST /api/admin/reject-transaction/:id
+ * Reject an external transaction (pending_verification → failed).
+ */
+router.post('/admin/reject-transaction/:id', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const txId = parseInt(req.params.id);
+    if (isNaN(txId)) return res.status(400).json({ error: 'Invalid transaction ID' });
+
+    const { reason } = req.body || {};
+    const success = rejectTransaction(txId, reason || null);
+    if (!success) {
+      return res.status(404).json({ error: 'Transaction not found or not in pending_verification status' });
+    }
+
+    console.log(`[lana-discount] Transaction #${txId} rejected by ${adminHex.slice(0, 12)}...`);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Reject transaction error:', error);
+    return res.status(500).json({ error: 'Failed to reject transaction' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// External API endpoints (authenticated by API key)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/external/sale
+ * Report a completed LANA sale from an external application.
+ */
+router.post('/external/sale', (req: Request, res: Response) => {
+  const auth = requireApiKey(req, res);
+  if (!auth) return;
+
+  try {
+    const {
+      tx_hash, sender_wallet_id, buyback_wallet_id,
+      lana_amount, currency, exchange_rate,
+      commission_percent, user_hex_id, tx_fee_lanoshis, note,
+    } = req.body;
+
+    // Validate required fields
+    if (!tx_hash || typeof tx_hash !== 'string') {
+      return res.status(400).json({ error: 'tx_hash is required' });
+    }
+    if (!sender_wallet_id || typeof sender_wallet_id !== 'string') {
+      return res.status(400).json({ error: 'sender_wallet_id is required' });
+    }
+    if (!buyback_wallet_id || typeof buyback_wallet_id !== 'string') {
+      return res.status(400).json({ error: 'buyback_wallet_id is required' });
+    }
+    if (!lana_amount || typeof lana_amount !== 'number' || lana_amount <= 0) {
+      return res.status(400).json({ error: 'lana_amount must be a positive number (in LANA)' });
+    }
+    if (!currency || typeof currency !== 'string') {
+      return res.status(400).json({ error: 'currency is required' });
+    }
+    if (!exchange_rate || typeof exchange_rate !== 'number' || exchange_rate <= 0) {
+      return res.status(400).json({ error: 'exchange_rate must be a positive number' });
+    }
+
+    // Check duplicate tx_hash
+    if (txHashExists(tx_hash)) {
+      return res.status(409).json({ error: 'Transaction with this tx_hash already exists' });
+    }
+
+    // Calculate financials
+    const lanaAmountLanoshis = Math.floor(lana_amount * 100000000);
+    const commissionPct = typeof commission_percent === 'number' ? commission_percent : 30;
+    const grossFiat = Math.round(lana_amount * exchange_rate * 100) / 100;
+    const commissionFiat = Math.round(grossFiat * commissionPct / 100 * 100) / 100;
+    const netFiat = Math.round((grossFiat - commissionFiat) * 100) / 100;
+
+    const split = getSplitFromDb();
+    const hexId = user_hex_id || 'external_' + auth.appName.toLowerCase().replace(/\s+/g, '_');
+
+    const txId = insertExternalTransaction({
+      user_hex_id: hexId,
+      sender_wallet_id,
+      buyback_wallet_id,
+      lana_amount_lanoshis: lanaAmountLanoshis,
+      lana_amount_display: lana_amount,
+      currency,
+      exchange_rate,
+      split,
+      gross_fiat: grossFiat,
+      commission_percent: commissionPct,
+      commission_fiat: commissionFiat,
+      net_fiat: netFiat,
+      tx_hash,
+      tx_fee_lanoshis: tx_fee_lanoshis || 0,
+      api_key_id: auth.apiKeyId,
+    });
+
+    console.log(`[lana-discount] External sale received from "${auth.appName}": ${lana_amount} LANA, TX#${txId}, hash=${tx_hash.slice(0, 16)}...`);
+
+    return res.status(201).json({
+      success: true,
+      transactionId: txId,
+      status: 'pending_verification',
+      grossFiat,
+      commissionFiat,
+      netFiat,
+    });
+  } catch (error) {
+    console.error('External sale error:', error);
+    return res.status(500).json({ error: 'Failed to record external sale' });
+  }
+});
+
+/**
+ * GET /api/external/sale/:id
+ * Check the status of a previously submitted external sale.
+ */
+router.get('/external/sale/:id', (req: Request, res: Response) => {
+  const auth = requireApiKey(req, res);
+  if (!auth) return;
+
+  try {
+    const txId = parseInt(req.params.id);
+    if (isNaN(txId)) return res.status(400).json({ error: 'Invalid transaction ID' });
+
+    const tx = db.prepare(
+      "SELECT id, status, lana_amount_display, currency, net_fiat, tx_hash, source, verified_at, created_at, completed_at FROM buyback_transactions WHERE id = ? AND source = 'external'"
+    ).get(txId) as any;
+
+    if (!tx) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    return res.json({
+      transactionId: tx.id,
+      status: tx.status,
+      lanaAmount: tx.lana_amount_display,
+      currency: tx.currency,
+      netFiat: tx.net_fiat,
+      txHash: tx.tx_hash,
+      verifiedAt: tx.verified_at,
+      createdAt: tx.created_at,
+    });
+  } catch (error) {
+    console.error('External sale status error:', error);
+    return res.status(500).json({ error: 'Failed to fetch transaction status' });
   }
 });
 

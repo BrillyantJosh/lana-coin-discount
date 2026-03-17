@@ -10,6 +10,7 @@ interface BuybackStats {
   totalRemaining: number;
   totalTransactions: number;
   usersServed: number;
+  pendingVerificationCount: number;
   buybackWalletBalance: number | null;
   buybackWalletId: string;
   recentTransactions: Array<{
@@ -115,6 +116,9 @@ const AdminDashboard = () => {
             <Link to="/admin/settings" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Settings
             </Link>
+            <Link to="/admin/api-keys" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+              API Keys
+            </Link>
             <Link to="/admin/admins" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Admins
             </Link>
@@ -176,6 +180,15 @@ const AdminDashboard = () => {
                 unit="EUR"
                 color={stats.totalRemaining > 0 ? 'text-amber-600' : 'text-green-600'}
               />
+              {stats.pendingVerificationCount > 0 && (
+                <StatCard
+                  label="Pending Verification"
+                  value={stats.pendingVerificationCount.toString()}
+                  unit="tx"
+                  color="text-orange-600"
+                  subtitle="External sales awaiting verification"
+                />
+              )}
               <StatCard
                 label="Buyback Wallet Balance"
                 value={stats.buybackWalletBalance !== null ? stats.buybackWalletBalance.toLocaleString() : '—'}
@@ -246,11 +259,13 @@ const AdminDashboard = () => {
                             </td>
                             <td className="px-6 py-4 text-center">
                               <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
-                                isPaid
+                                tx.status === 'pending_verification'
+                                  ? 'bg-orange-100 text-orange-700'
+                                  : isPaid
                                   ? 'bg-green-100 text-green-700'
                                   : 'bg-amber-100 text-amber-700'
                               }`}>
-                                {tx.status}
+                                {tx.status === 'pending_verification' ? 'pending' : tx.status}
                               </span>
                             </td>
                           </tr>

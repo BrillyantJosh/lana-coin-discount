@@ -115,10 +115,33 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_hash TEXT NOT NULL UNIQUE,
+    app_name TEXT NOT NULL,
+    label TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_used_at TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
   CREATE INDEX IF NOT EXISTS idx_buyback_user ON buyback_transactions(user_hex_id);
   CREATE INDEX IF NOT EXISTS idx_buyback_status ON buyback_transactions(status);
   CREATE INDEX IF NOT EXISTS idx_sale_payouts_tx ON sale_payouts(transaction_id);
 `);
+
+// --- Safe migrations: add columns to buyback_transactions ---
+const migrationColumns = [
+  "ALTER TABLE buyback_transactions ADD COLUMN source TEXT NOT NULL DEFAULT 'internal'",
+  "ALTER TABLE buyback_transactions ADD COLUMN api_key_id INTEGER REFERENCES api_keys(id)",
+  "ALTER TABLE buyback_transactions ADD COLUMN verified_at TEXT",
+  "ALTER TABLE buyback_transactions ADD COLUMN verified_by TEXT",
+];
+for (const sql of migrationColumns) {
+  try { db.exec(sql); } catch {}
+}
 
 // --- Seed kind_38888 with bootstrap fallback data ---
 const kind38888Count = (db.prepare('SELECT COUNT(*) as count FROM kind_38888').get() as any).count;
@@ -551,6 +574,8 @@ export function getAdminPayoutStats(): {
     WHERE status IN ('completed', 'paid')
   `).get() as any;
 
+  const pendingVerificationCount = getPendingVerificationCount();
+
   const payoutTotal = (db.prepare(`
     SELECT COALESCE(SUM(sp.amount), 0) as total
     FROM sale_payouts sp
@@ -568,23 +593,24 @@ export function getAdminPayoutStats(): {
     totalRemaining: Math.round((totalOwed - totalPaidOut) * 100) / 100,
     totalTransactions: txStats.txCount || 0,
     usersServed: txStats.userCount || 0,
+    pendingVerificationCount,
   };
 }
 
 /** Get all sales with payouts for admin view — grouped by user */
 export function getAllSalesWithPayouts(): any[] {
-  // Get all users who have completed/paid transactions
+  // Get all users who have completed/paid/pending_verification transactions
   const users = db.prepare(`
     SELECT DISTINCT bt.user_hex_id, u.display_name, u.full_name
     FROM buyback_transactions bt
     LEFT JOIN users u ON bt.user_hex_id = u.nostr_hex_id
-    WHERE bt.status IN ('completed', 'paid')
+    WHERE bt.status IN ('completed', 'paid', 'pending_verification')
     ORDER BY bt.user_hex_id
   `).all() as any[];
 
   const getSales = db.prepare(`
     SELECT * FROM buyback_transactions
-    WHERE user_hex_id = ? AND status IN ('completed', 'paid')
+    WHERE user_hex_id = ? AND status IN ('completed', 'paid', 'pending_verification')
     ORDER BY created_at DESC
   `);
 
@@ -615,6 +641,8 @@ export function getAllSalesWithPayouts(): any[] {
           netFiat: sale.net_fiat,
           txHash: sale.tx_hash,
           status: sale.status,
+          source: sale.source || 'internal',
+          verifiedAt: sale.verified_at || null,
           createdAt: sale.created_at,
           totalPaid: Math.round(totalPaid * 100) / 100,
           remaining: remaining <= 0 ? 0 : remaining,
@@ -632,6 +660,101 @@ export function getAllSalesWithPayouts(): any[] {
       }),
     };
   });
+}
+
+// --- API Key Helpers ---
+
+export function insertApiKey(keyHash: string, appName: string, label: string | null, createdBy: string): number {
+  const result = db.prepare(
+    'INSERT INTO api_keys (key_hash, app_name, label, created_by) VALUES (?, ?, ?, ?)'
+  ).run(keyHash, appName, label, createdBy);
+  return Number(result.lastInsertRowid);
+}
+
+export function getApiKeyByHash(keyHash: string): any | null {
+  return db.prepare('SELECT * FROM api_keys WHERE key_hash = ?').get(keyHash) || null;
+}
+
+export function getAllApiKeys(): any[] {
+  return db.prepare(
+    'SELECT id, app_name, label, created_by, created_at, last_used_at, is_active FROM api_keys ORDER BY created_at DESC'
+  ).all() as any[];
+}
+
+export function updateApiKeyLastUsed(id: number): void {
+  db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?").run(id);
+}
+
+export function toggleApiKeyActive(id: number, active: boolean): void {
+  db.prepare('UPDATE api_keys SET is_active = ? WHERE id = ?').run(active ? 1 : 0, id);
+}
+
+export function deleteApiKey(id: number): void {
+  db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
+}
+
+// --- External Transaction Helpers ---
+
+export interface ExternalBuybackData {
+  user_hex_id: string;
+  sender_wallet_id: string;
+  buyback_wallet_id: string;
+  lana_amount_lanoshis: number;
+  lana_amount_display: number;
+  currency: string;
+  exchange_rate: number;
+  split: string | null;
+  gross_fiat: number;
+  commission_percent: number;
+  commission_fiat: number;
+  net_fiat: number;
+  tx_hash: string;
+  tx_fee_lanoshis: number;
+  api_key_id: number;
+}
+
+export function insertExternalTransaction(data: ExternalBuybackData): number {
+  const result = db.prepare(`
+    INSERT INTO buyback_transactions (
+      user_hex_id, sender_wallet_id, buyback_wallet_id,
+      lana_amount_lanoshis, lana_amount_display, currency, exchange_rate,
+      split, gross_fiat, commission_percent, commission_fiat, net_fiat,
+      tx_hash, tx_fee_lanoshis, status, source, api_key_id,
+      completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_verification', 'external', ?, datetime('now'))
+  `).run(
+    data.user_hex_id, data.sender_wallet_id, data.buyback_wallet_id,
+    data.lana_amount_lanoshis, data.lana_amount_display, data.currency, data.exchange_rate,
+    data.split, data.gross_fiat, data.commission_percent, data.commission_fiat, data.net_fiat,
+    data.tx_hash, data.tx_fee_lanoshis || 0, data.api_key_id
+  );
+  return Number(result.lastInsertRowid);
+}
+
+export function verifyTransaction(txId: number, adminHex: string): boolean {
+  const result = db.prepare(`
+    UPDATE buyback_transactions
+    SET status = 'completed', verified_at = datetime('now'), verified_by = ?
+    WHERE id = ? AND status = 'pending_verification'
+  `).run(adminHex, txId);
+  return result.changes > 0;
+}
+
+export function rejectTransaction(txId: number, reason: string | null): boolean {
+  const result = db.prepare(`
+    UPDATE buyback_transactions
+    SET status = 'failed', error_message = ?
+    WHERE id = ? AND status = 'pending_verification'
+  `).run(reason || 'Rejected by admin', txId);
+  return result.changes > 0;
+}
+
+export function getPendingVerificationCount(): number {
+  return (db.prepare("SELECT COUNT(*) as count FROM buyback_transactions WHERE status = 'pending_verification'").get() as any).count;
+}
+
+export function txHashExists(txHash: string): boolean {
+  return !!(db.prepare('SELECT 1 FROM buyback_transactions WHERE tx_hash = ?').get(txHash));
 }
 
 export function closeDb(): void {
