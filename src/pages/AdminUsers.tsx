@@ -133,6 +133,9 @@ const AdminUsers = () => {
             <Link to="/admin" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Admin
             </Link>
+            <Link to="/admin/verify-tx" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+              Verify TX
+            </Link>
             <Link to="/admin/payouts" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Payouts
             </Link>

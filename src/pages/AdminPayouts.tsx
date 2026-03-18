@@ -63,9 +63,6 @@ const AdminPayouts = () => {
   const [payoutAccount, setPayoutAccount] = useState('');
   const [nextPayoutId, setNextPayoutId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [verifyingId, setVerifyingId] = useState<number | null>(null);
-  const [rejectingId, setRejectingId] = useState<number | null>(null);
-  const [confirmRejectId, setConfirmRejectId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -187,49 +184,6 @@ const AdminPayouts = () => {
     }
   };
 
-  const verifyTx = async (txId: number) => {
-    if (!session) return;
-    setVerifyingId(txId);
-    try {
-      const res = await fetch(`/api/admin/verify-transaction/${txId}`, {
-        method: 'POST',
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      toast.success(`Transaction #${txId} verified`);
-      await fetchPayouts();
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to verify');
-    } finally {
-      setVerifyingId(null);
-    }
-  };
-
-  const rejectTx = async (txId: number) => {
-    if (!session) return;
-    setRejectingId(txId);
-    try {
-      const res = await fetch(`/api/admin/reject-transaction/${txId}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-hex-id': session.nostrHexId,
-        },
-        body: JSON.stringify({ reason: 'Rejected by admin' }),
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      toast.success(`Transaction #${txId} rejected`);
-      setConfirmRejectId(null);
-      await fetchPayouts();
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to reject');
-    } finally {
-      setRejectingId(null);
-    }
-  };
-
   /** Resolve user display name: DB name → payout account holder → Anonymous */
   const resolveDisplayName = (user: UserWithSales): string => {
     if (user.displayName && user.displayName !== 'Anonymous') return user.displayName;
@@ -256,9 +210,13 @@ const AdminPayouts = () => {
 
   if (authLoading || !session || !isAdmin) return null;
 
+  // Filter out pending_verification — those belong on the Verify TX page
   // Sort sales within each user: unpaid/partial first, then fully paid
   // Sort users: those with remaining > 0 first, fully paid last
   const sortedUsers = users.map(user => {
+    const filteredSales = user.sales.filter(s => s.status !== 'pending_verification');
+    return { ...user, sales: filteredSales };
+  }).filter(user => user.sales.length > 0).map(user => {
     const totalOwed = user.sales.reduce((s, sale) => s + sale.netFiat, 0);
     const totalPaid = user.sales.reduce((s, sale) => s + sale.totalPaid, 0);
     const remaining = Math.round((totalOwed - totalPaid) * 100) / 100;
@@ -296,6 +254,9 @@ const AdminPayouts = () => {
             <Link to="/admin" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Admin
             </Link>
+            <Link to="/admin/verify-tx" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+              Verify TX
+            </Link>
             <Link to="/admin/payouts" className="text-sm text-foreground font-medium">
               Payouts
             </Link>
@@ -323,7 +284,7 @@ const AdminPayouts = () => {
         <div className="mb-8 space-y-2">
           <h1 className="text-3xl font-bold text-foreground">Payout Management</h1>
           <p className="text-muted-foreground">
-            Record payout installments per user transaction. Unpaid transactions appear first.
+            Record FIAT payout installments for verified transactions. Unpaid transactions appear first.
           </p>
         </div>
 
@@ -402,7 +363,6 @@ const AdminPayouts = () => {
                         const saleSym = CURRENCY_SYMBOLS[sale.currency] || sale.currency;
                         const isFormOpen = payoutFormSaleId === sale.id;
                         const isFullyPaid = sale.status === 'paid' || sale.remaining <= 0;
-                        const isPendingVerification = sale.status === 'pending_verification';
                         const isExternal = sale.source === 'external';
 
                         return (
@@ -460,7 +420,7 @@ const AdminPayouts = () => {
                                 )}
 
                                 {/* Source badge */}
-                                {isExternal && !isPendingVerification && (
+                                {isExternal && (
                                   <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-blue-100 text-blue-600 flex-shrink-0">
                                     EXT
                                   </span>
@@ -468,60 +428,17 @@ const AdminPayouts = () => {
 
                                 {/* Status badge */}
                                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex-shrink-0 ${
-                                  isPendingVerification
-                                    ? 'bg-orange-100 text-orange-700'
-                                    : isFullyPaid
+                                  isFullyPaid
                                     ? 'bg-green-100 text-green-700'
                                     : sale.totalPaid > 0
                                     ? 'bg-amber-100 text-amber-700'
                                     : 'bg-red-100 text-red-700'
                                 }`}>
-                                  {isPendingVerification ? 'Pending' : isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
+                                  {isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
                                 </span>
 
-                                {/* Verify / Reject buttons for pending external transactions */}
-                                {isPendingVerification && (
-                                  <div className="flex items-center gap-1 flex-shrink-0" onClick={e => e.stopPropagation()}>
-                                    <span
-                                      role="button"
-                                      onClick={() => verifyTx(sale.id)}
-                                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-                                        verifyingId === sale.id ? 'bg-green-400 text-white' : 'bg-green-600 text-white hover:bg-green-700'
-                                      }`}
-                                    >
-                                      {verifyingId === sale.id ? '...' : 'Verify'}
-                                    </span>
-                                    {confirmRejectId === sale.id ? (
-                                      <>
-                                        <span
-                                          role="button"
-                                          onClick={() => rejectTx(sale.id)}
-                                          className="inline-flex items-center px-2.5 py-1 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-700 transition-colors cursor-pointer"
-                                        >
-                                          {rejectingId === sale.id ? '...' : 'Confirm'}
-                                        </span>
-                                        <span
-                                          role="button"
-                                          onClick={() => setConfirmRejectId(null)}
-                                          className="inline-flex items-center px-2 py-1 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                                        >
-                                          No
-                                        </span>
-                                      </>
-                                    ) : (
-                                      <span
-                                        role="button"
-                                        onClick={() => setConfirmRejectId(sale.id)}
-                                        className="inline-flex items-center px-2.5 py-1 rounded-lg border border-red-200 text-red-600 text-xs font-bold hover:bg-red-50 transition-colors cursor-pointer"
-                                      >
-                                        Reject
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* Quick Pay button — only for verified/completed unpaid transactions */}
-                                {!isFullyPaid && !isPendingVerification && (
+                                {/* Quick Pay button — only for unpaid transactions */}
+                                {!isFullyPaid && (
                                   <span
                                     role="button"
                                     onClick={(e) => {
@@ -577,8 +494,8 @@ const AdminPayouts = () => {
                                   </div>
                                 )}
 
-                                {/* Add Payout button / form — only for verified unpaid */}
-                                {sale.remaining > 0 && !isFullyPaid && !isPendingVerification && (
+                                {/* Add Payout button / form */}
+                                {sale.remaining > 0 && !isFullyPaid && (
                                   <>
                                     {!isFormOpen ? (
                                       <button

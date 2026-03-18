@@ -110,6 +110,9 @@ const AdminDashboard = () => {
             <Link to="/admin" className="text-sm text-foreground font-medium">
               Admin
             </Link>
+            <Link to="/admin/verify-tx" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+              Verify TX
+            </Link>
             <Link to="/admin/payouts" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Payouts
             </Link>
@@ -181,13 +184,15 @@ const AdminDashboard = () => {
                 color={stats.totalRemaining > 0 ? 'text-amber-600' : 'text-green-600'}
               />
               {stats.pendingVerificationCount > 0 && (
-                <StatCard
-                  label="Pending Verification"
-                  value={stats.pendingVerificationCount.toString()}
-                  unit="tx"
-                  color="text-orange-600"
-                  subtitle="External sales awaiting verification"
-                />
+                <Link to="/admin/verify-tx" className="block hover:scale-[1.02] transition-transform">
+                  <StatCard
+                    label="Pending Verification"
+                    value={stats.pendingVerificationCount.toString()}
+                    unit="tx"
+                    color="text-orange-600"
+                    subtitle="Click to review →"
+                  />
+                </Link>
               )}
               <StatCard
                 label="Buyback Wallet Balance"

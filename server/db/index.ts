@@ -640,6 +640,8 @@ export function getAllSalesWithPayouts(): any[] {
           commissionFiat: sale.commission_fiat,
           netFiat: sale.net_fiat,
           txHash: sale.tx_hash,
+          senderWalletId: sale.sender_wallet_id,
+          buybackWalletId: sale.buyback_wallet_id,
           status: sale.status,
           source: sale.source || 'internal',
           verifiedAt: sale.verified_at || null,
