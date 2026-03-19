@@ -294,6 +294,65 @@ const ApiDocs = () => {
         </Section>
       </div>
 
+        {/* Brain Integration */}
+        <Section title="Brain Integration API">
+          <p className="mb-3">
+            These endpoints are used by <a href="https://brain.lanapays.us/docs" className="text-primary hover:underline font-semibold">Lana Brain</a> to orchestrate LANA transfers as part of the purchase flow. They use the same API key authentication as the external API.
+          </p>
+
+          <h3 className="text-lg font-semibold text-foreground mt-6 mb-2">POST /api/brain/lana-order</h3>
+          <p>Receives a LANA send order from Brain. The order is queued for processing.</p>
+          <CodeBlock>{`Request:
+{
+  "order_id": "uuid",
+  "tx_ref": "brain_transaction_uuid",
+  "order_type": "investor_lana|customer_cashback|merchant_commission|caretaker_commission",
+  "to_wallet": "LM7uDL...",
+  "to_hex": "56e867...",
+  "lana_amount": 625000000000,    // in lanoshis
+  "fiat_value": 100,
+  "currency": "EUR",
+  "exchange_rate": 0.016
+}
+
+Response:
+{ "status": "pending", "order_id": "uuid", "buyback_wallet": "LXy8Fq..." }`}</CodeBlock>
+
+          <h3 className="text-lg font-semibold text-foreground mt-6 mb-2">GET /api/brain/lana-order/:id</h3>
+          <p>Check the status of a LANA order.</p>
+          <CodeBlock>{`Response:
+{
+  "status": "pending|sent|confirmed|failed",
+  "order_id": "uuid",
+  "tx_hash": "abc123...",
+  "lana_amount": 625000000000,
+  "to_wallet": "LM7uDL..."
+}`}</CodeBlock>
+
+          <h3 className="text-lg font-semibold text-foreground mt-6 mb-2">GET /api/brain/buyback-balance</h3>
+          <p>Returns the current LANA balance of the buyback wallet.</p>
+          <CodeBlock>{`Response:
+{
+  "wallet": "LXy8Fq...",
+  "balance": 1250000.50,
+  "unconfirmed": 0
+}`}</CodeBlock>
+        </Section>
+
+        {/* Connected Services */}
+        <Section title="Connected Services">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <a href="https://brain.lanapays.us/docs" target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-border p-4 hover:border-primary transition">
+              <h3 className="font-semibold text-foreground">Lana Brain</h3>
+              <p className="mt-1 text-sm text-muted-foreground">Purchase orchestrator — sends LANA orders to this service</p>
+            </a>
+            <a href="https://direct.lana.fund/docs/api" target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-border p-4 hover:border-primary transition">
+              <h3 className="font-semibold text-foreground">Direct.Fund</h3>
+              <p className="mt-1 text-sm text-muted-foreground">Investor budgets and FIAT payments</p>
+            </a>
+          </div>
+        </Section>
+
       {/* Footer */}
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
         <p className="text-xl font-display font-bold text-primary mb-2">
