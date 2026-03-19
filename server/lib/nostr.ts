@@ -1,4 +1,9 @@
 import WebSocket from 'ws';
+import crypto from 'crypto';
+import elliptic from 'elliptic';
+import { schnorr } from '@noble/curves/secp256k1.js';
+
+const ec = new elliptic.ec('secp256k1');
 
 export interface NostrEvent {
   id: string;
@@ -294,4 +299,74 @@ export async function fetchUserWallets(
 
   console.log(`[lana-discount] Found ${wallets.length} wallets (status: ${status})`);
   return wallets;
+}
+
+// ---------------------------------------------------------------------------
+// Event Signing & Publishing (KIND 30936, 30937)
+// ---------------------------------------------------------------------------
+
+/**
+ * Broadcast a signed Nostr event to relays
+ */
+export async function broadcastEvent(event: NostrEvent, relays?: string[]): Promise<{ success: string[]; failed: string[] }> {
+  const useRelays = relays && relays.length > 0 ? relays : DEFAULT_RELAYS;
+  const success: string[] = [];
+  const failed: string[] = [];
+
+  const sendToRelay = (relay: string, timeout = 10000): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { try { ws.close(); } catch {} resolve(false); }, timeout);
+      let ws: WebSocket;
+      try { ws = new WebSocket(relay); } catch { clearTimeout(timer); resolve(false); return; }
+      ws.on('open', () => { ws.send(JSON.stringify(['EVENT', event])); });
+      ws.on('message', (data: Buffer) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg[0] === 'OK') { clearTimeout(timer); ws.close(); resolve(msg[2] === true); }
+        } catch {}
+      });
+      ws.on('error', () => { clearTimeout(timer); resolve(false); });
+      ws.on('close', () => { clearTimeout(timer); });
+    });
+  };
+
+  await Promise.all(useRelays.map(async (relay) => {
+    const ok = await sendToRelay(relay);
+    if (ok) success.push(relay); else failed.push(relay);
+  }));
+
+  return { success, failed };
+}
+
+/**
+ * Sign and publish a Nostr event using the configured private key
+ */
+export async function signAndPublishEvent(
+  kind: number,
+  tags: string[][],
+  content: string,
+  privateKeyHex: string,
+  relays?: string[]
+): Promise<{ event: NostrEvent; broadcast: { success: string[]; failed: string[] } } | null> {
+  try {
+    const keyPair = ec.keyFromPrivate(privateKeyHex);
+    const pubkey = keyPair.getPublic().getX().toString(16).padStart(64, '0');
+    const created_at = Math.floor(Date.now() / 1000);
+
+    const serialized = JSON.stringify([0, pubkey, created_at, kind, tags, content]);
+    const hash = crypto.createHash('sha256').update(serialized).digest('hex');
+
+    const hashBytes = Buffer.from(hash, 'hex');
+    const privKeyBytes = Buffer.from(privateKeyHex, 'hex');
+    const sig = Buffer.from(schnorr.sign(hashBytes, privKeyBytes)).toString('hex');
+
+    const event: NostrEvent = { id: hash, pubkey, created_at, kind, tags, content, sig };
+    const broadcast = await broadcastEvent(event, relays);
+
+    console.log(`[lana-discount] Published KIND ${kind} event ${hash.slice(0, 16)}...: ${broadcast.success.length} success, ${broadcast.failed.length} failed`);
+    return { event, broadcast };
+  } catch (error: any) {
+    console.error(`[lana-discount] Failed to sign/publish KIND ${kind}:`, error.message);
+    return null;
+  }
 }

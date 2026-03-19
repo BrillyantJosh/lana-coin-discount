@@ -2,10 +2,78 @@ import { Router, Request, Response } from 'express';
 import { createHash, randomBytes } from 'crypto';
 import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
-import { fetchKind38888, fetchKind0, fetchUserWallets } from '../lib/nostr.js';
+import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent } from '../lib/nostr.js';
 import { fetchBatchBalances } from '../lib/electrum.js';
 
 const router = Router();
+
+const NOSTR_PRIVATE_KEY = process.env.NOSTR_PRIVATE_KEY || '';
+
+/**
+ * Publish KIND 30936 — Buyback Transaction event to Nostr relays
+ */
+async function publishBuybackEvent(tx: {
+  id: number | string; tx_hash: string; user_hex_id: string; sender_wallet_id: string;
+  buyback_wallet_id: string; lana_amount_lanoshis: number; lana_amount_display: number;
+  currency: string; exchange_rate: number; gross_fiat: number; commission_percent: number;
+  commission_fiat: number; net_fiat: number; split: string; source?: string; status: string;
+  paid_fiat?: number;
+}) {
+  if (!NOSTR_PRIVATE_KEY) return;
+  const relays = getRelaysFromDb();
+  const tags: string[][] = [
+    ['d', String(tx.id)],
+    ['tx_hash', tx.tx_hash || ''],
+    ['user_hex', tx.user_hex_id],
+    ['sender_wallet', tx.sender_wallet_id],
+    ['buyback_wallet', tx.buyback_wallet_id],
+    ['lana_amount', String(tx.lana_amount_lanoshis)],
+    ['lana_display', String(tx.lana_amount_display)],
+    ['currency', tx.currency],
+    ['exchange_rate', String(tx.exchange_rate)],
+    ['gross_fiat', String(tx.gross_fiat)],
+    ['commission_percent', String(tx.commission_percent)],
+    ['commission_fiat', String(tx.commission_fiat)],
+    ['net_fiat', String(tx.net_fiat)],
+    ['split', tx.split || ''],
+    ['source', tx.source || 'internal'],
+    ['status', tx.status],
+    ['paid_fiat', String(tx.paid_fiat || 0)],
+  ];
+  await signAndPublishEvent(30936, tags, '', NOSTR_PRIVATE_KEY, relays);
+}
+
+/**
+ * Publish KIND 30937 — FIAT Payout event to Nostr relays
+ */
+async function publishPayoutEvent(payout: {
+  payout_id: string; transaction_id: number | string; user_hex_id: string;
+  amount: number; currency: string; paid_to_account: string; reference: string;
+  paid_at: string; remaining: number; status: string;
+}) {
+  if (!NOSTR_PRIVATE_KEY) return;
+  const relays = getRelaysFromDb();
+
+  // Derive pubkey for the a-tag reference
+  const ellipticLib = await import('elliptic');
+  const ecInstance = new ellipticLib.default.ec('secp256k1');
+  const pubkey = ecInstance.keyFromPrivate(NOSTR_PRIVATE_KEY).getPublic().getX().toString(16).padStart(64, '0');
+
+  const tags: string[][] = [
+    ['d', payout.payout_id],
+    ['a', `30936:${pubkey}:${payout.transaction_id}`],
+    ['tx_ref', String(payout.transaction_id)],
+    ['user_hex', payout.user_hex_id],
+    ['amount', String(payout.amount)],
+    ['currency', payout.currency],
+    ['paid_to_account', payout.paid_to_account || ''],
+    ['reference', payout.reference || ''],
+    ['paid_at', payout.paid_at || ''],
+    ['remaining', String(payout.remaining)],
+    ['status', payout.status],
+  ];
+  await signAndPublishEvent(30937, tags, '', NOSTR_PRIVATE_KEY, relays);
+}
 
 /**
  * POST /api/login
@@ -469,6 +537,30 @@ router.post('/admin/payouts', (req: Request, res: Response) => {
 
     console.log(`[lana-discount] Payout recorded: ${payoutId} — ${amount} ${currency} for TX#${transactionId} by admin ${adminHex.slice(0, 12)}...`);
 
+    // Publish KIND 30937 (payout) + update KIND 30936 (transaction)
+    const newRemaining = Math.round((remaining - amount) * 100) / 100;
+    const payoutStatus = newRemaining <= 0 ? 'full' : 'partial';
+
+    publishPayoutEvent({
+      payout_id: payoutId, transaction_id: transactionId, user_hex_id: tx.user_hex_id,
+      amount, currency, paid_to_account: paidToAccount || '',
+      reference: note || '', paid_at: new Date().toISOString(),
+      remaining: Math.max(0, newRemaining), status: payoutStatus,
+    }).catch(err => console.error('[lana-discount] Nostr payout publish failed:', err.message));
+
+    // Re-publish KIND 30936 with updated paid_fiat and status
+    const newTotalPaid = totalPaid + amount;
+    const txStatus = newRemaining <= 0 ? 'paid' : 'completed';
+    publishBuybackEvent({
+      id: tx.id, tx_hash: tx.tx_hash, user_hex_id: tx.user_hex_id,
+      sender_wallet_id: tx.sender_wallet_id, buyback_wallet_id: tx.buyback_wallet_id,
+      lana_amount_lanoshis: tx.lana_amount_lanoshis, lana_amount_display: tx.lana_amount_display,
+      currency: tx.currency, exchange_rate: tx.exchange_rate, gross_fiat: tx.gross_fiat,
+      commission_percent: tx.commission_percent, commission_fiat: tx.commission_fiat,
+      net_fiat: tx.net_fiat, split: tx.split, source: tx.source || 'internal',
+      status: txStatus, paid_fiat: newTotalPaid,
+    }).catch(err => console.error('[lana-discount] Nostr buyback update failed:', err.message));
+
     return res.json({
       success: true,
       payout,
@@ -812,6 +904,16 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
 
       console.log(`[lana-discount] Sell completed: TX ${txResult.txHash}, ID ${txId}`);
 
+      // Publish KIND 30936 to Nostr
+      publishBuybackEvent({
+        id: txId, tx_hash: txResult.txHash, user_hex_id: hexId,
+        sender_wallet_id: senderAddress, buyback_wallet_id: buybackWalletId,
+        lana_amount_lanoshis: lanaAmountLanoshis, lana_amount_display: lanaAmount,
+        currency, exchange_rate: exchangeRate, gross_fiat: grossFiat,
+        commission_percent: commissionPercent, commission_fiat: commissionFiat,
+        net_fiat: netFiat, split, source: 'internal', status: 'completed',
+      }).catch(err => console.error('[lana-discount] Nostr publish failed:', err.message));
+
       return res.json({
         success: true,
         txHash: txResult.txHash,
@@ -997,6 +1099,20 @@ router.post('/admin/verify-transaction/:id', (req: Request, res: Response) => {
     }
 
     console.log(`[lana-discount] Transaction #${txId} verified by ${adminHex.slice(0, 12)}...`);
+
+    // Publish KIND 30936 for verified external transaction
+    const verifiedTx = db.prepare('SELECT * FROM buyback_transactions WHERE id = ?').get(txId) as any;
+    if (verifiedTx) {
+      publishBuybackEvent({
+        id: verifiedTx.id, tx_hash: verifiedTx.tx_hash, user_hex_id: verifiedTx.user_hex_id,
+        sender_wallet_id: verifiedTx.sender_wallet_id, buyback_wallet_id: verifiedTx.buyback_wallet_id,
+        lana_amount_lanoshis: verifiedTx.lana_amount_lanoshis, lana_amount_display: verifiedTx.lana_amount_display,
+        currency: verifiedTx.currency, exchange_rate: verifiedTx.exchange_rate, gross_fiat: verifiedTx.gross_fiat,
+        commission_percent: verifiedTx.commission_percent, commission_fiat: verifiedTx.commission_fiat,
+        net_fiat: verifiedTx.net_fiat, split: verifiedTx.split, source: 'external', status: 'completed',
+      }).catch(err => console.error('[lana-discount] Nostr publish failed:', err.message));
+    }
+
     return res.json({ success: true });
   } catch (error) {
     console.error('Verify transaction error:', error);
