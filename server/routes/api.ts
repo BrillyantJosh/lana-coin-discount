@@ -1164,4 +1164,134 @@ router.get('/health', (_req: Request, res: Response) => {
   return res.json({ status: 'ok', users: userCount, timestamp: new Date().toISOString() });
 });
 
+// ---------------------------------------------------------------------------
+// Brain Integration API endpoints
+// ---------------------------------------------------------------------------
+
+// Brain LANA orders table (auto-create)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS brain_lana_orders (
+    id TEXT PRIMARY KEY,
+    transaction_ref TEXT,
+    order_type TEXT NOT NULL,
+    to_wallet TEXT NOT NULL,
+    to_hex TEXT NOT NULL,
+    lana_amount INTEGER NOT NULL,
+    fiat_value REAL NOT NULL,
+    currency TEXT NOT NULL,
+    exchange_rate REAL NOT NULL,
+    tx_hash TEXT,
+    status TEXT DEFAULT 'pending',
+    error_message TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+  )
+`);
+
+/**
+ * POST /api/brain/lana-order
+ * Receive a LANA send order from Brain
+ */
+router.post('/brain/lana-order', async (req: Request, res: Response) => {
+  const auth = requireApiKey(req, res);
+  if (!auth) return;
+
+  try {
+    const { order_id, tx_ref, order_type, to_wallet, to_hex, lana_amount, fiat_value, currency, exchange_rate } = req.body;
+
+    if (!order_id || !order_type || !to_wallet || !to_hex || !lana_amount) {
+      return res.status(400).json({ error: 'Missing required fields', required: ['order_id', 'order_type', 'to_wallet', 'to_hex', 'lana_amount'] });
+    }
+
+    // Store the order
+    try {
+      db.prepare(`
+        INSERT INTO brain_lana_orders (id, transaction_ref, order_type, to_wallet, to_hex, lana_amount, fiat_value, currency, exchange_rate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(order_id, tx_ref || null, order_type, to_wallet, to_hex, lana_amount, fiat_value || 0, currency || 'EUR', exchange_rate || 0);
+    } catch (err: any) {
+      if (err.message?.includes('UNIQUE constraint')) {
+        return res.status(409).json({ status: 'exists', error: 'Order already exists' });
+      }
+      throw err;
+    }
+
+    // Attempt to send LANA from buyback wallet
+    const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
+    if (!buybackWalletId) {
+      db.prepare(`UPDATE brain_lana_orders SET status = 'failed', error_message = 'No buyback wallet configured' WHERE id = ?`).run(order_id);
+      return res.json({ status: 'failed', error: 'No buyback wallet configured' });
+    }
+
+    // Queue the order — actual sending will be done by admin or automated process
+    // For now, mark as pending and return
+    console.log(`[lana-discount] Brain LANA order received: ${order_id} (${order_type}), ${lana_amount} lanoshis → ${to_wallet}`);
+
+    return res.status(201).json({
+      status: 'pending',
+      order_id,
+      buyback_wallet: buybackWalletId,
+    });
+  } catch (error: any) {
+    console.error('Brain LANA order error:', error);
+    return res.status(500).json({ status: 'failed', error: error.message });
+  }
+});
+
+/**
+ * GET /api/brain/lana-order/:id
+ * Check LANA order status
+ */
+router.get('/brain/lana-order/:id', (req: Request, res: Response) => {
+  const auth = requireApiKey(req, res);
+  if (!auth) return;
+
+  const order = db.prepare('SELECT * FROM brain_lana_orders WHERE id = ?').get(req.params.id) as any;
+  if (!order) {
+    return res.status(404).json({ status: 'not_found' });
+  }
+
+  return res.json({
+    status: order.status,
+    order_id: order.id,
+    tx_hash: order.tx_hash,
+    lana_amount: order.lana_amount,
+    to_wallet: order.to_wallet,
+    created_at: order.created_at,
+    completed_at: order.completed_at,
+  });
+});
+
+/**
+ * GET /api/brain/buyback-balance
+ * Return current buyback wallet LANA balance
+ */
+router.get('/brain/buyback-balance', async (req: Request, res: Response) => {
+  const auth = requireApiKey(req, res);
+  if (!auth) return;
+
+  try {
+    const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
+    if (!buybackWalletId) {
+      return res.json({ balance: 0, error: 'No buyback wallet configured' });
+    }
+
+    const electrumServers = getElectrumServersFromDb();
+    if (electrumServers.length === 0) {
+      return res.json({ balance: 0, wallet: buybackWalletId, error: 'No electrum servers available' });
+    }
+
+    const balances = await fetchBatchBalances([buybackWalletId], electrumServers);
+    const walletBalance = balances[buybackWalletId];
+
+    return res.json({
+      wallet: buybackWalletId,
+      balance: walletBalance?.confirmed || 0,
+      unconfirmed: walletBalance?.unconfirmed || 0,
+    });
+  } catch (error: any) {
+    return res.json({ balance: 0, error: error.message });
+  }
+});
+
 export default router;
