@@ -35,11 +35,14 @@ export async function rpcCall(method: string, params: any[] = []): Promise<any> 
     }),
   });
 
-  if (!res.ok) {
-    throw new Error(`RPC HTTP error: ${res.status} ${res.statusText}`);
+  // LanaCoin RPC returns HTTP 500 for RPC-level errors (e.g. TX not found)
+  // Always try to parse JSON response body
+  let data: RpcResponse;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(`RPC HTTP error: ${res.status} ${res.statusText} (non-JSON response)`);
   }
-
-  const data: RpcResponse = await res.json();
 
   if (data.error) {
     throw new Error(`RPC error ${data.error.code}: ${data.error.message}`);
@@ -68,8 +71,9 @@ export async function verifyTransaction(txHash: string): Promise<{
       blockHash: tx.blockhash,
     };
   } catch (error: any) {
-    // TX not found in wallet = not received
-    if (error.message?.includes('-5')) {
+    // RPC error -5: "Invalid or non-wallet transaction id"
+    // This means the TX was not received by our wallet
+    if (error.message?.includes('-5') || error.message?.includes('Invalid or non-wallet')) {
       return { confirmed: false, confirmations: 0, amount: 0 };
     }
     throw error;
