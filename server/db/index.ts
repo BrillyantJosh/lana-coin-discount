@@ -138,6 +138,9 @@ const migrationColumns = [
   "ALTER TABLE buyback_transactions ADD COLUMN api_key_id INTEGER REFERENCES api_keys(id)",
   "ALTER TABLE buyback_transactions ADD COLUMN verified_at TEXT",
   "ALTER TABLE buyback_transactions ADD COLUMN verified_by TEXT",
+  "ALTER TABLE buyback_transactions ADD COLUMN rpc_verified INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE buyback_transactions ADD COLUMN rpc_confirmations INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE buyback_transactions ADD COLUMN rpc_verified_at TEXT",
 ];
 for (const sql of migrationColumns) {
   try { db.exec(sql); } catch {}

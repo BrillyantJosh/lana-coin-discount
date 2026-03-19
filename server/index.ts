@@ -93,12 +93,63 @@ function withTimeout<T>(fn: () => Promise<T>, label: string, ms: number): Promis
 const HEARTBEAT_INTERVAL = 60 * 1000; // 1 minute
 let heartbeatCount = 0;
 
+async function verifyUnconfirmedTransactions(): Promise<void> {
+  try {
+    const { verifyTransaction, checkRpcConnection } = await import('./lib/rpc.js');
+
+    const rpcStatus = await checkRpcConnection();
+    if (!rpcStatus.connected) {
+      console.log(`[lana-discount] RPC not reachable: ${rpcStatus.error}`);
+      return;
+    }
+
+    const unverified = db.prepare(`
+      SELECT id, tx_hash FROM buyback_transactions
+      WHERE tx_hash IS NOT NULL AND tx_hash != ''
+        AND rpc_verified = 0
+        AND status IN ('completed', 'pending_verification')
+    `).all() as any[];
+
+    if (unverified.length === 0) return;
+
+    console.log(`[lana-discount] Verifying ${unverified.length} transaction(s) via RPC (block ${rpcStatus.blockHeight})...`);
+
+    let verified = 0;
+    for (const tx of unverified) {
+      try {
+        const result = await verifyTransaction(tx.tx_hash);
+        if (result.confirmed) {
+          db.prepare(`
+            UPDATE buyback_transactions
+            SET rpc_verified = 1, rpc_confirmations = ?, rpc_verified_at = datetime('now')
+            WHERE id = ?
+          `).run(result.confirmations, tx.id);
+          verified++;
+        }
+      } catch (err: any) {
+        console.warn(`[lana-discount] RPC verify failed for TX#${tx.id}: ${err.message}`);
+      }
+    }
+
+    if (verified > 0) {
+      console.log(`[lana-discount] RPC verified ${verified}/${unverified.length} transaction(s)`);
+    }
+  } catch (err: any) {
+    console.error('[lana-discount] RPC verification error:', err.message);
+  }
+}
+
 const heartbeatTimer = setInterval(async () => {
   heartbeatCount++;
 
   // KIND 38888 sync every 60 heartbeats (= every hour)
   if (heartbeatCount % 60 === 0) {
     await withTimeout(() => syncKind38888ToDb(), 'KIND 38888 sync', 45000);
+  }
+
+  // RPC transaction verification every 10 heartbeats (= every 10 minutes)
+  if (heartbeatCount % 10 === 0) {
+    await verifyUnconfirmedTransactions();
   }
 }, HEARTBEAT_INTERVAL);
 
