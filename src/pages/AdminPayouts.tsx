@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
+import AdminNav from '@/components/AdminNav';
 
 interface PayoutEntry {
   id: number;
@@ -53,7 +54,7 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
 };
 
 const AdminPayouts = () => {
-  const { session, isLoading: authLoading, isAdmin, logout } = useAuth();
+  const { session, isLoading: authLoading, isAdmin } = useAuth();
   const navigate = useNavigate();
 
   const [users, setUsers] = useState<UserWithSales[]>([]);
@@ -244,48 +245,10 @@ const AdminPayouts = () => {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Nav */}
-      <nav className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
-        <div className="container mx-auto px-6 flex items-center justify-between h-16">
-          <Link to="/admin" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
-            <img src="/lana-logo.png" alt="Lana" className="h-8 w-8" />
-            <span>Lana<span className="text-gold">.Discount</span></span>
-            <span className="ml-2 text-xs font-mono bg-red-100 text-red-700 px-2 py-0.5 rounded-full uppercase tracking-wider">Admin</span>
-          </Link>
-          <div className="flex items-center gap-4">
-            <Link to="/dashboard" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              User Dashboard
-            </Link>
-            <Link to="/admin" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Admin
-            </Link>
-            <Link to="/admin/verify-tx" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Verify TX
-            </Link>
-            <Link to="/admin/payouts" className="text-sm text-foreground font-medium">
-              Payouts
-            </Link>
-            <Link to="/admin/settings" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Settings
-            </Link>
-            <Link to="/admin/api-keys" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              API Keys
-            </Link>
-            <Link to="/admin/admins" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Admins
-            </Link>
-            <button
-              onClick={() => { logout(); navigate('/'); }}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-            >
-              Sign Out
-            </button>
-          </div>
-        </div>
-      </nav>
+      <AdminNav active="payouts" />
 
       {/* Content */}
-      <div className="flex-1 container mx-auto px-6 py-12 max-w-6xl">
+      <div className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-12 max-w-6xl">
         <div className="mb-8 space-y-2">
           <h1 className="text-3xl font-bold text-foreground">Payout Management</h1>
           <p className="text-muted-foreground">
@@ -323,9 +286,9 @@ const AdminPayouts = () => {
                   {/* User header */}
                   <button
                     onClick={() => setExpandedUser(isUserExpanded ? null : user.hexId)}
-                    className="w-full px-6 py-4 text-left hover:bg-muted/30 transition-colors"
+                    className="w-full px-4 sm:px-6 py-4 text-left hover:bg-muted/30 transition-colors"
                   >
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2 sm:gap-4">
                       <svg
                         className={`h-4 w-4 text-muted-foreground flex-shrink-0 transition-transform ${isUserExpanded ? 'rotate-90' : ''}`}
                         fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
@@ -376,9 +339,9 @@ const AdminPayouts = () => {
                             {/* Sale row */}
                             <button
                               onClick={() => setExpandedSale(isSaleExpanded ? null : sale.id)}
-                              className={`w-full px-6 py-3 text-left transition-colors ${isFullyPaid ? 'hover:bg-muted/10' : 'hover:bg-muted/20'}`}
+                              className={`w-full px-4 sm:px-6 py-3 text-left transition-colors ${isFullyPaid ? 'hover:bg-muted/10' : 'hover:bg-muted/20'}`}
                             >
-                              <div className="flex items-center gap-4 pl-8">
+                              <div className="flex items-center gap-2 sm:gap-4 pl-2 sm:pl-8">
                                 <svg
                                   className={`h-3 w-3 text-muted-foreground flex-shrink-0 transition-transform ${isSaleExpanded ? 'rotate-90' : ''}`}
                                   fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
@@ -477,7 +440,7 @@ const AdminPayouts = () => {
 
                             {/* Sale expanded — payouts + add form */}
                             {isSaleExpanded && (
-                              <div className={`px-6 pb-4 pl-20 space-y-3 ${isFullyPaid ? 'opacity-100' : ''}`}>
+                              <div className={`px-4 sm:px-6 pb-4 pl-4 sm:pl-20 space-y-3 ${isFullyPaid ? 'opacity-100' : ''}`}>
                                 {/* Existing payouts */}
                                 {sale.payouts.length > 0 && (
                                   <div className="rounded-lg border border-border overflow-hidden">

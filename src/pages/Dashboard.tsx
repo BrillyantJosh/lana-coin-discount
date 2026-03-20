@@ -116,8 +116,8 @@ const Dashboard = () => {
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
       <nav className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
-        <div className="container mx-auto px-6 flex items-center justify-between h-16">
-          <a href="/" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
+        <div className="container mx-auto px-4 sm:px-6 flex items-center justify-between h-14 sm:h-16">
+          <a href="/" className="flex items-center gap-2 text-lg sm:text-xl font-display font-bold text-primary">
             <img src="/lana-logo.png" alt="Lana" className="h-8 w-8" />
             <span>Lana<span className="text-gold">.Discount</span></span>
           </a>
@@ -139,7 +139,7 @@ const Dashboard = () => {
       </nav>
 
       {/* Dashboard content */}
-      <div className="flex-1 container mx-auto px-6 py-12">
+      <div className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-12">
         {/* Welcome */}
         <div className="mb-12 text-center space-y-2">
           <h1 className="text-3xl md:text-4xl font-bold text-foreground">
@@ -292,7 +292,7 @@ const Dashboard = () => {
                         onClick={() => setExpandedSale(isExpanded ? null : sale.id)}
                         className="w-full px-5 py-4 text-left hover:bg-muted/30 transition-colors"
                       >
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2 sm:gap-4">
                           {/* Expand icon */}
                           <svg
                             className={`h-4 w-4 text-muted-foreground flex-shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
@@ -302,7 +302,7 @@ const Dashboard = () => {
                           </svg>
 
                           {/* Date */}
-                          <div className="w-24 flex-shrink-0">
+                          <div className="hidden sm:block w-24 flex-shrink-0">
                             <span className="text-sm text-muted-foreground">{formatDate(sale.createdAt)}</span>
                           </div>
 

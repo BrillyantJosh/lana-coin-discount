@@ -25,9 +25,9 @@ const ApiDocs = () => {
       </nav>
 
       {/* Content */}
-      <div className="flex-1 container mx-auto px-6 py-12 max-w-4xl">
-        <div className="mb-10 space-y-3">
-          <h1 className="text-4xl font-bold text-foreground">API Documentation</h1>
+      <div className="flex-1 container mx-auto px-4 sm:px-6 py-8 sm:py-12 max-w-4xl">
+        <div className="mb-8 sm:mb-10 space-y-3">
+          <h1 className="text-2xl sm:text-4xl font-bold text-foreground">API Documentation</h1>
           <p className="text-lg text-muted-foreground">
             Integrate your application with Lana.Discount to submit LanaCoin buyback transactions programmatically.
           </p>
@@ -96,7 +96,7 @@ const ApiDocs = () => {
             </p>
 
             <h4 className="font-semibold text-foreground mt-6 mb-3">Request Headers</h4>
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-lg border border-border overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40">
                   <tr>
@@ -118,7 +118,7 @@ const ApiDocs = () => {
             </div>
 
             <h4 className="font-semibold text-foreground mt-6 mb-3">Request Body</h4>
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-lg border border-border overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40">
                   <tr>
@@ -179,7 +179,7 @@ const ApiDocs = () => {
             </div>
 
             <h4 className="font-semibold text-foreground mt-6 mb-3">Error Responses</h4>
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-lg border border-border overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40">
                   <tr>
@@ -210,7 +210,7 @@ const ApiDocs = () => {
             </p>
 
             <h4 className="font-semibold text-foreground mt-4 mb-3">Path Parameters</h4>
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-lg border border-border overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40">
                   <tr>

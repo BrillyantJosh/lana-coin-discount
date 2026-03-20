@@ -204,7 +204,7 @@ const Wallets = () => {
       </nav>
 
       {/* Content */}
-      <div className="flex-1 container mx-auto px-6 py-12 max-w-4xl">
+      <div className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-12 max-w-4xl">
         <div className="mb-8 space-y-2">
           <h1 className="text-3xl font-bold text-foreground">Your Wallets</h1>
           <p className="text-muted-foreground">
