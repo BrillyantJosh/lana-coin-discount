@@ -25,9 +25,14 @@ const AdminNav = ({ active }: AdminNavProps) => {
       <div className="container mx-auto px-4 sm:px-6 flex items-center justify-between h-14 sm:h-16">
         {/* Logo */}
         <Link to="/admin" className="flex items-center gap-2 text-lg sm:text-xl font-display font-bold text-primary">
-          <img src="/lana-logo.png" alt="Lana" className="h-7 w-7 sm:h-8 sm:w-8" />
+          <img src="/lana-logo.png" alt="Lana" className="h-7 w-7 sm:h-8 sm:w-8 dark:invert" />
           <span>Lana<span className="text-gold">.Discount</span></span>
-          <span className="ml-1 sm:ml-2 text-[9px] sm:text-xs font-mono bg-red-100 text-red-700 px-1.5 sm:px-2 py-0.5 rounded-full uppercase tracking-wider">Admin</span>
+        </Link>
+        <Link
+          to="/admin"
+          className="rounded-lg bg-red-600 px-2.5 sm:px-3 py-1 sm:py-1.5 text-[10px] sm:text-xs font-bold text-white uppercase tracking-wider hover:bg-red-700 transition-colors"
+        >
+          Admin
         </Link>
 
         {/* Desktop links */}

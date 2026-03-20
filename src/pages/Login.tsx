@@ -54,7 +54,7 @@ const Login = () => {
       <nav className="border-b border-border bg-background/80 backdrop-blur-md">
         <div className="container mx-auto px-6 flex items-center h-16">
           <a href="/" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
-            <img src="/lana-logo.png" alt="Lana" className="h-8 w-8" />
+            <img src="/lana-logo.png" alt="Lana" className="h-8 w-8 dark:invert" />
             <span>Lana<span className="text-gold">.Discount</span></span>
           </a>
         </div>
@@ -64,7 +64,7 @@ const Login = () => {
       <div className="flex-1 flex items-center justify-center px-6 py-12">
         <div className="w-full max-w-md space-y-8">
           <div className="text-center space-y-2">
-            <img src="/lana-logo.png" alt="Lana" className="h-16 w-16 mx-auto" />
+            <img src="/lana-logo.png" alt="Lana" className="h-16 w-16 mx-auto dark:invert" />
             <h1 className="text-3xl font-bold text-foreground">Sign In</h1>
             <p className="text-muted-foreground">
               Enter your LanaCoin WIF private key to access your account.

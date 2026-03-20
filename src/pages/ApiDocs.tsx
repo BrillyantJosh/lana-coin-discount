@@ -7,7 +7,7 @@ const ApiDocs = () => {
       <nav className="sticky top-0 z-50 bg-background/80 backdrop-blur-md border-b border-border">
         <div className="container mx-auto px-6 flex items-center justify-between h-16">
           <Link to="/" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
-            <img src="/lana-logo.png" alt="Lana" className="h-8 w-8" />
+            <img src="/lana-logo.png" alt="Lana" className="h-8 w-8 dark:invert" />
             <span>Lana<span className="text-gold">.Discount</span></span>
           </Link>
           <div className="flex items-center gap-4">
