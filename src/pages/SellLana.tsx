@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react'
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
+import { convertWifToIds } from '@/lib/crypto';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
 
@@ -91,6 +92,9 @@ const SellLana = () => {
 
   // Step 4 state
   const [privateKey, setPrivateKey] = useState('');
+  const [privateKeyValid, setPrivateKeyValid] = useState<boolean | null>(null); // null = not yet checked
+  const [privateKeyError, setPrivateKeyError] = useState('');
+  const [validatingKey, setValidatingKey] = useState(false);
   const [executing, setExecuting] = useState(false);
   const [showQrScanner, setShowQrScanner] = useState(false);
 
@@ -283,6 +287,43 @@ const SellLana = () => {
       setExecuting(false);
     }
   };
+
+  // Validate private key against selected wallet address (debounced)
+  const keyValidateRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (keyValidateRef.current) clearTimeout(keyValidateRef.current);
+
+    const trimmed = privateKey.trim();
+    if (!trimmed) {
+      setPrivateKeyValid(null);
+      setPrivateKeyError('');
+      return;
+    }
+
+    setValidatingKey(true);
+    keyValidateRef.current = setTimeout(() => {
+      try {
+        const ids = convertWifToIds(trimmed);
+        const sender = getSenderAddress();
+        if (ids.walletIdCompressed === sender || ids.walletIdUncompressed === sender) {
+          setPrivateKeyValid(true);
+          setPrivateKeyError('');
+        } else {
+          setPrivateKeyValid(false);
+          setPrivateKeyError('This private key does not match the selected wallet address');
+        }
+      } catch (err: any) {
+        setPrivateKeyValid(false);
+        setPrivateKeyError(err.message || 'Invalid private key format');
+      } finally {
+        setValidatingKey(false);
+      }
+    }, 500);
+
+    return () => {
+      if (keyValidateRef.current) clearTimeout(keyValidateRef.current);
+    };
+  }, [privateKey, selectedWallet]);
 
   if (!session) return null;
 
@@ -701,7 +742,13 @@ const SellLana = () => {
                         value={privateKey}
                         onChange={e => setPrivateKey(e.target.value)}
                         placeholder="Enter your WIF private key"
-                        className="flex-1 rounded-lg border border-border bg-background px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                        className={`flex-1 rounded-lg border bg-background px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 transition-colors ${
+                          privateKeyValid === true
+                            ? 'border-green-500 focus:ring-green-500/30 focus:border-green-500'
+                            : privateKeyValid === false
+                              ? 'border-red-500 focus:ring-red-500/30 focus:border-red-500'
+                              : 'border-border focus:ring-primary/30 focus:border-primary'
+                        }`}
                       />
                       <button
                         type="button"
@@ -716,9 +763,30 @@ const SellLana = () => {
                         <span className="text-sm font-medium hidden sm:inline">Scan</span>
                       </button>
                     </div>
-                    <p className="mt-1.5 text-xs text-muted-foreground">
-                      Your private key is used only to sign this transaction. It is never stored.
-                    </p>
+                    {validatingKey && (
+                      <p className="mt-1.5 text-xs text-muted-foreground animate-pulse">Validating private key...</p>
+                    )}
+                    {!validatingKey && privateKeyValid === true && (
+                      <p className="mt-1.5 text-xs text-green-600 flex items-center gap-1">
+                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                        Private key matches the selected wallet
+                      </p>
+                    )}
+                    {!validatingKey && privateKeyValid === false && (
+                      <p className="mt-1.5 text-xs text-red-600 flex items-center gap-1">
+                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                        {privateKeyError}
+                      </p>
+                    )}
+                    {!validatingKey && privateKeyValid === null && (
+                      <p className="mt-1.5 text-xs text-muted-foreground">
+                        Your private key is used only to sign this transaction. It is never stored.
+                      </p>
+                    )}
                   </div>
 
                   {/* QR Scanner Modal */}
@@ -746,9 +814,9 @@ const SellLana = () => {
                   </button>
                   <button
                     onClick={executeSell}
-                    disabled={executing || !privateKey.trim()}
+                    disabled={executing || !privateKey.trim() || privateKeyValid !== true}
                     className={`rounded-xl px-8 py-3 font-semibold text-white transition-all ${
-                      executing || !privateKey.trim()
+                      executing || !privateKey.trim() || privateKeyValid !== true
                         ? 'bg-muted-foreground/30 cursor-not-allowed'
                         : 'bg-red-600 hover:bg-red-700 shadow-lg'
                     }`}
@@ -822,7 +890,7 @@ const SellLana = () => {
                   </Link>
                   {!txResult.success && (
                     <button
-                      onClick={() => { setStep(4); setPrivateKey(''); setTxResult(null); }}
+                      onClick={() => { setStep(4); setPrivateKey(''); setPrivateKeyValid(null); setPrivateKeyError(''); setTxResult(null); }}
                       className="rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
                     >
                       Try Again
