@@ -104,10 +104,10 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
     }
 
     const unverified = db.prepare(`
-      SELECT id, tx_hash FROM buyback_transactions
+      SELECT id, tx_hash, status FROM buyback_transactions
       WHERE tx_hash IS NOT NULL AND tx_hash != ''
         AND rpc_verified = 0
-        AND status IN ('completed', 'pending_verification')
+        AND status IN ('broadcast', 'completed', 'pending_verification')
     `).all() as any[];
 
     if (unverified.length === 0) return;
@@ -120,13 +120,17 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
         const result = await verifyTransaction(tx.tx_hash);
         if (result.confirmed) {
           const txBlockHeight = rpcStatus.blockHeight ? rpcStatus.blockHeight - result.confirmations + 1 : null;
+          // Update RPC fields + promote 'broadcast' → 'completed'
+          const newStatus = tx.status === 'broadcast' ? 'completed' : tx.status;
           db.prepare(`
             UPDATE buyback_transactions
             SET rpc_verified = 1, rpc_confirmations = ?, rpc_verified_at = datetime('now'),
-                rpc_block_hash = ?, rpc_block_height = ?
+                rpc_block_hash = ?, rpc_block_height = ?,
+                status = CASE WHEN status = 'broadcast' THEN 'completed' ELSE status END,
+                completed_at = CASE WHEN status = 'broadcast' THEN datetime('now') ELSE completed_at END
             WHERE id = ?
           `).run(result.confirmations, result.blockHash || null, txBlockHeight, tx.id);
-          console.log(`[lana-discount] TX#${tx.id} verified: ${result.confirmations} conf, block #${txBlockHeight} (${result.blockHash?.slice(0, 16)}...)`);
+          console.log(`[lana-discount] TX#${tx.id} RPC verified: ${result.confirmations} conf, block #${txBlockHeight} — status → ${newStatus}`);
           verified++;
         }
       } catch (err: any) {

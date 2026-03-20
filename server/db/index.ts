@@ -358,7 +358,7 @@ export function getBuybackStats(): {
       COUNT(*) as txCount,
       COUNT(DISTINCT user_hex_id) as userCount
     FROM buyback_transactions
-    WHERE status = 'completed'
+    WHERE status IN ('broadcast', 'completed')
   `).get() as any;
 
   return {
@@ -383,7 +383,7 @@ export function getUserSalesWithPayouts(hexId: string): any[] {
   // Get all completed/paid sales for this user (exclude failed)
   const sales = db.prepare(`
     SELECT * FROM buyback_transactions
-    WHERE user_hex_id = ? AND status IN ('completed', 'paid')
+    WHERE user_hex_id = ? AND status IN ('broadcast', 'completed', 'paid')
     ORDER BY created_at DESC
   `).all(hexId) as any[];
 
@@ -498,7 +498,7 @@ export function getAdminPayoutStats(): {
       COUNT(*) as txCount,
       COUNT(DISTINCT user_hex_id) as userCount
     FROM buyback_transactions
-    WHERE status IN ('completed', 'paid')
+    WHERE status IN ('broadcast', 'completed', 'paid')
   `).get() as any;
 
   const pendingVerificationCount = getPendingVerificationCount();
@@ -507,7 +507,7 @@ export function getAdminPayoutStats(): {
     SELECT COALESCE(SUM(sp.amount), 0) as total
     FROM sale_payouts sp
     JOIN buyback_transactions bt ON sp.transaction_id = bt.id
-    WHERE bt.status IN ('completed', 'paid')
+    WHERE bt.status IN ('broadcast', 'completed', 'paid')
   `).get() as any).total;
 
   const totalOwed = Math.round((txStats.totalFiat || 0) * 100) / 100;
@@ -531,13 +531,13 @@ export function getAllSalesWithPayouts(): any[] {
     SELECT DISTINCT bt.user_hex_id, u.display_name, u.full_name
     FROM buyback_transactions bt
     LEFT JOIN users u ON bt.user_hex_id = u.nostr_hex_id
-    WHERE bt.status IN ('completed', 'paid', 'pending_verification')
+    WHERE bt.status IN ('broadcast', 'completed', 'paid', 'pending_verification')
     ORDER BY bt.user_hex_id
   `).all() as any[];
 
   const getSales = db.prepare(`
     SELECT * FROM buyback_transactions
-    WHERE user_hex_id = ? AND status IN ('completed', 'paid', 'pending_verification')
+    WHERE user_hex_id = ? AND status IN ('broadcast', 'completed', 'paid', 'pending_verification')
     ORDER BY created_at DESC
   `);
 
@@ -572,7 +572,12 @@ export function getAllSalesWithPayouts(): any[] {
           status: sale.status,
           source: sale.source || 'internal',
           verifiedAt: sale.verified_at || null,
+          rpcVerified: !!sale.rpc_verified,
+          rpcConfirmations: sale.rpc_confirmations || 0,
+          rpcBlockHeight: sale.rpc_block_height || null,
+          rpcVerifiedAt: sale.rpc_verified_at || null,
           createdAt: sale.created_at,
+          completedAt: sale.completed_at || null,
           totalPaid: Math.round(totalPaid * 100) / 100,
           remaining: remaining <= 0 ? 0 : remaining,
           payouts: payouts.map(p => ({

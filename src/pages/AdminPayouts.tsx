@@ -27,7 +27,12 @@ interface SaleEntry {
   status: string;
   source: 'internal' | 'external';
   verifiedAt: string | null;
+  rpcVerified: boolean;
+  rpcConfirmations: number;
+  rpcBlockHeight: number | null;
+  rpcVerifiedAt: string | null;
   createdAt: string;
+  completedAt: string | null;
   totalPaid: number;
   remaining: number;
   payouts: PayoutEntry[];
@@ -363,6 +368,7 @@ const AdminPayouts = () => {
                         const saleSym = CURRENCY_SYMBOLS[sale.currency] || sale.currency;
                         const isFormOpen = payoutFormSaleId === sale.id;
                         const isFullyPaid = sale.status === 'paid' || sale.remaining <= 0;
+                        const isBroadcast = sale.status === 'broadcast';
                         const isExternal = sale.source === 'external';
 
                         return (
@@ -427,18 +433,30 @@ const AdminPayouts = () => {
                                 )}
 
                                 {/* Status badge */}
-                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex-shrink-0 ${
-                                  isFullyPaid
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex-shrink-0 ${
+                                  isBroadcast
+                                    ? 'bg-blue-100 text-blue-700'
+                                    : isFullyPaid
                                     ? 'bg-green-100 text-green-700'
                                     : sale.totalPaid > 0
                                     ? 'bg-amber-100 text-amber-700'
                                     : 'bg-red-100 text-red-700'
                                 }`}>
-                                  {isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
+                                  {isBroadcast && (
+                                    <div className="h-2 w-2 animate-spin rounded-full border border-blue-700 border-t-transparent" />
+                                  )}
+                                  {isBroadcast ? 'Broadcast' : isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
                                 </span>
 
-                                {/* Quick Pay button — only for unpaid transactions */}
-                                {!isFullyPaid && (
+                                {/* RPC verification info */}
+                                {sale.rpcVerified && sale.rpcBlockHeight && (
+                                  <span className="text-[9px] font-mono text-green-600 flex-shrink-0">
+                                    #{sale.rpcBlockHeight.toLocaleString()}
+                                  </span>
+                                )}
+
+                                {/* Quick Pay button — only for RPC-verified, unpaid transactions */}
+                                {!isFullyPaid && !isBroadcast && (
                                   <span
                                     role="button"
                                     onClick={(e) => {
@@ -494,8 +512,18 @@ const AdminPayouts = () => {
                                   </div>
                                 )}
 
+                                {/* Broadcast warning — can't pay until RPC verified */}
+                                {isBroadcast && (
+                                  <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5">
+                                    <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent flex-shrink-0" />
+                                    <p className="text-xs text-blue-700 font-medium">
+                                      Transaction broadcast to network — awaiting RPC confirmation before payout can be recorded.
+                                    </p>
+                                  </div>
+                                )}
+
                                 {/* Add Payout button / form */}
-                                {sale.remaining > 0 && !isFullyPaid && (
+                                {sale.remaining > 0 && !isFullyPaid && !isBroadcast && (
                                   <>
                                     {!isFormOpen ? (
                                       <button

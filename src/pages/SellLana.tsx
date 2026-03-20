@@ -847,9 +847,9 @@ const SellLana = () => {
                           <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                         </svg>
                       </div>
-                      <h2 className="text-2xl font-bold text-foreground mb-2">Transaction Successful!</h2>
+                      <h2 className="text-2xl font-bold text-foreground mb-2">Transaction Broadcast!</h2>
                       <p className="text-muted-foreground mb-6">
-                        Your LanaCoins have been sent. You will receive your payout shortly.
+                        Your LanaCoins have been sent to the network. Payout will be processed after blockchain confirmation.
                       </p>
 
                       <div className="rounded-xl bg-white/50 border border-green-200 p-4 space-y-2 text-sm text-left max-w-md mx-auto">

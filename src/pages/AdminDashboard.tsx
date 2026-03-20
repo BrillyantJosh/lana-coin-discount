@@ -23,6 +23,12 @@ interface BuybackStats {
     eurPayout: number;
     currency?: string;
     status: string;
+    txHash: string | null;
+    rpcVerified: boolean;
+    rpcConfirmations: number;
+    rpcBlockHeight: number | null;
+    rpcVerifiedAt: string | null;
+    source: string;
   }>;
 }
 
@@ -237,18 +243,19 @@ const AdminDashboard = () => {
                       <th className="text-right px-6 py-3 font-medium text-muted-foreground">LANA Amount</th>
                       <th className="text-right px-6 py-3 font-medium text-muted-foreground">Payout</th>
                       <th className="text-center px-6 py-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-center px-6 py-3 font-medium text-muted-foreground">RPC</th>
                     </tr>
                   </thead>
                   <tbody>
                     {[...stats.recentTransactions]
                       .sort((a, b) => {
-                        // Unpaid/completed first, paid last
-                        if (a.status === 'paid' && b.status !== 'paid') return 1;
-                        if (a.status !== 'paid' && b.status === 'paid') return -1;
-                        return 0;
+                        // Broadcast first (awaiting verification), then completed/unpaid, paid last
+                        const priority = (s: string) => s === 'broadcast' ? 0 : s === 'pending_verification' ? 1 : s === 'paid' ? 3 : 2;
+                        return priority(a.status) - priority(b.status);
                       })
                       .map(tx => {
                         const isPaid = tx.status === 'paid';
+                        const isBroadcast = tx.status === 'broadcast';
                         return (
                           <tr key={tx.id} className={`border-b border-border/50 transition-colors ${isPaid ? 'opacity-40' : 'hover:bg-muted/20'}`}>
                             <td className="px-6 py-4 text-foreground">{tx.date}</td>
@@ -264,14 +271,43 @@ const AdminDashboard = () => {
                             </td>
                             <td className="px-6 py-4 text-center">
                               <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
-                                tx.status === 'pending_verification'
+                                isBroadcast
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : tx.status === 'pending_verification'
                                   ? 'bg-orange-100 text-orange-700'
                                   : isPaid
                                   ? 'bg-green-100 text-green-700'
                                   : 'bg-amber-100 text-amber-700'
                               }`}>
-                                {tx.status === 'pending_verification' ? 'pending' : tx.status}
+                                {isBroadcast ? 'broadcast' : tx.status === 'pending_verification' ? 'pending' : tx.status}
                               </span>
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              {tx.rpcVerified ? (
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-green-600">
+                                    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                    </svg>
+                                    Verified
+                                  </span>
+                                  {tx.rpcBlockHeight && (
+                                    <span className="text-[9px] font-mono text-muted-foreground">
+                                      Block #{tx.rpcBlockHeight.toLocaleString()}
+                                    </span>
+                                  )}
+                                  <span className="text-[9px] text-muted-foreground">
+                                    {tx.rpcConfirmations} conf
+                                  </span>
+                                </div>
+                              ) : tx.txHash ? (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-500">
+                                  <div className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+                                  Awaiting
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground">&mdash;</span>
+                              )}
                             </td>
                           </tr>
                         );

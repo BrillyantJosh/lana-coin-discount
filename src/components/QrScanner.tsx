@@ -8,10 +8,14 @@ interface QrScannerProps {
 
 const QrScanner = ({ onScan, onClose }: QrScannerProps) => {
   const scannerRef = useRef<Html5Qrcode | null>(null);
+  const onScanRef = useRef(onScan);
+  onScanRef.current = onScan;
   const [error, setError] = useState<string | null>(null);
+  const [scannedValue, setScannedValue] = useState<string | null>(null);
   const containerId = 'qr-reader';
 
   useEffect(() => {
+    let stopped = false;
     const scanner = new Html5Qrcode(containerId);
     scannerRef.current = scanner;
 
@@ -23,8 +27,14 @@ const QrScanner = ({ onScan, onClose }: QrScannerProps) => {
           qrbox: { width: 250, height: 250 },
         },
         (decodedText) => {
-          onScan(decodedText);
-          scanner.stop().catch(() => {});
+          if (stopped) return;
+          stopped = true;
+          // Stop scanner FIRST, then deliver value — prevents DOM conflict on unmount
+          scanner.stop()
+            .catch(() => {})
+            .finally(() => {
+              setScannedValue(decodedText);
+            });
         },
         () => {} // ignore scan failures (no QR in frame)
       )
@@ -34,9 +44,23 @@ const QrScanner = ({ onScan, onClose }: QrScannerProps) => {
       });
 
     return () => {
-      scanner.stop().catch(() => {});
+      stopped = true;
+      if (scannerRef.current) {
+        try {
+          scannerRef.current.stop().catch(() => {});
+        } catch {
+          // scanner may already be stopped
+        }
+      }
     };
-  }, [onScan]);
+  }, []);
+
+  // Deliver scanned value to parent AFTER scanner is fully stopped
+  useEffect(() => {
+    if (scannedValue !== null) {
+      onScanRef.current(scannedValue);
+    }
+  }, [scannedValue]);
 
   return (
     <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4">

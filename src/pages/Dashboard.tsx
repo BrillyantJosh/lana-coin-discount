@@ -92,6 +92,14 @@ const Dashboard = () => {
   };
 
   const getStatusBadge = (sale: Sale) => {
+    if (sale.status === 'broadcast') {
+      return (
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
+          <span className="inline-block h-2 w-2 animate-spin rounded-full border border-blue-700 border-t-transparent" />
+          Confirming
+        </span>
+      );
+    }
     if (sale.status === 'paid') {
       return <span className="text-[10px] font-bold uppercase tracking-wider bg-green-100 text-green-700 px-2 py-0.5 rounded">Paid</span>;
     }

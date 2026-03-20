@@ -346,6 +346,12 @@ router.get('/admin/stats', async (_req: Request, res: Response) => {
       eurPayout: tx.net_fiat,
       currency: tx.currency,
       status: tx.status,
+      txHash: tx.tx_hash || null,
+      rpcVerified: !!tx.rpc_verified,
+      rpcConfirmations: tx.rpc_confirmations || 0,
+      rpcBlockHeight: tx.rpc_block_height || null,
+      rpcVerifiedAt: tx.rpc_verified_at || null,
+      source: tx.source || 'internal',
     }));
 
     // Fetch live buyback wallet LANA balance via Electrum
@@ -900,10 +906,10 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
         net_fiat: netFiat,
         tx_hash: txResult.txHash,
         tx_fee_lanoshis: txResult.fee,
-        status: 'completed',
+        status: 'broadcast',
       });
 
-      console.log(`[lana-discount] Sell completed: TX ${txResult.txHash}, ID ${txId}`);
+      console.log(`[lana-discount] Sell broadcast: TX ${txResult.txHash}, ID ${txId} — awaiting RPC verification`);
 
       // Publish KIND 30936 to Nostr
       publishBuybackEvent({
@@ -912,7 +918,7 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
         lana_amount_lanoshis: lanaAmountLanoshis, lana_amount_display: lanaAmount,
         currency, exchange_rate: exchangeRate, gross_fiat: grossFiat,
         commission_percent: commissionPercent, commission_fiat: commissionFiat,
-        net_fiat: netFiat, split, source: 'internal', status: 'completed',
+        net_fiat: netFiat, split, source: 'internal', status: 'broadcast',
       }).catch(err => console.error('[lana-discount] Nostr publish failed:', err.message));
 
       return res.json({
