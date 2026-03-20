@@ -119,11 +119,14 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
       try {
         const result = await verifyTransaction(tx.tx_hash);
         if (result.confirmed) {
+          const txBlockHeight = rpcStatus.blockHeight ? rpcStatus.blockHeight - result.confirmations + 1 : null;
           db.prepare(`
             UPDATE buyback_transactions
-            SET rpc_verified = 1, rpc_confirmations = ?, rpc_verified_at = datetime('now')
+            SET rpc_verified = 1, rpc_confirmations = ?, rpc_verified_at = datetime('now'),
+                rpc_block_hash = ?, rpc_block_height = ?
             WHERE id = ?
-          `).run(result.confirmations, tx.id);
+          `).run(result.confirmations, result.blockHash || null, txBlockHeight, tx.id);
+          console.log(`[lana-discount] TX#${tx.id} verified: ${result.confirmations} conf, block #${txBlockHeight} (${result.blockHash?.slice(0, 16)}...)`);
           verified++;
         }
       } catch (err: any) {

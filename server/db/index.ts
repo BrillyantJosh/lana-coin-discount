@@ -141,6 +141,8 @@ const migrationColumns = [
   "ALTER TABLE buyback_transactions ADD COLUMN rpc_verified INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE buyback_transactions ADD COLUMN rpc_confirmations INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE buyback_transactions ADD COLUMN rpc_verified_at TEXT",
+  "ALTER TABLE buyback_transactions ADD COLUMN rpc_block_hash TEXT",
+  "ALTER TABLE buyback_transactions ADD COLUMN rpc_block_height INTEGER",
 ];
 for (const sql of migrationColumns) {
   try { db.exec(sql); } catch {}
