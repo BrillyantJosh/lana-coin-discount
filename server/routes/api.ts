@@ -832,7 +832,7 @@ router.post('/sell/preview', (req: Request, res: Response) => {
  */
 router.post('/sell/execute', async (req: Request, res: Response) => {
   try {
-    const { hexId, senderAddress, lanaAmount, currency, privateKey } = req.body;
+    const { hexId, senderAddress, lanaAmount, currency, privateKey, emptyWallet } = req.body;
 
     if (!hexId || !senderAddress || !lanaAmount || !currency || !privateKey) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -877,8 +877,9 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
     const txResult = await sendLanaTransaction({
       senderAddress,
       recipientAddress: buybackWalletId,
-      amount: lanaAmount,
+      amount: emptyWallet ? undefined : lanaAmount,
       privateKey,
+      emptyWallet: !!emptyWallet,
       electrumServers,
     });
 

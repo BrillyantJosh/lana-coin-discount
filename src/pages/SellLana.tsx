@@ -85,6 +85,7 @@ const SellLana = () => {
 
   // Step 3 state
   const [lanaAmount, setLanaAmount] = useState('');
+  const [isEmptyWallet, setIsEmptyWallet] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
@@ -260,6 +261,7 @@ const SellLana = () => {
           lanaAmount: parseFloat(lanaAmount),
           currency: selectedCurrency,
           privateKey: privateKey.trim(),
+          emptyWallet: isEmptyWallet,
         }),
       });
 
@@ -567,14 +569,21 @@ const SellLana = () => {
                         <input
                           type="number"
                           value={lanaAmount}
-                          onChange={e => setLanaAmount(e.target.value)}
+                          onChange={e => { setLanaAmount(e.target.value); setIsEmptyWallet(false); }}
                           placeholder="e.g. 100000"
                           min="1"
                           className="flex-1 rounded-lg border border-border bg-background px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
                         />
                         {walletBalance > 0 && (
                           <button
-                            onClick={() => setLanaAmount(String(walletBalance))}
+                            onClick={() => {
+                              // Estimate fee: assume 1 input, 1 output (empty wallet = no change output)
+                              const estimatedFeeLanoshis = Math.floor((1 * 180 + 1 * 34 + 10) * 100 * 1.5);
+                              const feeLana = estimatedFeeLanoshis / 100000000;
+                              const maxSendable = Math.max(0, walletBalance - feeLana);
+                              setLanaAmount(String(maxSendable));
+                              setIsEmptyWallet(true);
+                            }}
                             className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-semibold text-primary hover:bg-primary/10 transition-colors"
                           >
                             Max
@@ -602,6 +611,12 @@ const SellLana = () => {
                             <span className="text-muted-foreground">LANA Amount</span>
                             <span className="font-mono font-bold text-foreground">{preview.lanaAmount.toLocaleString()} LANA</span>
                           </div>
+                          {isEmptyWallet && preview.estimatedFee > 0 && (
+                            <div className="flex justify-between text-xs">
+                              <span className="text-muted-foreground">Network Fee (deducted)</span>
+                              <span className="font-mono text-muted-foreground">{(preview.estimatedFee / 100000000).toFixed(8)} LANA</span>
+                            </div>
+                          )}
                           <div className="flex justify-between">
                             <span className="text-muted-foreground">Exchange Rate</span>
                             <span className="font-mono text-foreground">1 LANA = {preview.exchangeRate} {preview.currency}</span>
