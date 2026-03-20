@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from 'react';
+import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
@@ -222,6 +222,24 @@ const SellLana = () => {
       setPreviewLoading(false);
     }
   };
+
+  // Auto-calculate preview after 1.5s of no typing
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    const amount = parseFloat(lanaAmount);
+    if (isNaN(amount) || amount <= 0 || !selectedCurrency) return;
+
+    debounceRef.current = setTimeout(() => {
+      fetchPreview();
+    }, 1500);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [lanaAmount, selectedCurrency]);
 
   const executeSell = async () => {
     if (!session || !preview) return;
@@ -549,14 +567,14 @@ const SellLana = () => {
                         <input
                           type="number"
                           value={lanaAmount}
-                          onChange={e => { setLanaAmount(e.target.value); setPreview(null); }}
+                          onChange={e => setLanaAmount(e.target.value)}
                           placeholder="e.g. 100000"
                           min="1"
                           className="flex-1 rounded-lg border border-border bg-background px-4 py-3 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
                         />
                         {walletBalance > 0 && (
                           <button
-                            onClick={() => { setLanaAmount(String(walletBalance)); setPreview(null); }}
+                            onClick={() => setLanaAmount(String(walletBalance))}
                             className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-semibold text-primary hover:bg-primary/10 transition-colors"
                           >
                             Max
@@ -570,17 +588,9 @@ const SellLana = () => {
                       )}
                     </div>
 
-                    <button
-                      onClick={fetchPreview}
-                      disabled={previewLoading || !lanaAmount || parseFloat(lanaAmount) <= 0}
-                      className={`rounded-xl px-6 py-3 font-semibold text-white transition-all ${
-                        !previewLoading && lanaAmount && parseFloat(lanaAmount) > 0
-                          ? 'bg-primary hover:bg-primary/90 shadow-lg'
-                          : 'bg-muted-foreground/30 cursor-not-allowed'
-                      }`}
-                    >
-                      {previewLoading ? 'Calculating...' : 'Calculate Payout'}
-                    </button>
+                    {previewLoading && (
+                      <p className="text-xs text-muted-foreground animate-pulse">Calculating payout...</p>
+                    )}
 
                     {/* Preview breakdown */}
                     {preview && (
