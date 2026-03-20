@@ -1362,6 +1362,172 @@ router.post('/brain/lana-order', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/brain/send-customer-lana
+ * Execute a blockchain TX from customer's wallet to investor(s)
+ * Used by Brain for payment_type === 'lana' purchases
+ */
+router.post('/brain/send-customer-lana', async (req: Request, res: Response) => {
+  const auth = requireApiKey(req, res);
+  if (!auth) return;
+
+  try {
+    const { from_wif, recipients, tx_ref } = req.body;
+
+    if (!from_wif || !recipients || !Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({
+        status: 'failed',
+        error: 'Missing required fields',
+        required: ['from_wif', 'recipients (array of {address, amount_lanoshis})']
+      });
+    }
+
+    // Validate all recipient addresses and amounts
+    for (const r of recipients) {
+      if (!r.address || !r.amount_lanoshis || r.amount_lanoshis <= 0) {
+        return res.status(400).json({
+          status: 'failed',
+          error: `Invalid recipient: ${JSON.stringify(r)}. Each must have address and amount_lanoshis > 0`
+        });
+      }
+    }
+
+    // Derive sender address from WIF
+    const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress } = await import('../lib/transaction.js');
+
+    const normalizedKey = normalizeWif(from_wif);
+    const privateKeyBytes = base58CheckDecode(normalizedKey);
+    const uint8ArrayToHex = (arr: Uint8Array) => Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+    const privateKeyHex = uint8ArrayToHex(privateKeyBytes.slice(1, 33));
+
+    const uncompressedPubKey = privateKeyToUncompressedPublicKey(privateKeyHex);
+    const uncompressedAddress = publicKeyToAddress(uncompressedPubKey);
+    const compressedPubKey = privateKeyToPublicKey(privateKeyHex);
+    const compressedAddress = publicKeyToAddress(compressedPubKey);
+
+    const senderAddress = uncompressedAddress; // Try uncompressed first
+
+    // Total amount to send
+    const totalLanoshis = recipients.reduce((sum: number, r: any) => sum + r.amount_lanoshis, 0);
+    const totalLana = totalLanoshis / 100_000_000;
+
+    console.log(`[lana-discount] Brain customer TX: ${totalLana} LANA from ${senderAddress} to ${recipients.length} recipient(s), tx_ref=${tx_ref || 'none'}`);
+
+    // Get Electrum servers
+    const electrumServers = getElectrumServersFromDb();
+
+    // Build recipients array for sendLanaTransaction
+    // We need to use the lower-level buildSignedTx for multi-output
+    const { electrumCall } = await import('../lib/electrum.js');
+    const { buildSignedTx } = await import('../lib/transaction.js');
+
+    // Try uncompressed first, then compressed
+    let useAddress = uncompressedAddress;
+    let useCompressed = false;
+
+    // Check which address has UTXOs
+    let utxos = await electrumCall('blockchain.address.listunspent', [uncompressedAddress], electrumServers);
+    if (!utxos || utxos.length === 0) {
+      utxos = await electrumCall('blockchain.address.listunspent', [compressedAddress], electrumServers);
+      if (utxos && utxos.length > 0) {
+        useAddress = compressedAddress;
+        useCompressed = true;
+      }
+    }
+
+    if (!utxos || utxos.length === 0) {
+      return res.json({ status: 'failed', error: 'No UTXOs available for customer wallet' });
+    }
+
+    console.log(`[lana-discount] Customer wallet ${useAddress} has ${utxos.length} UTXOs (compressed=${useCompressed})`);
+
+    // Build recipient list
+    const txRecipients = recipients.map((r: any) => ({
+      address: normalizeAddress(r.address),
+      amount: r.amount_lanoshis,
+    }));
+
+    // UTXO selection with iterative fee calculation
+    const MAX_INPUTS = 100;
+    const actualOutputCount = txRecipients.length + 1; // +1 for change
+
+    // Sort UTXOs by value descending for optimal selection
+    const sortedUtxos = [...utxos].sort((a: any, b: any) => b.value - a.value);
+
+    let selectedUTXOs: any[] = [];
+    let totalSelected = 0;
+    let fee = 0;
+
+    // Greedy selection
+    for (const utxo of sortedUtxos) {
+      if (selectedUTXOs.length >= MAX_INPUTS) break;
+      selectedUTXOs.push(utxo);
+      totalSelected += utxo.value;
+
+      const baseFee = (selectedUTXOs.length * 180 + actualOutputCount * 34 + 10) * 100;
+      fee = Math.floor(baseFee * 1.5);
+
+      if (totalSelected >= totalLanoshis + fee) break;
+    }
+
+    if (totalSelected < totalLanoshis + fee) {
+      const totalBalance = utxos.reduce((sum: number, utxo: any) => sum + utxo.value, 0);
+      return res.json({
+        status: 'failed',
+        error: `Insufficient funds: need ${totalLanoshis + fee} lanoshis, have ${totalBalance}`
+      });
+    }
+
+    console.log(`[lana-discount] TX: ${selectedUTXOs.length} UTXOs, total=${totalSelected}, amount=${totalLanoshis}, fee=${fee}`);
+
+    // Build and sign
+    const { txHex } = await buildSignedTx(
+      selectedUTXOs,
+      from_wif,
+      txRecipients,
+      fee,
+      useAddress,
+      electrumServers,
+      useCompressed
+    );
+
+    console.log('[lana-discount] Customer TX signed, broadcasting...');
+
+    // Broadcast
+    const broadcastResult = await electrumCall(
+      'blockchain.transaction.broadcast',
+      [txHex],
+      electrumServers,
+      45000
+    );
+
+    if (!broadcastResult) {
+      return res.json({ status: 'failed', error: 'Transaction broadcast failed - no result' });
+    }
+
+    const resultStr = typeof broadcastResult === 'string' ? broadcastResult : String(broadcastResult);
+
+    if (resultStr.includes('TX rejected') || resultStr.includes('error') || resultStr.length < 60) {
+      console.error(`[lana-discount] Customer TX broadcast rejected: ${resultStr}`);
+      return res.json({ status: 'failed', error: `Broadcast rejected: ${resultStr}` });
+    }
+
+    console.log(`[lana-discount] Customer TX broadcast success: ${resultStr}`);
+
+    return res.json({
+      status: 'broadcast',
+      tx_hash: resultStr,
+      from_address: useAddress,
+      total_lanoshis: totalLanoshis,
+      fee,
+      recipients: txRecipients.length,
+    });
+  } catch (error: any) {
+    console.error('[lana-discount] Brain customer TX error:', error);
+    return res.status(500).json({ status: 'failed', error: error.message });
+  }
+});
+
+/**
  * GET /api/brain/lana-order/:id
  * Check LANA order status
  */
