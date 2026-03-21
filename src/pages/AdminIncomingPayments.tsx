@@ -233,8 +233,8 @@ const AdminIncomingPayments = () => {
                     <tr className="border-b border-border bg-muted/30">
                       <th className="w-8 px-4 py-3"></th>
                       <th className="text-left px-4 py-3 font-medium text-muted-foreground">Date</th>
-                      <th className="text-left px-4 py-3 font-medium text-muted-foreground">Type</th>
-                      <th className="text-left px-4 py-3 font-medium text-muted-foreground">Destination</th>
+                      <th className="text-left px-4 py-3 font-medium text-muted-foreground">Payment</th>
+                      <th className="text-left px-4 py-3 font-medium text-muted-foreground">Orders</th>
                       <th className="text-right px-4 py-3 font-medium text-muted-foreground">Amount</th>
                       <th className="text-left px-4 py-3 font-medium text-muted-foreground">Blockchain TX</th>
                       <th className="text-center px-4 py-3 font-medium text-muted-foreground">Status</th>
@@ -268,14 +268,9 @@ const AdminIncomingPayments = () => {
                             </td>
                             <td className="px-4 py-3 text-foreground whitespace-nowrap">{formatDate(date)}</td>
                             <td className="px-4 py-3">
-                              <div className="flex flex-wrap gap-1">
-                                {[...new Map(group.map(o => [inferOrderType(o.orderType, o.destinationType, o.destinationName), o])).values()].map((o, i) => (
-                                  <span key={i}>{orderTypeBadge(o.orderType, o.destinationType, o.destinationName)}</span>
-                                ))}
-                                {paymentBadge(group[0].paymentType)}
-                              </div>
+                              {paymentBadge(group[0].paymentType)}
                             </td>
-                            <td className="px-4 py-3 text-foreground">{group.length} recipient{group.length !== 1 ? 's' : ''}</td>
+                            <td className="px-4 py-3 text-foreground">{group.length} order{group.length !== 1 ? 's' : ''}</td>
                             <td className="px-4 py-3 text-right font-mono font-medium text-foreground whitespace-nowrap">
                               {formatFiat(totalFiatVal, currency)}
                             </td>
