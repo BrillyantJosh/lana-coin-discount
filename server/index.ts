@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './routes/api.js';
@@ -11,8 +12,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
-app.use(cors());
-app.use(express.json());
+// ─── Security middleware ─────────────────────────────────
+const ALLOWED_ORIGINS = [
+  'https://lana.discount',
+  'https://www.lana.discount',
+  'https://brain.lanapays.us',
+  'https://direct.lana.fund',
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    callback(null, false);
+  },
+}));
+app.use(express.json({ limit: '50kb' }));
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false }));
 
 // API routes
 app.use('/api', apiRouter);

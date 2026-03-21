@@ -1547,11 +1547,10 @@ router.post('/brain/send-customer-lana', async (req: Request, res: Response) => 
   try {
     const { from_wif, recipients, tx_ref } = req.body;
 
-    if (!from_wif || !recipients || !Array.isArray(recipients) || recipients.length === 0) {
+    if (!from_wif || !recipients || !Array.isArray(recipients) || recipients.length === 0 || recipients.length > 50) {
       return res.status(400).json({
         status: 'failed',
-        error: 'Missing required fields',
-        required: ['from_wif', 'recipients (array of {address, amount_lanoshis})']
+        error: recipients?.length > 50 ? 'Maximum 50 recipients per transaction' : 'Missing required fields',
       });
     }
 
@@ -1697,7 +1696,8 @@ router.post('/brain/send-customer-lana', async (req: Request, res: Response) => 
     });
   } catch (error: any) {
     console.error('[lana-discount] Brain customer TX error:', error);
-    return res.status(500).json({ status: 'failed', error: error.message });
+    const safe = ['Insufficient balance', 'No UTXOs', 'Invalid WIF', 'broadcast failed'].find(m => error.message?.includes(m));
+    return res.status(500).json({ status: 'failed', error: safe || 'Transaction failed' });
   }
 });
 
