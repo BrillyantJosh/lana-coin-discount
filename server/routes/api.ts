@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { createHash, randomBytes } from 'crypto';
-import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
+import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent } from '../lib/nostr.js';
 import { fetchBatchBalances } from '../lib/electrum.js';
@@ -328,6 +328,49 @@ router.get('/admin/check/:hexId', (req: Request, res: Response) => {
  * GET /api/admin/stats
  * Returns buyback dashboard statistics with payout progress and live wallet balance.
  */
+// Paginated transactions for admin dashboard
+router.get('/admin/transactions', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 25));
+    const status = (req.query.status as string) || 'all';
+    const search = (req.query.search as string) || '';
+
+    const { data, total } = getPaginatedBuybackTransactions({ page, limit, status, search });
+
+    const transactions = data.map((tx: any) => ({
+      id: tx.id,
+      date: tx.created_at,
+      user: tx.display_name || tx.full_name || 'Anonymous',
+      hexId: tx.user_hex_id.slice(0, 8) + '...' + tx.user_hex_id.slice(-6),
+      fullHexId: tx.user_hex_id,
+      lanaAmount: tx.lana_amount_display,
+      eurPayout: tx.net_fiat,
+      currency: tx.currency,
+      status: tx.status,
+      txHash: tx.tx_hash || null,
+      rpcVerified: !!tx.rpc_verified,
+      rpcConfirmations: tx.rpc_confirmations || 0,
+      rpcBlockHeight: tx.rpc_block_height || null,
+      source: tx.source || 'internal',
+    }));
+
+    return res.json({
+      transactions,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    });
+  } catch (err) {
+    console.error('Admin transactions error:', err);
+    return res.status(500).json({ error: 'Failed to load transactions' });
+  }
+});
+
 router.get('/admin/stats', async (_req: Request, res: Response) => {
   const adminHex = requireAdmin(_req, res);
   if (!adminHex) return;

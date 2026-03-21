@@ -379,6 +379,43 @@ export function getRecentBuybackTransactions(limit = 20): any[] {
   `).all(limit) as any[];
 }
 
+export function getPaginatedBuybackTransactions(opts: {
+  page: number; limit: number; status?: string; search?: string;
+}): { data: any[]; total: number } {
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (opts.status && opts.status !== 'all') {
+    conditions.push('bt.status = ?');
+    params.push(opts.status);
+  }
+  if (opts.search) {
+    conditions.push('(u.display_name LIKE ? OR u.full_name LIKE ? OR bt.user_hex_id LIKE ? OR bt.tx_hash LIKE ?)');
+    const s = `%${opts.search}%`;
+    params.push(s, s, s, s);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const offset = (opts.page - 1) * opts.limit;
+
+  const total = (db.prepare(`
+    SELECT COUNT(*) as count FROM buyback_transactions bt
+    LEFT JOIN users u ON bt.user_hex_id = u.nostr_hex_id
+    ${where}
+  `).get(...params) as any).count;
+
+  const data = db.prepare(`
+    SELECT bt.*, u.display_name, u.full_name
+    FROM buyback_transactions bt
+    LEFT JOIN users u ON bt.user_hex_id = u.nostr_hex_id
+    ${where}
+    ORDER BY bt.created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, opts.limit, offset) as any[];
+
+  return { data, total };
+}
+
 export function getUserSalesWithPayouts(hexId: string): any[] {
   // Get all completed/paid sales for this user (exclude failed)
   const sales = db.prepare(`

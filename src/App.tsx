@@ -15,6 +15,7 @@ import AdminSettings from "./pages/AdminSettings";
 import AdminPayouts from "./pages/AdminPayouts";
 import AdminApiKeys from "./pages/AdminApiKeys";
 import AdminVerifyTx from "./pages/AdminVerifyTx";
+import AdminIncomingPayments from "./pages/AdminIncomingPayments";
 import SellLana from "./pages/SellLana";
 import ApiDocs from "./pages/ApiDocs";
 import NotFound from "./pages/NotFound";
@@ -42,6 +43,7 @@ const App = () => (
             <Route path="/admin/settings" element={<AdminSettings />} />
             <Route path="/admin/api-keys" element={<AdminApiKeys />} />
             <Route path="/admin/admins" element={<AdminUsers />} />
+            <Route path="/admin/incoming-payments" element={<AdminIncomingPayments />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
           </ErrorBoundary>
