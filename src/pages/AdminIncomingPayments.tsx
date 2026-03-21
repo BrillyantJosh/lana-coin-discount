@@ -24,20 +24,23 @@ interface FiatOrder {
   rpcVerified: boolean;
   ppConfirmed: boolean;
   ppId: number | null;
+  batchId: number | null;
+  batchRef: string | null;
+  batchStatus: string | null;
   createdAt: string;
 }
 
-interface Batch {
-  key: string;
+interface BatchGroup {
+  batchRef: string | null;
+  batchId: number | null;
+  batchStatus: string | null;
   currency: string;
-  orderType: string;
-  recipientWallet: string | null;
-  recipientHex: string | null;
-  shopName: string | null;
   orders: FiatOrder[];
   totalFiat: number;
   totalLana: number;
   allPaid: boolean;
+  recipientWallet: string | null;
+  shopName: string | null;
 }
 
 function formatDate(iso: string): string {
@@ -87,10 +90,8 @@ const AdminIncomingPayments = () => {
           headers: { 'x-admin-hex-id': session.nostrHexId },
         });
         const data = await res.json();
-        // Only keep lana_discount destination orders
         const ldOrders = (data.orders || []).filter((o: FiatOrder) => o.destinationType === 'lana_discount');
         setOrders(ldOrders);
-        // Fetch exchange rate
         try {
           const spRes = await fetch('/api/system-params');
           const spData = await spRes.json();
@@ -107,8 +108,6 @@ const AdminIncomingPayments = () => {
 
   if (authLoading || !session || !isAdmin) return null;
 
-  // exchangeRate is fetched in useEffect above
-
   // Filter
   const filtered = orders.filter(o => {
     if (statusFilter === 'pending' && o.ppConfirmed) return false;
@@ -116,31 +115,34 @@ const AdminIncomingPayments = () => {
     return true;
   });
 
-  // Group into batches by currency + orderType + recipientWallet
+  // Group by batchRef (from Direct.Fund). Unbatched orders get grouped by orderType+currency+wallet
   const batchMap = new Map<string, FiatOrder[]>();
   for (const o of filtered) {
-    const key = `${o.currency}|${o.orderType || 'unknown'}|${o.recipientWallet || 'discount'}|${o.ppConfirmed ? 'paid' : 'pending'}`;
+    const key = o.batchRef
+      ? `batch:${o.batchRef}`
+      : `open:${o.currency}|${o.orderType || 'unknown'}|${o.recipientWallet || 'discount'}`;
     const group = batchMap.get(key) || [];
     group.push(o);
     batchMap.set(key, group);
   }
 
-  const batches: Batch[] = Array.from(batchMap.entries()).map(([key, ords]) => {
+  const batches: BatchGroup[] = Array.from(batchMap.entries()).map(([key, ords]) => {
     const first = ords[0];
     const totalFiat = ords.reduce((s, o) => s + o.amountFiat, 0);
     return {
-      key,
+      batchRef: first.batchRef,
+      batchId: first.batchId,
+      batchStatus: first.batchStatus,
       currency: first.currency,
-      orderType: first.orderType || 'unknown',
-      recipientWallet: first.recipientWallet,
-      recipientHex: first.recipientHex,
-      shopName: first.shopName,
       orders: ords.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       totalFiat,
       totalLana: exchangeRate > 0 ? Math.round(totalFiat / exchangeRate) : 0,
       allPaid: ords.every(o => o.ppConfirmed),
+      recipientWallet: first.recipientWallet,
+      shopName: first.shopName,
     };
   }).sort((a, b) => {
+    // Open first, then paid; within each group sort by total descending
     if (a.allPaid !== b.allPaid) return a.allPaid ? 1 : -1;
     return b.totalFiat - a.totalFiat;
   });
@@ -157,18 +159,21 @@ const AdminIncomingPayments = () => {
     <div className="min-h-screen bg-background text-foreground">
       <AdminNav />
       <div className="max-w-5xl mx-auto px-4 py-6 space-y-5">
-        <h1 className="text-lg font-bold">Lana Discount — Incoming Payments</h1>
+        <h1 className="text-lg font-bold">Lana Discount — Incoming FIAT Payments</h1>
         <p className="text-sm text-muted-foreground -mt-3">
-          FIAT payments from investors that Lana Discount receives for LANA purchases, merchant payouts, and caretaker fees.
+          FIAT received from investors. Use these funds to buy and distribute LANA to recipients.
         </p>
 
         {/* Summary */}
         <div className="grid grid-cols-2 gap-4">
           <div className="rounded-xl border bg-card p-4">
-            <p className="text-[11px] font-medium text-amber-500 uppercase tracking-wider mb-1">Awaiting Payment</p>
+            <p className="text-[11px] font-medium text-amber-500 uppercase tracking-wider mb-1">Awaiting</p>
             {pendingTotal.size > 0 ? (
               Array.from(pendingTotal.entries()).map(([c, v]) => (
-                <p key={c} className="text-lg font-bold tabular-nums">{formatFiat(v, c)}</p>
+                <div key={c}>
+                  <p className="text-lg font-bold tabular-nums">{formatFiat(v, c)}</p>
+                  {exchangeRate > 0 && <p className="text-xs text-muted-foreground">≈ {Math.round(v / exchangeRate).toLocaleString()} LANA</p>}
+                </div>
               ))
             ) : (
               <p className="text-lg font-bold text-muted-foreground">—</p>
@@ -178,7 +183,10 @@ const AdminIncomingPayments = () => {
             <p className="text-[11px] font-medium text-emerald-500 uppercase tracking-wider mb-1">Received</p>
             {paidTotal.size > 0 ? (
               Array.from(paidTotal.entries()).map(([c, v]) => (
-                <p key={c} className="text-lg font-bold tabular-nums">{formatFiat(v, c)}</p>
+                <div key={c}>
+                  <p className="text-lg font-bold tabular-nums">{formatFiat(v, c)}</p>
+                  {exchangeRate > 0 && <p className="text-xs text-muted-foreground">≈ {Math.round(v / exchangeRate).toLocaleString()} LANA</p>}
+                </div>
               ))
             ) : (
               <p className="text-lg font-bold text-muted-foreground">—</p>
@@ -193,7 +201,7 @@ const AdminIncomingPayments = () => {
             onChange={e => setStatusFilter(e.target.value as any)}
             className="px-3 py-2 rounded-lg border bg-card text-sm"
           >
-            <option value="all">All Status</option>
+            <option value="all">All</option>
             <option value="pending">Pending</option>
             <option value="paid">Paid</option>
           </select>
@@ -207,50 +215,60 @@ const AdminIncomingPayments = () => {
         ) : (
           <div className="space-y-3">
             {batches.map(batch => {
-              const isExpanded = expandedKey === batch.key;
-              const pc = purposeConfig[batch.orderType] || { label: batch.orderType, cls: 'bg-muted text-muted-foreground' };
+              const isExpanded = expandedKey === (batch.batchRef || batch.orders[0]?.id);
+              const toggleKey = batch.batchRef || batch.orders[0]?.id;
+
+              // Collect unique purpose types
+              const types = [...new Set(batch.orders.map(o => o.orderType || 'unknown'))];
 
               return (
                 <div
-                  key={batch.key}
+                  key={toggleKey}
                   className={`rounded-xl border overflow-hidden transition-all ${
                     batch.allPaid ? 'opacity-50' : ''
                   }`}
                 >
-                  {/* Batch header */}
                   <div
                     className="px-4 py-3 bg-card cursor-pointer hover:bg-accent/50 transition-colors"
-                    onClick={() => setExpandedKey(isExpanded ? null : batch.key)}
+                    onClick={() => setExpandedKey(isExpanded ? null : toggleKey)}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex-1 min-w-0">
+                        {/* Batch ref + status */}
                         <div className="flex items-center gap-2 flex-wrap mb-1">
-                          <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${pc.cls}`}>{pc.label}</span>
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-muted text-muted-foreground">{batch.currency}</span>
-                          {batch.allPaid && (
-                            <span className="text-[10px] text-emerald-500 font-medium">✓ Paid</span>
+                          {batch.batchRef ? (
+                            <span className="font-mono text-xs font-semibold">{batch.batchRef}</span>
+                          ) : (
+                            <span className="text-xs font-medium text-amber-500">Unbatched</span>
                           )}
+                          {types.map(t => {
+                            const pc = purposeConfig[t] || { label: t, cls: 'bg-muted text-muted-foreground' };
+                            return <span key={t} className={`px-2 py-0.5 rounded text-[11px] font-semibold ${pc.cls}`}>{pc.label}</span>;
+                          })}
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-muted text-muted-foreground">{batch.currency}</span>
+                          {batch.allPaid && <span className="text-[10px] text-emerald-500 font-medium">✓ Paid</span>}
                         </div>
 
                         {batch.shopName && (
-                          <p className="text-sm font-medium">{batch.shopName}</p>
+                          <p className="text-sm">{batch.shopName}</p>
                         )}
 
                         {batch.recipientWallet && (
-                          <p className="text-xs text-muted-foreground font-mono mt-0.5">
-                            Wallet: {shortenWallet(batch.recipientWallet)}
+                          <p className="text-xs text-muted-foreground font-mono">
+                            Send LANA → <span className="text-foreground font-medium">{shortenWallet(batch.recipientWallet)}</span>
                           </p>
                         )}
 
                         <p className="text-xs text-muted-foreground mt-0.5">
                           {batch.orders.length} payment{batch.orders.length !== 1 ? 's' : ''}
+                          {isExpanded ? '' : ' · click to expand'}
                         </p>
                       </div>
 
                       <div className="text-right shrink-0 ml-3">
                         <p className="text-xl font-bold tabular-nums">{formatFiat(batch.totalFiat, batch.currency)}</p>
                         {batch.totalLana > 0 && (
-                          <p className="text-xs text-muted-foreground tabular-nums">
+                          <p className="text-sm text-muted-foreground tabular-nums">
                             ≈ {batch.totalLana.toLocaleString()} LANA
                           </p>
                         )}
@@ -258,38 +276,52 @@ const AdminIncomingPayments = () => {
                     </div>
                   </div>
 
-                  {/* Expanded: individual orders */}
+                  {/* Expanded orders */}
                   {isExpanded && (
                     <div className="border-t divide-y">
-                      {batch.orders.map(o => (
-                        <div key={o.id} className={`px-4 py-2.5 text-xs flex items-center justify-between ${o.ppConfirmed ? 'opacity-50' : ''}`}>
-                          <div className="flex items-center gap-3 min-w-0">
-                            <span className="text-muted-foreground">#{o.ppId || '—'}</span>
-                            <div className="whitespace-nowrap">
-                              <span>{formatDate(o.createdAt)}</span>
-                              <span className="text-muted-foreground ml-1">{formatTime(o.createdAt)}</span>
-                            </div>
-                            {o.recipientWallet && (
-                              <span className="font-mono text-muted-foreground truncate max-w-[120px]" title={o.recipientWallet}>
-                                {shortenWallet(o.recipientWallet)}
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-3 shrink-0">
-                            <span className="font-medium tabular-nums">{formatFiat(o.amountFiat, o.currency)}</span>
-                            {exchangeRate > 0 && (
-                              <span className="text-muted-foreground tabular-nums w-20 text-right">
-                                {Math.round(o.amountFiat / exchangeRate).toLocaleString()} LANA
-                              </span>
-                            )}
-                            {o.ppConfirmed ? (
-                              <span className="text-emerald-500 text-[10px]">✓ Paid</span>
-                            ) : (
-                              <span className="text-amber-500 text-[10px]">Pending</span>
-                            )}
-                          </div>
+                      {/* Header */}
+                      <div className="px-4 py-1.5 text-[10px] text-muted-foreground flex items-center justify-between bg-muted/30">
+                        <div className="flex items-center gap-4">
+                          <span className="w-8">ID</span>
+                          <span className="w-28">Date</span>
+                          <span className="w-20">Type</span>
+                          <span>Wallet</span>
                         </div>
-                      ))}
+                        <div className="flex items-center gap-4">
+                          <span className="w-20 text-right">FIAT</span>
+                          <span className="w-20 text-right">LANA</span>
+                          <span className="w-14 text-right">Status</span>
+                        </div>
+                      </div>
+                      {batch.orders.map(o => {
+                        const pc = purposeConfig[o.orderType || ''] || { label: o.orderType || '?', cls: 'bg-muted text-muted-foreground' };
+                        return (
+                          <div key={o.id} className={`px-4 py-2 text-xs flex items-center justify-between ${o.ppConfirmed ? 'opacity-40' : ''}`}>
+                            <div className="flex items-center gap-4 min-w-0">
+                              <span className="text-muted-foreground w-8">#{o.ppId || '—'}</span>
+                              <div className="w-28 whitespace-nowrap">
+                                <span>{formatDate(o.createdAt)}</span>
+                                <span className="text-muted-foreground ml-1">{formatTime(o.createdAt)}</span>
+                              </div>
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold w-20 text-center ${pc.cls}`}>{pc.label}</span>
+                              {o.recipientWallet && (
+                                <span className="font-mono text-muted-foreground truncate max-w-[140px]" title={o.recipientWallet}>
+                                  {shortenWallet(o.recipientWallet)}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-4 shrink-0">
+                              <span className="font-medium tabular-nums w-20 text-right">{formatFiat(o.amountFiat, o.currency)}</span>
+                              <span className="text-muted-foreground tabular-nums w-20 text-right">
+                                {exchangeRate > 0 ? Math.round(o.amountFiat / exchangeRate).toLocaleString() : '—'}
+                              </span>
+                              <span className={`w-14 text-right text-[10px] font-medium ${o.ppConfirmed ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                {o.ppConfirmed ? '✓ Paid' : 'Pending'}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
