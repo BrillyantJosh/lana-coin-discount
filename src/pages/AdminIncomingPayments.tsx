@@ -122,13 +122,25 @@ const AdminIncomingPayments = () => {
     return <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${cfg.color}`}>{cfg.label}</span>;
   };
 
-  const paymentBadge = (pt: string | null) => {
-    // For old records, infer from context (all old ones were LANA)
+  const paymentBadge = (pt: string | null, currency?: string) => {
     const type = pt || 'lana';
     const isLana = type === 'lana';
-    return <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${
-      isLana ? 'border-amber-400 text-amber-600' : 'border-gray-400 text-gray-600'
-    }`}>{isLana ? 'LANA' : 'Cash'}</span>;
+    if (isLana) {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20">
+          <img src="/lana-logo.png" alt="LANA" className="h-4 w-4" />
+          <span className="text-xs font-bold text-amber-500">LANA</span>
+        </span>
+      );
+    }
+    // Cash — show currency symbol
+    const sym = currency === 'GBP' ? '£' : currency === 'USD' ? '$' : '€';
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+        <span className="text-base font-bold text-emerald-500">{sym}</span>
+        <span className="text-xs font-bold text-emerald-500">Cash</span>
+      </span>
+    );
   };
 
   const formatDate = (iso: string) => {
@@ -268,7 +280,7 @@ const AdminIncomingPayments = () => {
                             </td>
                             <td className="px-4 py-3 text-foreground whitespace-nowrap">{formatDate(date)}</td>
                             <td className="px-4 py-3">
-                              {paymentBadge(group[0].paymentType)}
+                              {paymentBadge(group[0].paymentType, group[0].currency)}
                             </td>
                             <td className="px-4 py-3 text-foreground">{group.length} order{group.length !== 1 ? 's' : ''}</td>
                             <td className="px-4 py-3 text-right font-mono font-medium text-foreground whitespace-nowrap">
