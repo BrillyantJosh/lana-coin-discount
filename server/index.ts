@@ -10,6 +10,7 @@ import db, { closeDb } from './db/index.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+app.set('trust proxy', 1); // Behind nginx reverse proxy
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
 // ─── Security middleware ─────────────────────────────────
