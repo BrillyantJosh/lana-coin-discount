@@ -13,6 +13,8 @@ interface FiatOrder {
   budgetNote: string;
   amountFiat: number;
   currency: string;
+  orderType: string | null;
+  paymentType: string | null;
   destinationType: string;
   destinationName: string | null;
   destinationBank: string | null;
@@ -42,7 +44,8 @@ const AdminIncomingPayments = () => {
 
   // Filters + pagination (client-side since data comes from external API)
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'paid'>('all');
-  const [typeFilter, setTypeFilter] = useState<'all' | 'bank' | 'lana_discount'>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'cash' | 'lana'>('all');
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(25);
 
@@ -78,7 +81,8 @@ const AdminIncomingPayments = () => {
     // Apply filters
     if (statusFilter === 'pending' && o.ppConfirmed) continue;
     if (statusFilter === 'paid' && !o.ppConfirmed) continue;
-    if (typeFilter !== 'all' && o.destinationType !== typeFilter) continue;
+    if (typeFilter !== 'all' && o.orderType !== typeFilter && o.destinationType !== typeFilter) continue;
+    if (paymentFilter !== 'all' && o.paymentType !== paymentFilter) continue;
 
     const group = txGroups.get(o.transactionRef) || [];
     group.push(o);
@@ -94,6 +98,29 @@ const AdminIncomingPayments = () => {
   const hasPending = Object.keys(summary.pendingBank).length > 0;
 
   const formatFiat = (v: number, c: string) => v.toLocaleString(undefined, { style: 'currency', currency: c });
+
+  const orderTypeBadge = (ot: string | null, dt: string) => {
+    const label = ot === 'lana_purchase' ? 'LANA Purchase'
+      : ot === 'merchant_payment' ? 'Shop Invoice'
+      : ot === 'merchant_commission' ? 'Shop Incentive'
+      : ot === 'caretaker_via_discount' ? 'Caretaker'
+      : dt === 'lana_discount' ? 'Caretaker' : 'Bank';
+    const color = ot === 'lana_purchase' ? 'bg-green-100 text-green-700'
+      : ot === 'merchant_payment' ? 'bg-amber-100 text-amber-700'
+      : ot === 'merchant_commission' ? 'bg-blue-100 text-blue-700'
+      : ot === 'caretaker_via_discount' ? 'bg-purple-100 text-purple-700'
+      : dt === 'lana_discount' ? 'bg-purple-100 text-purple-700' : 'bg-amber-100 text-amber-700';
+    return <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${color}`}>{label}</span>;
+  };
+
+  const paymentBadge = (pt: string | null) => {
+    if (!pt) return null;
+    const isLana = pt === 'lana';
+    return <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${
+      isLana ? 'border-amber-400 text-amber-600' : 'border-gray-400 text-gray-600'
+    }`}>{isLana ? 'LANA' : 'Cash'}</span>;
+  };
+
   const formatDate = (iso: string) => {
     const d = new Date(iso + 'Z');
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -169,12 +196,23 @@ const AdminIncomingPayments = () => {
                   </select>
                   <select
                     value={typeFilter}
-                    onChange={e => { setTypeFilter(e.target.value as any); setPage(1); }}
+                    onChange={e => { setTypeFilter(e.target.value); setPage(1); }}
                     className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                   >
-                    <option value="all">All Types</option>
-                    <option value="bank">Bank</option>
-                    <option value="lana_discount">Caretaker</option>
+                    <option value="all">All Purposes</option>
+                    <option value="lana_purchase">LANA Purchase</option>
+                    <option value="merchant_payment">Shop Invoice</option>
+                    <option value="merchant_commission">Shop Incentive</option>
+                    <option value="caretaker_via_discount">Caretaker</option>
+                  </select>
+                  <select
+                    value={paymentFilter}
+                    onChange={e => { setPaymentFilter(e.target.value as any); setPage(1); }}
+                    className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="all">Cash & LANA</option>
+                    <option value="cash">Cash Only</option>
+                    <option value="lana">LANA Only</option>
                   </select>
                 </div>
               </div>
@@ -220,13 +258,12 @@ const AdminIncomingPayments = () => {
                             </td>
                             <td className="px-4 py-3 text-foreground whitespace-nowrap">{formatDate(date)}</td>
                             <td className="px-4 py-3">
-                              {types.map(t => (
-                                <span key={t} className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider mr-1 ${
-                                  t === 'bank' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'
-                                }`}>
-                                  {t === 'bank' ? 'Bank' : 'Caretaker'}
-                                </span>
-                              ))}
+                              <div className="flex flex-wrap gap-1">
+                                {[...new Set(group.map(o => o.orderType))].map((ot, i) => (
+                                  <span key={i}>{orderTypeBadge(ot, group.find(o => o.orderType === ot)?.destinationType || '')}</span>
+                                ))}
+                                {paymentBadge(group[0].paymentType)}
+                              </div>
                             </td>
                             <td className="px-4 py-3 text-foreground">{group.length} recipient{group.length !== 1 ? 's' : ''}</td>
                             <td className="px-4 py-3 text-right font-mono font-medium text-foreground whitespace-nowrap">
@@ -262,11 +299,7 @@ const AdminIncomingPayments = () => {
                               <td className="px-4 py-2.5"></td>
                               <td className="px-4 py-2.5 text-xs text-muted-foreground">#{o.ppId || '—'}</td>
                               <td className="px-4 py-2.5">
-                                <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                  o.destinationType === 'bank' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'
-                                }`}>
-                                  {o.destinationType === 'bank' ? 'Bank' : 'Caretaker'}
-                                </span>
+                                {orderTypeBadge(o.orderType, o.destinationType)}
                               </td>
                               <td className="px-4 py-2.5">
                                 <div className="text-sm font-medium text-foreground">
