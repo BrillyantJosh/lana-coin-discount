@@ -62,12 +62,13 @@ interface BatchGroup {
   localBatch: LocalBatch | null;
 }
 
-type TabId = 'incoming' | 'received' | 'lana_bought' | 'lana_sent';
+type TabId = 'pending_direct' | 'incoming' | 'received' | 'lana_bought' | 'lana_sent';
 
 const tabs: { id: TabId; label: string; desc: string; color: string }[] = [
+  { id: 'pending_direct', label: 'Pending Direct', desc: 'Awaiting payment on Lana Direct Fund — not yet sent by investors', color: 'text-gray-500' },
   { id: 'incoming', label: 'Incoming', desc: 'FIAT payments sent by investors', color: 'text-amber-500' },
   { id: 'received', label: 'Received', desc: 'FIAT confirmed on bank account', color: 'text-blue-500' },
-  { id: 'lana_bought', label: 'LANA Bought', desc: 'LANA purchased with received FIAT', color: 'text-purple-500' },
+  { id: 'lana_bought', label: 'Pending to Send LANA', desc: 'LANA purchased with received FIAT — ready to distribute', color: 'text-purple-500' },
   { id: 'lana_sent', label: 'LANA Sent', desc: 'LANA distributed to recipients', color: 'text-emerald-500' },
 ];
 
@@ -172,7 +173,10 @@ const AdminIncomingPayments = () => {
 
   if (authLoading || !session || !isAdmin) return null;
 
-  // Only show lana_discount orders that have been batched and paid by investor
+  // Orders not yet paid by investor (pending on direct.lana.fund)
+  const pendingDirectOrders = orders.filter(o => !o.ppConfirmed || !o.batchRef || o.batchStatus !== 'paid');
+
+  // Orders paid by investor (batched and confirmed)
   const paidOrders = orders.filter(o => o.ppConfirmed && o.batchRef && o.batchStatus === 'paid');
 
   // Build batch groups from paid orders
@@ -214,10 +218,17 @@ const AdminIncomingPayments = () => {
   });
 
   // Summary per tab
-  const tabCounts = { incoming: 0, received: 0, lana_bought: 0, lana_sent: 0 };
+  const tabCounts: Record<TabId, number> = { pending_direct: 0, incoming: 0, received: 0, lana_bought: 0, lana_sent: 0 };
   const tabTotals: Record<TabId, Map<string, number>> = {
-    incoming: new Map(), received: new Map(), lana_bought: new Map(), lana_sent: new Map(),
+    pending_direct: new Map(), incoming: new Map(), received: new Map(), lana_bought: new Map(), lana_sent: new Map(),
   };
+
+  // Count pending_direct orders (not grouped into batches)
+  for (const o of pendingDirectOrders) {
+    tabCounts.pending_direct++;
+    tabTotals.pending_direct.set(o.currency, (tabTotals.pending_direct.get(o.currency) || 0) + o.amountFiat);
+  }
+
   for (const b of allBatches) {
     const ds = (b.discountStatus || 'incoming') as TabId;
     if (tabCounts[ds] !== undefined) {
@@ -227,6 +238,7 @@ const AdminIncomingPayments = () => {
   }
 
   const nextAction: Record<TabId, { label: string; next: TabId }> = {
+    pending_direct: { label: '', next: 'pending_direct' },
     incoming: { label: 'Confirm Received', next: 'received' },
     received: { label: 'Mark LANA Bought', next: 'lana_bought' },
     lana_bought: { label: 'Mark LANA Sent', next: 'lana_sent' },
@@ -243,7 +255,7 @@ const AdminIncomingPayments = () => {
         </p>
 
         {/* 4 Tabs */}
-        <div className="grid grid-cols-4 gap-1 bg-muted rounded-xl p-1">
+        <div className="grid grid-cols-5 gap-1 bg-muted rounded-xl p-1">
           {tabs.map(tab => {
             const count = tabCounts[tab.id];
             const totals = tabTotals[tab.id];
@@ -282,6 +294,57 @@ const AdminIncomingPayments = () => {
         {/* Batch list */}
         {loading ? (
           <div className="text-center py-12 text-muted-foreground">Loading...</div>
+        ) : activeTab === 'pending_direct' ? (
+          /* Pending Direct tab: show individual orders waiting on Lana Direct Fund */
+          pendingDirectOrders.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">No pending orders on Lana Direct Fund</div>
+          ) : (
+            <div className="rounded-xl border overflow-hidden">
+              <div className="px-4 py-2 text-[10px] text-muted-foreground flex items-center justify-between bg-muted/30 border-b">
+                <div className="flex items-center gap-4">
+                  <span className="w-8">ID</span>
+                  <span className="w-28">Date</span>
+                  <span className="w-24">Type</span>
+                  <span className="w-24">Status</span>
+                  <span>Wallet</span>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className="w-20 text-right">FIAT</span>
+                  <span className="w-20 text-right">LANA</span>
+                </div>
+              </div>
+              {pendingDirectOrders.map(o => {
+                const pc = purposeConfig[o.orderType || ''] || { label: o.orderType || '?', cls: 'bg-muted text-muted-foreground' };
+                const lanaAmount = exchangeRate > 0 ? Math.round(o.amountFiat / exchangeRate) : 0;
+                const statusLabel = !o.ppConfirmed ? 'Awaiting Payment' : o.batchStatus !== 'paid' ? 'In Batch' : 'Paid';
+                const statusCls = !o.ppConfirmed ? 'text-gray-400' : o.batchStatus !== 'paid' ? 'text-amber-500' : 'text-emerald-500';
+                return (
+                  <div key={o.id} className="px-4 py-2 text-xs flex items-center justify-between border-b last:border-0 hover:bg-accent/30 transition-colors">
+                    <div className="flex items-center gap-4 min-w-0">
+                      <span className="text-muted-foreground w-8">#{o.ppId || '—'}</span>
+                      <div className="w-28 whitespace-nowrap">
+                        <span>{formatDate(o.createdAt)}</span>
+                        <span className="text-muted-foreground ml-1">{formatTime(o.createdAt)}</span>
+                      </div>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold w-24 text-center ${pc.cls}`}>{pc.label}</span>
+                      <span className={`text-[10px] font-medium w-24 ${statusCls}`}>{statusLabel}</span>
+                      {o.recipientWallet && (
+                        <span className="font-mono text-muted-foreground truncate max-w-[140px]" title={o.recipientWallet}>
+                          {shortenWallet(o.recipientWallet)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-4 shrink-0">
+                      <span className="font-medium tabular-nums w-20 text-right">{formatFiat(o.amountFiat, o.currency)}</span>
+                      <span className="text-muted-foreground tabular-nums w-20 text-right">
+                        {lanaAmount > 0 ? lanaAmount.toLocaleString() : '—'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
         ) : filteredBatches.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">
             No batches in "{tabs.find(t => t.id === activeTab)?.label}"
