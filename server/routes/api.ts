@@ -1238,11 +1238,93 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
     const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/fiat-orders`);
     if (!resp.ok) throw new Error(`Direct Fund API error: ${resp.status}`);
     const data = await resp.json();
-    return res.json(data);
+
+    // Enrich with local batch status
+    const localBatches = db.prepare('SELECT * FROM incoming_batches ORDER BY created_at DESC').all() as any[];
+    const localBatchMap = new Map<string, any>();
+    for (const b of localBatches) localBatchMap.set(b.batch_ref, b);
+
+    // Add local status to orders
+    const enrichedOrders = (data.orders || []).map((o: any) => ({
+      ...o,
+      discountStatus: o.batchRef ? (localBatchMap.get(o.batchRef)?.status || null) : null,
+      discountBatchId: o.batchRef ? (localBatchMap.get(o.batchRef)?.id || null) : null,
+    }));
+
+    return res.json({
+      orders: enrichedOrders,
+      summary: data.summary,
+      localBatches: localBatches.map((b: any) => ({
+        id: b.id,
+        batchRef: b.batch_ref,
+        investorHex: b.investor_hex,
+        totalAmount: b.total_amount,
+        currency: b.currency,
+        paymentCount: b.payment_count,
+        status: b.status,
+        receivedAt: b.received_at,
+        lanaBoughtAt: b.lana_bought_at,
+        lanaSentAt: b.lana_sent_at,
+        lanaTxHash: b.lana_tx_hash,
+        notes: b.notes,
+        createdAt: b.created_at,
+      })),
+    });
   } catch (error: any) {
     console.error('Failed to fetch incoming payments from Direct Fund:', error.message);
-    return res.json({ orders: [], summary: { pendingBank: {}, pendingLanaDiscount: {}, paidBank: {} } });
+    return res.json({ orders: [], summary: {}, localBatches: [] });
   }
+});
+
+// Update incoming batch status (received → lana_bought → lana_sent)
+router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  const { batchRef } = req.params;
+  const { status, notes, lanaTxHash } = req.body;
+
+  const validStatuses = ['incoming', 'received', 'lana_bought', 'lana_sent'];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({ error: `Status must be one of: ${validStatuses.join(', ')}` });
+  }
+
+  // Upsert the batch
+  let batch = db.prepare('SELECT * FROM incoming_batches WHERE batch_ref = ?').get(batchRef) as any;
+  if (!batch) {
+    // Create from request body
+    const { investorHex, totalAmount, currency, paymentCount, payments } = req.body;
+    db.prepare(`
+      INSERT INTO incoming_batches (batch_ref, investor_hex, total_amount, currency, payment_count, status)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(batchRef, investorHex || '', totalAmount || 0, currency || '', paymentCount || 0, status);
+    batch = db.prepare('SELECT * FROM incoming_batches WHERE batch_ref = ?').get(batchRef) as any;
+
+    // Insert individual payments
+    if (Array.isArray(payments)) {
+      const insertPmt = db.prepare(`
+        INSERT INTO incoming_batch_payments (batch_id, pp_id, order_type, amount_fiat, currency, recipient_wallet, shop_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const p of payments) {
+        insertPmt.run(batch.id, p.ppId || 0, p.orderType || null, p.amountFiat || 0, p.currency || '', p.recipientWallet || null, p.shopName || null);
+      }
+    }
+  }
+
+  // Update status + timestamps
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const updates: string[] = [`status = '${status}'`, `updated_at = '${now}'`];
+  if (status === 'received') updates.push(`received_at = '${now}'`);
+  if (status === 'lana_bought') updates.push(`lana_bought_at = '${now}'`);
+  if (status === 'lana_sent') updates.push(`lana_sent_at = '${now}'`);
+  if (notes) updates.push(`notes = '${notes.replace(/'/g, "''")}'`);
+  if (lanaTxHash) updates.push(`lana_tx_hash = '${lanaTxHash}'`);
+
+  db.prepare(`UPDATE incoming_batches SET ${updates.join(', ')} WHERE batch_ref = ?`).run(batchRef);
+
+  const updated = db.prepare('SELECT * FROM incoming_batches WHERE batch_ref = ?').get(batchRef);
+  res.json({ success: true, batch: updated });
 });
 
 // ---------------------------------------------------------------------------

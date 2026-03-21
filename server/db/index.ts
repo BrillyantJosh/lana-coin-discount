@@ -130,6 +130,37 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_buyback_user ON buyback_transactions(user_hex_id);
   CREATE INDEX IF NOT EXISTS idx_buyback_status ON buyback_transactions(status);
   CREATE INDEX IF NOT EXISTS idx_sale_payouts_tx ON sale_payouts(transaction_id);
+
+  -- Incoming batch tracking (from Direct Fund investor payments)
+  CREATE TABLE IF NOT EXISTS incoming_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_ref TEXT NOT NULL UNIQUE,
+    investor_hex TEXT NOT NULL,
+    total_amount REAL NOT NULL,
+    currency TEXT NOT NULL,
+    payment_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'incoming',
+    received_at TEXT,
+    lana_bought_at TEXT,
+    lana_sent_at TEXT,
+    lana_tx_hash TEXT,
+    notes TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  -- Individual payments within incoming batches
+  CREATE TABLE IF NOT EXISTS incoming_batch_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES incoming_batches(id),
+    pp_id INTEGER NOT NULL,
+    order_type TEXT,
+    amount_fiat REAL NOT NULL,
+    currency TEXT NOT NULL,
+    recipient_wallet TEXT,
+    shop_name TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // --- Safe migrations: add columns to buyback_transactions ---
