@@ -24,6 +24,11 @@ const AdminSettings = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Bank accounts state
+  interface BankAccount { currency: string; recipientName: string; bankName: string; bankSwift: string; bankAccount: string }
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [savingBanks, setSavingBanks] = useState(false);
+
   // Settings state
   const [walletId, setWalletId] = useState('');
   const [activeCurrencies, setActiveCurrencies] = useState<string[]>([]);
@@ -61,6 +66,15 @@ const AdminSettings = () => {
       setAvailableCurrencies(data.availableCurrencies || []);
       setInitialWalletId(bwId);
       setInitialCurrencies(currencies);
+
+      // Fetch bank accounts
+      try {
+        const bankRes = await fetch('/api/admin/bank-accounts', {
+          headers: { 'x-admin-hex-id': session.nostrHexId },
+        });
+        const bankData = await bankRes.json();
+        setBankAccounts(bankData.accounts || []);
+      } catch {}
     } catch (err) {
       console.error('Failed to load settings:', err);
       toast.error('Failed to load settings');
@@ -208,6 +222,87 @@ const AdminSettings = () => {
               <p className="mt-3 text-xs text-muted-foreground">
                 {activeCurrencies.length} of {availableCurrencies.length} currencies active
               </p>
+            </div>
+
+            {/* Bank Accounts per Currency */}
+            <div className="rounded-2xl border-2 border-border bg-card p-6">
+              <h2 className="text-lg font-semibold text-foreground mb-1">Bank Accounts</h2>
+              <p className="text-sm text-muted-foreground mb-4">
+                Bank accounts where investors send FIAT payments to Lana Discount. Each active currency should have its own bank account.
+              </p>
+              <div className="space-y-4">
+                {bankAccounts.map((a, i) => (
+                  <div key={i} className="rounded-xl border border-border p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <select value={a.currency}
+                        onChange={e => { const arr = [...bankAccounts]; arr[i] = { ...arr[i], currency: e.target.value }; setBankAccounts(arr); }}
+                        className="rounded-lg border border-border bg-background px-3 py-2 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30">
+                        {activeCurrencies.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <button onClick={() => setBankAccounts(prev => prev.filter((_, j) => j !== i))}
+                        className="text-sm text-destructive hover:text-destructive/80 transition-colors">Remove</button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">Recipient Name</label>
+                        <input value={a.recipientName}
+                          onChange={e => { const arr = [...bankAccounts]; arr[i] = { ...arr[i], recipientName: e.target.value }; setBankAccounts(arr); }}
+                          placeholder="Company Name"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">Bank Name</label>
+                        <input value={a.bankName || ''}
+                          onChange={e => { const arr = [...bankAccounts]; arr[i] = { ...arr[i], bankName: e.target.value }; setBankAccounts(arr); }}
+                          placeholder="Revolut Bank UAB"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">SWIFT / BIC</label>
+                        <input value={a.bankSwift || ''}
+                          onChange={e => { const arr = [...bankAccounts]; arr[i] = { ...arr[i], bankSwift: e.target.value }; setBankAccounts(arr); }}
+                          placeholder="REVOLT21"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">IBAN / Account</label>
+                        <input value={a.bankAccount || ''}
+                          onChange={e => { const arr = [...bankAccounts]; arr[i] = { ...arr[i], bankAccount: e.target.value }; setBankAccounts(arr); }}
+                          placeholder="LT98 3250 0089 3025 3738"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center gap-3 mt-4">
+                <button
+                  onClick={() => setBankAccounts(prev => [...prev, { currency: activeCurrencies[0] || 'EUR', recipientName: '', bankName: '', bankSwift: '', bankAccount: '' }])}
+                  className="rounded-xl border-2 border-dashed border-border px-4 py-2.5 text-sm text-muted-foreground hover:border-primary hover:text-primary transition-colors"
+                >
+                  + Add Bank Account
+                </button>
+                <button
+                  onClick={async () => {
+                    setSavingBanks(true);
+                    try {
+                      await fetch('/api/admin/bank-accounts', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session!.nostrHexId },
+                        body: JSON.stringify({ accounts: bankAccounts }),
+                      });
+                      toast.success('Bank accounts saved');
+                    } catch { toast.error('Failed to save bank accounts'); }
+                    setSavingBanks(false);
+                  }}
+                  disabled={savingBanks}
+                  className={`rounded-xl px-6 py-2.5 font-semibold text-white transition-all ${
+                    savingBanks ? 'bg-muted-foreground/30 cursor-not-allowed' : 'bg-primary hover:bg-primary/90'
+                  }`}
+                >
+                  {savingBanks ? 'Saving...' : 'Save Bank Accounts'}
+                </button>
+              </div>
             </div>
 
             {/* Save button */}

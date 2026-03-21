@@ -728,6 +728,35 @@ router.put('/admin/settings', (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/admin/bank-accounts
+ * Get bank accounts per currency for Lana Discount
+ */
+router.get('/admin/bank-accounts', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+  const settings = getAllAppSettings();
+  let accounts: any[] = [];
+  try { accounts = JSON.parse(settings.bank_accounts || '[]'); } catch {}
+  res.json({ accounts });
+});
+
+/**
+ * PUT /api/admin/bank-accounts
+ * Save bank accounts per currency
+ */
+router.put('/admin/bank-accounts', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+  const { accounts } = req.body;
+  if (!Array.isArray(accounts)) {
+    return res.status(400).json({ error: 'accounts must be an array' });
+  }
+  setAppSetting('bank_accounts', JSON.stringify(accounts), adminHex);
+  console.log(`[lana-discount] Bank accounts updated by ${adminHex.slice(0, 12)}...`);
+  res.json({ success: true });
+});
+
 // ---------------------------------------------------------------------------
 // System params & Sell endpoints
 // ---------------------------------------------------------------------------
