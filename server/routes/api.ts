@@ -1154,6 +1154,26 @@ router.post('/admin/reject-transaction/:id', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
+// Incoming FIAT Payments from Direct Fund (proxy to direct.lana.fund)
+// ---------------------------------------------------------------------------
+const DIRECT_FUND_URL = process.env.DIRECT_FUND_URL || 'http://lana-direct-fund-web:3005';
+
+router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/fiat-orders`);
+    if (!resp.ok) throw new Error(`Direct Fund API error: ${resp.status}`);
+    const data = await resp.json();
+    return res.json(data);
+  } catch (error: any) {
+    console.error('Failed to fetch incoming payments from Direct Fund:', error.message);
+    return res.json({ orders: [], summary: { pendingBank: {}, pendingLanaDiscount: {}, paidBank: {} } });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // External API endpoints (authenticated by API key)
 // ---------------------------------------------------------------------------
 
