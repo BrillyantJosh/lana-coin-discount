@@ -99,23 +99,33 @@ const AdminIncomingPayments = () => {
 
   const formatFiat = (v: number, c: string) => v.toLocaleString(undefined, { style: 'currency', currency: c });
 
-  const orderTypeBadge = (ot: string | null, dt: string) => {
-    const label = ot === 'lana_purchase' ? 'LANA Purchase'
-      : ot === 'merchant_payment' ? 'Shop Invoice'
-      : ot === 'merchant_commission' ? 'Shop Incentive'
-      : ot === 'caretaker_via_discount' ? 'Caretaker'
-      : dt === 'lana_discount' ? 'Caretaker' : 'Bank';
-    const color = ot === 'lana_purchase' ? 'bg-green-100 text-green-700'
-      : ot === 'merchant_payment' ? 'bg-amber-100 text-amber-700'
-      : ot === 'merchant_commission' ? 'bg-blue-100 text-blue-700'
-      : ot === 'caretaker_via_discount' ? 'bg-purple-100 text-purple-700'
-      : dt === 'lana_discount' ? 'bg-purple-100 text-purple-700' : 'bg-amber-100 text-amber-700';
-    return <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${color}`}>{label}</span>;
+  // Infer order_type from available data (handles old records without order_type)
+  const inferOrderType = (ot: string | null, dt: string, dn: string | null): string => {
+    if (ot) return ot;
+    // Fallback inference for old records
+    if (dt === 'lana_discount' && dn?.toLowerCase().includes('caretaker')) return 'caretaker_via_discount';
+    if (dt === 'lana_discount') return 'lana_purchase';
+    if (dt === 'bank') return 'merchant_payment'; // LANA payment → investor pays merchant
+    return 'merchant_payment';
+  };
+
+  const purposeConfig: Record<string, { label: string; color: string }> = {
+    lana_purchase: { label: 'LANA Purchase', color: 'bg-green-100 text-green-700' },
+    merchant_payment: { label: 'Shop Invoice', color: 'bg-amber-100 text-amber-700' },
+    merchant_commission: { label: 'Shop Incentive', color: 'bg-blue-100 text-blue-700' },
+    caretaker_via_discount: { label: 'Caretaker', color: 'bg-purple-100 text-purple-700' },
+  };
+
+  const orderTypeBadge = (ot: string | null, dt: string, dn: string | null = null) => {
+    const type = inferOrderType(ot, dt, dn);
+    const cfg = purposeConfig[type] || { label: type, color: 'bg-gray-100 text-gray-700' };
+    return <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${cfg.color}`}>{cfg.label}</span>;
   };
 
   const paymentBadge = (pt: string | null) => {
-    if (!pt) return null;
-    const isLana = pt === 'lana';
+    // For old records, infer from context (all old ones were LANA)
+    const type = pt || 'lana';
+    const isLana = type === 'lana';
     return <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${
       isLana ? 'border-amber-400 text-amber-600' : 'border-gray-400 text-gray-600'
     }`}>{isLana ? 'LANA' : 'Cash'}</span>;
@@ -259,8 +269,8 @@ const AdminIncomingPayments = () => {
                             <td className="px-4 py-3 text-foreground whitespace-nowrap">{formatDate(date)}</td>
                             <td className="px-4 py-3">
                               <div className="flex flex-wrap gap-1">
-                                {[...new Set(group.map(o => o.orderType))].map((ot, i) => (
-                                  <span key={i}>{orderTypeBadge(ot, group.find(o => o.orderType === ot)?.destinationType || '')}</span>
+                                {[...new Map(group.map(o => [inferOrderType(o.orderType, o.destinationType, o.destinationName), o])).values()].map((o, i) => (
+                                  <span key={i}>{orderTypeBadge(o.orderType, o.destinationType, o.destinationName)}</span>
                                 ))}
                                 {paymentBadge(group[0].paymentType)}
                               </div>
@@ -299,7 +309,7 @@ const AdminIncomingPayments = () => {
                               <td className="px-4 py-2.5"></td>
                               <td className="px-4 py-2.5 text-xs text-muted-foreground">#{o.ppId || '—'}</td>
                               <td className="px-4 py-2.5">
-                                {orderTypeBadge(o.orderType, o.destinationType)}
+                                {orderTypeBadge(o.orderType, o.destinationType, o.destinationName)}
                               </td>
                               <td className="px-4 py-2.5">
                                 <div className="text-sm font-medium text-foreground">
