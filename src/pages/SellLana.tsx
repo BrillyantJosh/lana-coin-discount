@@ -248,7 +248,7 @@ const SellLana = () => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [lanaAmount, selectedCurrency]);
+  }, [lanaAmount, selectedCurrency, selectedWallet]);
 
   const executeSell = async () => {
     if (!session || !preview) return;
