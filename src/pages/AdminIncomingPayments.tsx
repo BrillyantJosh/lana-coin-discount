@@ -140,6 +140,8 @@ const AdminIncomingPayments = () => {
   const [orders, setOrders] = useState<FiatOrder[]>([]);
   const [lanaOrders, setLanaOrders] = useState<LanaOrder[]>([]);
   const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; balanceLana: number }>({ wallet: '', balanceLana: 0 });
+  const [heartbeatInfo, setHeartbeatInfo] = useState<{ nextAutoSendMin: number; pendingLanaOrders: number; lastAutoSendAt: string | null }>({ nextAutoSendMin: 0, pendingLanaOrders: 0, lastAutoSendAt: null });
+  const [countdown, setCountdown] = useState(0);
   const [lanaObligations, setLanaObligations] = useState<{ pendingLanoshis: number; sentLanoshis: number }>({ pendingLanoshis: 0, sentLanoshis: 0 });
   const [localBatches, setLocalBatches] = useState<LocalBatch[]>([]);
   const [loading, setLoading] = useState(true);
@@ -180,6 +182,39 @@ const AdminIncomingPayments = () => {
   }, [session, isAdmin]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Poll heartbeat status every 30s + countdown timer
+  useEffect(() => {
+    const fetchHb = async () => {
+      try {
+        const res = await fetch('/api/heartbeat-status');
+        if (res.ok) {
+          const data = await res.json();
+          setHeartbeatInfo(data);
+          setCountdown(data.nextAutoSendMin * 60); // seconds
+        }
+      } catch {}
+    };
+    fetchHb();
+    const hbTimer = setInterval(fetchHb, 30000);
+    return () => clearInterval(hbTimer);
+  }, []);
+
+  // Countdown every second
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const t = setInterval(() => {
+      setCountdown(c => {
+        if (c <= 1) {
+          // Auto-refresh data when countdown hits 0
+          fetchData();
+          return 0;
+        }
+        return c - 1;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [countdown, fetchData]);
 
   const updateBatchStatus = async (batch: BatchGroup, newStatus: TabId) => {
     if (!session) return;
@@ -364,6 +399,15 @@ const AdminIncomingPayments = () => {
         {/* LANA Balance Overview */}
         {buybackBalance.wallet && (
           <div className="rounded-xl border bg-card p-4">
+            {/* Auto-send countdown */}
+            {heartbeatInfo.pendingLanaOrders > 0 && (
+              <div className="flex items-center justify-center gap-2 mb-3 pb-3 border-b">
+                <span className="text-xs text-muted-foreground">Auto-send {heartbeatInfo.pendingLanaOrders} pending order{heartbeatInfo.pendingLanaOrders !== 1 ? 's' : ''} in</span>
+                <span className="text-sm font-bold tabular-nums text-amber-500">
+                  {countdown > 0 ? `${Math.floor(countdown / 60)}:${(countdown % 60).toString().padStart(2, '0')}` : 'sending...'}
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-4 gap-4 text-center">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Buyback Wallet</p>

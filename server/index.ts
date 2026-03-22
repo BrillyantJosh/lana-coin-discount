@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './routes/api.js';
 import { fetchKind38888, Kind38888Data } from './lib/nostr.js';
-import db, { closeDb } from './db/index.js';
+import db, { closeDb, getElectrumServersFromDb, getAppSetting } from './db/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -106,7 +106,11 @@ function withTimeout<T>(fn: () => Promise<T>, label: string, ms: number): Promis
 // ---------------------------------------------------------------------------
 
 const HEARTBEAT_INTERVAL = 60 * 1000; // 1 minute
+const AUTO_SEND_CYCLE = 5; // every 5 heartbeats = 5 min
+const AUTO_SEND_OFFSET = 3;
 let heartbeatCount = 0;
+let lastAutoSendAt: string | null = null;
+let nextAutoSendIn = AUTO_SEND_CYCLE - AUTO_SEND_OFFSET; // initial countdown
 
 async function verifyUnconfirmedTransactions(): Promise<void> {
   try {
@@ -187,7 +191,6 @@ async function autoSendPendingLana(): Promise<void> {
 
     const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress, buildSignedTx } = await import('./lib/transaction.js');
     const { electrumCall } = await import('./lib/electrum.js');
-    const { getElectrumServersFromDb } = await import('./lib/db.js');
 
     const electrumServers = getElectrumServersFromDb();
     if (electrumServers.length === 0) {
@@ -293,9 +296,13 @@ const heartbeatTimer = setInterval(async () => {
     await verifyUnconfirmedTransactions();
   }
 
-  // Auto-send pending LANA every 10 heartbeats (= every 10 minutes)
-  if (heartbeatCount % 10 === 5) {
+  // Auto-send pending LANA every 5 heartbeats (= every 5 minutes)
+  nextAutoSendIn = AUTO_SEND_CYCLE - ((heartbeatCount % AUTO_SEND_CYCLE) - AUTO_SEND_OFFSET + AUTO_SEND_CYCLE) % AUTO_SEND_CYCLE;
+  if (nextAutoSendIn === AUTO_SEND_CYCLE) nextAutoSendIn = 0;
+  if (heartbeatCount % AUTO_SEND_CYCLE === AUTO_SEND_OFFSET) {
     await withTimeout(() => autoSendPendingLana(), 'Auto-send LANA', 60000);
+    lastAutoSendAt = new Date().toISOString();
+    nextAutoSendIn = AUTO_SEND_CYCLE;
   }
 }, HEARTBEAT_INTERVAL);
 
@@ -316,6 +323,19 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // ---------------------------------------------------------------------------
 // Start server
 // ---------------------------------------------------------------------------
+
+// Heartbeat status endpoint for UI
+app.get('/api/heartbeat-status', (req, res) => {
+  const pendingCount = (db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE status = 'pending'").get() as any).c;
+  res.json({
+    heartbeatCount,
+    heartbeatIntervalSec: HEARTBEAT_INTERVAL / 1000,
+    autoSendCycleMin: AUTO_SEND_CYCLE,
+    nextAutoSendMin: nextAutoSendIn,
+    lastAutoSendAt,
+    pendingLanaOrders: pendingCount,
+  });
+});
 
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`[lana-discount] Server running on port ${PORT}`);
