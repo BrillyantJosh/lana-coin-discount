@@ -263,19 +263,15 @@ async function autoSendPendingLana(): Promise<void> {
       updateStmt.run(txHash, o.id);
     }
 
-    // Also update incoming_batches if they exist
-    const txRefs = [...new Set(pendingOrders.map((o: any) => o.transaction_ref))];
-    // Find batch refs that are fully sent
-    for (const ref of txRefs) {
-      const remaining = db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE transaction_ref = ? AND status = 'pending'").get(ref) as any;
-      if (remaining.c === 0) {
-        // All orders for this tx ref are sent — update any incoming batches
-        db.prepare(`
-          UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
-          WHERE batch_ref IN (
-            SELECT DISTINCT batch_ref FROM brain_fiat_orders_cache WHERE transaction_ref = ?
-          ) AND status = 'lana_bought'
-        `).run(txHash, ref);
+    // Update incoming_batches: if no more pending orders, all lana_bought → lana_sent
+    const stillPending = (db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE status = 'pending'").get() as any).c;
+    if (stillPending === 0) {
+      const updated = db.prepare(`
+        UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
+        WHERE status = 'lana_bought'
+      `).run(txHash);
+      if (updated.changes > 0) {
+        console.log(`[lana-discount] Updated ${updated.changes} incoming batches → lana_sent`);
       }
     }
   } catch (err: any) {
