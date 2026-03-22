@@ -683,8 +683,11 @@ const SellLana = () => {
                           </div>
                         </div>
 
-                        <div className="text-xs text-muted-foreground pt-1">
-                          Destination wallet: <span className="font-mono">{preview.buybackWalletId.slice(0, 12)}...{preview.buybackWalletId.slice(-8)}</span>
+                        <div className="text-xs text-muted-foreground pt-1 space-y-0.5">
+                          <div>From: <span className="font-mono font-medium text-foreground">{senderAddr.slice(0, 12)}...{senderAddr.slice(-8)}</span>
+                            {(() => { const wt = wallets.find(w => w.walletId === selectedWallet)?.walletType; return wt ? <span className="ml-1 text-muted-foreground">({wt})</span> : null; })()}
+                          </div>
+                          <div>To buyback: <span className="font-mono">{preview.buybackWalletId.slice(0, 12)}...{preview.buybackWalletId.slice(-8)}</span></div>
                         </div>
                       </div>
                     )}
