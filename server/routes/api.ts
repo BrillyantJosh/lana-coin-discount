@@ -1254,7 +1254,34 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
     // Include brain_lana_orders for LANA recipient breakdown
     const lanaOrders = db.prepare('SELECT * FROM brain_lana_orders ORDER BY created_at DESC').all() as any[];
 
+    // Buyback wallet balance for overview
+    let buybackBalance = { wallet: '', confirmed: 0, unconfirmed: 0 };
+    try {
+      const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
+      if (buybackWalletId) {
+        const electrumServers = getElectrumServersFromDb();
+        if (electrumServers.length > 0) {
+          const balances = await fetchBatchBalances([buybackWalletId], electrumServers);
+          const wb = balances[buybackWalletId];
+          buybackBalance = { wallet: buybackWalletId, confirmed: wb?.confirmed || 0, unconfirmed: wb?.unconfirmed || 0 };
+        }
+      }
+    } catch {}
+
+    // LANA obligation summary
+    const pendingLanoshis = lanaOrders
+      .filter((o: any) => o.status === 'pending')
+      .reduce((s: number, o: any) => s + o.lanaAmount, 0);
+    const sentLanoshis = lanaOrders
+      .filter((o: any) => o.status === 'sent')
+      .reduce((s: number, o: any) => s + o.lanaAmount, 0);
+
     return res.json({
+      buybackBalance,
+      lanaObligations: {
+        pendingLanoshis,
+        sentLanoshis,
+      },
       orders: enrichedOrders,
       summary: data.summary,
       lanaOrders: lanaOrders.map((o: any) => ({
@@ -1828,8 +1855,7 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
 
     const normalizedKey = normalizeWif(buybackWif);
     const privateKeyBytes = base58CheckDecode(normalizedKey);
-    const uint8ArrayToHex = (arr: Uint8Array) => Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-    const privateKeyHex = uint8ArrayToHex(privateKeyBytes.slice(1, 33));
+    const privateKeyHex = Array.from(privateKeyBytes.slice(1, 33)).map(b => b.toString(16).padStart(2, '0')).join('');
 
     const uncompressedPubKey = privateKeyToUncompressedPublicKey(privateKeyHex);
     const uncompressedAddress = publicKeyToAddress(uncompressedPubKey);
@@ -1885,18 +1911,19 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
       });
     }
 
-    // Build and sign TX
-    const rawTx = buildSignedTx(
+    // Build and sign TX (same pattern as send-customer-lana)
+    const { txHex } = await buildSignedTx(
       selectedUTXOs,
+      buybackWif,
       txRecipients,
-      useAddress,
-      privateKeyHex,
       fee,
+      useAddress,
+      electrumServers,
       useCompressed
     );
 
     // Broadcast
-    const txHash = await electrumCall('blockchain.transaction.broadcast', [rawTx], electrumServers);
+    const txHash = await electrumCall('blockchain.transaction.broadcast', [txHex], electrumServers);
 
     if (!txHash || typeof txHash !== 'string' || txHash.length !== 64) {
       return res.status(500).json({ error: 'Broadcast failed', response: txHash });

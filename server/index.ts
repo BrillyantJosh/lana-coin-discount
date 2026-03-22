@@ -161,6 +161,125 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Auto-send pending LANA orders (batch up to 30 recipients per TX)
+// ---------------------------------------------------------------------------
+
+async function autoSendPendingLana(): Promise<void> {
+  try {
+    const buybackWif = process.env.BUYBACK_WIF;
+    if (!buybackWif) return;
+
+    // Find all pending brain_lana_orders
+    const pendingOrders = db.prepare(`
+      SELECT * FROM brain_lana_orders
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT 30
+    `).all() as any[];
+
+    if (pendingOrders.length === 0) return;
+
+    const totalLanoshis = pendingOrders.reduce((s: number, o: any) => s + o.lana_amount, 0);
+    const totalLana = totalLanoshis / 100_000_000;
+
+    console.log(`[lana-discount] Auto-send LANA: ${pendingOrders.length} orders, ${totalLana.toFixed(3)} LANA total`);
+
+    const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress, buildSignedTx } = await import('./lib/transaction.js');
+    const { electrumCall } = await import('./lib/electrum.js');
+    const { getElectrumServersFromDb } = await import('./lib/db.js');
+
+    const electrumServers = getElectrumServersFromDb();
+    if (electrumServers.length === 0) {
+      console.warn('[lana-discount] Auto-send: no electrum servers');
+      return;
+    }
+
+    // Derive addresses from WIF
+    const normalizedKey = normalizeWif(buybackWif);
+    const keyBytes = base58CheckDecode(normalizedKey);
+    const privKeyHex = Array.from(keyBytes.slice(1, 33)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    const uncompAddr = publicKeyToAddress(privateKeyToUncompressedPublicKey(privKeyHex));
+    const compAddr = publicKeyToAddress(privateKeyToPublicKey(privKeyHex));
+
+    let useAddress = uncompAddr;
+    let useCompressed = false;
+
+    let utxos = await electrumCall('blockchain.address.listunspent', [uncompAddr], electrumServers);
+    if (!utxos || utxos.length === 0) {
+      utxos = await electrumCall('blockchain.address.listunspent', [compAddr], electrumServers);
+      if (utxos && utxos.length > 0) { useAddress = compAddr; useCompressed = true; }
+    }
+
+    if (!utxos || utxos.length === 0) {
+      console.warn('[lana-discount] Auto-send: no UTXOs in buyback wallet');
+      return;
+    }
+
+    // Build recipients
+    const txRecipients = pendingOrders.map((o: any) => ({
+      address: normalizeAddress(o.to_wallet),
+      amount: o.lana_amount,
+    }));
+
+    // UTXO selection
+    const outputCount = txRecipients.length + 1;
+    const sorted = [...utxos].sort((a: any, b: any) => b.value - a.value);
+    let selected: any[] = [];
+    let total = 0;
+    let fee = 0;
+
+    for (const u of sorted) {
+      if (selected.length >= 30) break;
+      selected.push(u);
+      total += u.value;
+      fee = Math.floor((selected.length * 180 + outputCount * 34 + 10) * 150);
+      if (total >= totalLanoshis + fee) break;
+    }
+
+    if (total < totalLanoshis + fee) {
+      console.warn(`[lana-discount] Auto-send: insufficient balance (need ${totalLanoshis + fee}, have ${total})`);
+      return;
+    }
+
+    // Build, sign, broadcast
+    const { txHex } = await buildSignedTx(selected, buybackWif, txRecipients, fee, useAddress, electrumServers, useCompressed);
+    const txHash = await electrumCall('blockchain.transaction.broadcast', [txHex], electrumServers);
+
+    if (!txHash || typeof txHash !== 'string' || txHash.length !== 64) {
+      console.error('[lana-discount] Auto-send broadcast failed:', txHash);
+      return;
+    }
+
+    console.log(`[lana-discount] Auto-send LANA TX: ${txHash} (${pendingOrders.length} recipients, ${totalLana.toFixed(3)} LANA)`);
+
+    // Update all orders to 'sent'
+    const updateStmt = db.prepare("UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ?");
+    for (const o of pendingOrders) {
+      updateStmt.run(txHash, o.id);
+    }
+
+    // Also update incoming_batches if they exist
+    const txRefs = [...new Set(pendingOrders.map((o: any) => o.transaction_ref))];
+    // Find batch refs that are fully sent
+    for (const ref of txRefs) {
+      const remaining = db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE transaction_ref = ? AND status = 'pending'").get(ref) as any;
+      if (remaining.c === 0) {
+        // All orders for this tx ref are sent — update any incoming batches
+        db.prepare(`
+          UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
+          WHERE batch_ref IN (
+            SELECT DISTINCT batch_ref FROM brain_fiat_orders_cache WHERE transaction_ref = ?
+          ) AND status = 'lana_bought'
+        `).run(txHash, ref);
+      }
+    }
+  } catch (err: any) {
+    console.error('[lana-discount] Auto-send LANA error:', err.message);
+  }
+}
+
 const heartbeatTimer = setInterval(async () => {
   heartbeatCount++;
 
@@ -172,6 +291,11 @@ const heartbeatTimer = setInterval(async () => {
   // RPC transaction verification every 10 heartbeats (= every 10 minutes)
   if (heartbeatCount % 10 === 0) {
     await verifyUnconfirmedTransactions();
+  }
+
+  // Auto-send pending LANA every 10 heartbeats (= every 10 minutes)
+  if (heartbeatCount % 10 === 5) {
+    await withTimeout(() => autoSendPendingLana(), 'Auto-send LANA', 60000);
   }
 }, HEARTBEAT_INTERVAL);
 

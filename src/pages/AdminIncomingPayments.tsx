@@ -139,6 +139,8 @@ const AdminIncomingPayments = () => {
   const navigate = useNavigate();
   const [orders, setOrders] = useState<FiatOrder[]>([]);
   const [lanaOrders, setLanaOrders] = useState<LanaOrder[]>([]);
+  const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; confirmed: number; unconfirmed: number }>({ wallet: '', confirmed: 0, unconfirmed: 0 });
+  const [lanaObligations, setLanaObligations] = useState<{ pendingLanoshis: number; sentLanoshis: number }>({ pendingLanoshis: 0, sentLanoshis: 0 });
   const [localBatches, setLocalBatches] = useState<LocalBatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>('incoming');
@@ -162,6 +164,8 @@ const AdminIncomingPayments = () => {
       const ldOrders = (data.orders || []).filter((o: FiatOrder) => o.destinationType === 'lana_discount');
       setOrders(ldOrders);
       setLanaOrders(data.lanaOrders || []);
+      setBuybackBalance(data.buybackBalance || { wallet: '', confirmed: 0, unconfirmed: 0 });
+      setLanaObligations(data.lanaObligations || { pendingLanoshis: 0, sentLanoshis: 0 });
       setLocalBatches(data.localBatches || []);
       try {
         const spRes = await fetch('/api/system-params');
@@ -356,6 +360,35 @@ const AdminIncomingPayments = () => {
             );
           })}
         </div>
+
+        {/* LANA Balance Overview */}
+        {buybackBalance.wallet && (
+          <div className="rounded-xl border bg-card p-4">
+            <div className="grid grid-cols-4 gap-4 text-center">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Buyback Wallet</p>
+                <p className="text-lg font-bold tabular-nums">{formatLana(buybackBalance.confirmed)} <span className="text-xs text-muted-foreground">LANA</span></p>
+                {buybackBalance.unconfirmed !== 0 && (
+                  <p className="text-[10px] text-amber-500 tabular-nums">{buybackBalance.unconfirmed > 0 ? '+' : ''}{formatLana(buybackBalance.unconfirmed)} unconf</p>
+                )}
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500">Pending to Send</p>
+                <p className="text-lg font-bold tabular-nums text-amber-500">{formatLana(lanaObligations.pendingLanoshis)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-500">Already Sent</p>
+                <p className="text-lg font-bold tabular-nums text-emerald-500">{formatLana(lanaObligations.sentLanoshis)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Available</p>
+                <p className={`text-lg font-bold tabular-nums ${buybackBalance.confirmed - lanaObligations.pendingLanoshis >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                  {formatLana(buybackBalance.confirmed - lanaObligations.pendingLanoshis)}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Tab description */}
         <p className="text-xs text-muted-foreground">{tabs.find(t => t.id === activeTab)?.desc}</p>
