@@ -364,7 +364,7 @@ const SellLana = () => {
         <div className="mb-8 space-y-2">
           <h1 className="text-3xl font-bold text-foreground">Sell LanaCoin</h1>
           <p className="text-muted-foreground">
-            Sell your registered LanaCoins and receive a 70% cash payout.
+            Sell your registered LanaCoins and receive an instant cash payout.
           </p>
         </div>
 

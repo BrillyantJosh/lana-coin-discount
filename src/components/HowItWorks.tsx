@@ -22,7 +22,7 @@ const steps = [
   {
     icon: Banknote,
     title: "Get Paid Instantly",
-    description: "We pay out 70% of the determined value directly to your bank account. Done.",
+    description: "We pay out up to 79% of the determined value directly to your bank account. Done.",
     step: "04",
   },
 ];

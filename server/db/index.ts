@@ -259,8 +259,17 @@ if (settingsCount === 0) {
 
 // --- Safe migration: add commission settings if missing ---
 const ensureSetting = db.prepare('INSERT OR IGNORE INTO app_settings (key, value, updated_by) VALUES (?, ?, ?)');
-ensureSetting.run('commission_lanapays', '30', 'system');
-ensureSetting.run('commission_other', '21', 'system');
+ensureSetting.run('commission_lanapays', '21', 'system');
+ensureSetting.run('commission_other', '30', 'system');
+
+// Fix: swap commission values if they were set backwards (lanapays=30, other=21)
+const currentLp = (db.prepare("SELECT value FROM app_settings WHERE key = 'commission_lanapays'").get() as any)?.value;
+const currentOt = (db.prepare("SELECT value FROM app_settings WHERE key = 'commission_other'").get() as any)?.value;
+if (currentLp === '30' && currentOt === '21') {
+  db.prepare("UPDATE app_settings SET value = '21' WHERE key = 'commission_lanapays'").run();
+  db.prepare("UPDATE app_settings SET value = '30' WHERE key = 'commission_other'").run();
+  console.log('[lana-discount] Fixed commission values: LanaPays=21%, Other=30%');
+}
 
 // --- Helpers ---
 

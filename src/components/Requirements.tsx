@@ -34,8 +34,8 @@ const Requirements = () => {
             <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
               <ShieldCheck className="w-8 h-8 text-primary" />
             </div>
-            <h3 className="text-xl font-semibold text-foreground mb-2 font-sans">70% Payout</h3>
-            <p className="text-muted-foreground">Receive 70% of the determined coin value paid directly to your account.</p>
+            <h3 className="text-xl font-semibold text-foreground mb-2 font-sans">Up to 79% Payout</h3>
+            <p className="text-muted-foreground">Receive up to 79% of the determined coin value paid directly to your account.</p>
           </div>
         </div>
       </div>

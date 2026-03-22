@@ -173,7 +173,7 @@ const Dashboard = () => {
               </div>
               <h2 className="text-2xl font-bold text-foreground">Sell Registered Lana</h2>
               <p className="text-muted-foreground leading-relaxed">
-                Sell your registered LanaCoins and receive an instant 70% cash payout.
+                Sell your registered LanaCoins and receive an instant cash payout.
                 Fast, secure, and straightforward.
               </p>
               <div className="pt-2">

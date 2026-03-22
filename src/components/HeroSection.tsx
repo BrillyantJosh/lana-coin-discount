@@ -11,7 +11,7 @@ const HeroSection = () => {
           <h1 className="text-4xl md:text-6xl font-bold tracking-tight text-foreground leading-tight">
             Sell Your <span className="text-primary">LanaCoins</span> Instantly.
             <br />
-            Get <span className="text-gold">70% Cash</span> Today.
+            Get <span className="text-gold">Up to 79% Cash</span> Today.
           </h1>
           <p className="text-lg md:text-xl text-muted-foreground max-w-xl mx-auto lg:mx-0 leading-relaxed">
             Stop selling your coins piece by piece. We buy any amount in one go — 

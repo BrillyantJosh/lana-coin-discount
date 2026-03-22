@@ -35,10 +35,10 @@ const AdminSettings = () => {
   const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
 
   // Commission state
-  const [commissionLanapays, setCommissionLanapays] = useState('30');
-  const [commissionOther, setCommissionOther] = useState('21');
-  const [initialCommissionLanapays, setInitialCommissionLanapays] = useState('30');
-  const [initialCommissionOther, setInitialCommissionOther] = useState('21');
+  const [commissionLanapays, setCommissionLanapays] = useState('21');
+  const [commissionOther, setCommissionOther] = useState('30');
+  const [initialCommissionLanapays, setInitialCommissionLanapays] = useState('21');
+  const [initialCommissionOther, setInitialCommissionOther] = useState('30');
 
   // Track initial values for dirty check
   const [initialWalletId, setInitialWalletId] = useState('');
