@@ -139,7 +139,7 @@ const AdminIncomingPayments = () => {
   const navigate = useNavigate();
   const [orders, setOrders] = useState<FiatOrder[]>([]);
   const [lanaOrders, setLanaOrders] = useState<LanaOrder[]>([]);
-  const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; confirmed: number; unconfirmed: number }>({ wallet: '', confirmed: 0, unconfirmed: 0 });
+  const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; balanceLana: number }>({ wallet: '', balanceLana: 0 });
   const [lanaObligations, setLanaObligations] = useState<{ pendingLanoshis: number; sentLanoshis: number }>({ pendingLanoshis: 0, sentLanoshis: 0 });
   const [localBatches, setLocalBatches] = useState<LocalBatch[]>([]);
   const [loading, setLoading] = useState(true);
@@ -164,7 +164,7 @@ const AdminIncomingPayments = () => {
       const ldOrders = (data.orders || []).filter((o: FiatOrder) => o.destinationType === 'lana_discount');
       setOrders(ldOrders);
       setLanaOrders(data.lanaOrders || []);
-      setBuybackBalance(data.buybackBalance || { wallet: '', confirmed: 0, unconfirmed: 0 });
+      setBuybackBalance(data.buybackBalance || { wallet: '', balanceLana: 0 });
       setLanaObligations(data.lanaObligations || { pendingLanoshis: 0, sentLanoshis: 0 });
       setLocalBatches(data.localBatches || []);
       try {
@@ -367,10 +367,7 @@ const AdminIncomingPayments = () => {
             <div className="grid grid-cols-4 gap-4 text-center">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Buyback Wallet</p>
-                <p className="text-lg font-bold tabular-nums">{formatLana(buybackBalance.confirmed)} <span className="text-xs text-muted-foreground">LANA</span></p>
-                {buybackBalance.unconfirmed !== 0 && (
-                  <p className="text-[10px] text-amber-500 tabular-nums">{buybackBalance.unconfirmed > 0 ? '+' : ''}{formatLana(buybackBalance.unconfirmed)} unconf</p>
-                )}
+                <p className="text-lg font-bold tabular-nums">{buybackBalance.balanceLana.toLocaleString(undefined, { maximumFractionDigits: 2 })} <span className="text-xs text-muted-foreground">LANA</span></p>
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500">Pending to Send</p>
@@ -382,9 +379,15 @@ const AdminIncomingPayments = () => {
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Available</p>
-                <p className={`text-lg font-bold tabular-nums ${buybackBalance.confirmed - lanaObligations.pendingLanoshis >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                  {formatLana(buybackBalance.confirmed - lanaObligations.pendingLanoshis)}
-                </p>
+                {(() => {
+                  const pendingLana = lanaObligations.pendingLanoshis / 100_000_000;
+                  const available = buybackBalance.balanceLana - pendingLana;
+                  return (
+                    <p className={`text-lg font-bold tabular-nums ${available >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                      {available.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </p>
+                  );
+                })()}
               </div>
             </div>
           </div>

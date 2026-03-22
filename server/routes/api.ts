@@ -1255,26 +1255,26 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
     const lanaOrders = db.prepare('SELECT * FROM brain_lana_orders ORDER BY created_at DESC').all() as any[];
 
     // Buyback wallet balance for overview
-    let buybackBalance = { wallet: '', confirmed: 0, unconfirmed: 0 };
+    let buybackBalance = { wallet: '', balanceLana: 0 };
     try {
       const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
       if (buybackWalletId) {
         const electrumServers = getElectrumServersFromDb();
         if (electrumServers.length > 0) {
-          const balances = await fetchBatchBalances([buybackWalletId], electrumServers);
-          const wb = balances[buybackWalletId];
-          buybackBalance = { wallet: buybackWalletId, confirmed: wb?.confirmed || 0, unconfirmed: wb?.unconfirmed || 0 };
+          const balArr = await fetchBatchBalances(electrumServers, [buybackWalletId]);
+          const wb = balArr.find((b: any) => b.wallet_id === buybackWalletId);
+          buybackBalance = { wallet: buybackWalletId, balanceLana: wb?.balance || 0 };
         }
       }
     } catch {}
 
-    // LANA obligation summary
+    // LANA obligation summary (raw DB rows = snake_case)
     const pendingLanoshis = lanaOrders
       .filter((o: any) => o.status === 'pending')
-      .reduce((s: number, o: any) => s + o.lanaAmount, 0);
+      .reduce((s: number, o: any) => s + (o.lana_amount || 0), 0);
     const sentLanoshis = lanaOrders
       .filter((o: any) => o.status === 'sent')
-      .reduce((s: number, o: any) => s + o.lanaAmount, 0);
+      .reduce((s: number, o: any) => s + (o.lana_amount || 0), 0);
 
     return res.json({
       buybackBalance,
