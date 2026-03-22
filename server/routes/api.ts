@@ -1251,9 +1251,26 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
       discountBatchId: o.batchRef ? (localBatchMap.get(o.batchRef)?.id || null) : null,
     }));
 
+    // Include brain_lana_orders for LANA recipient breakdown
+    const lanaOrders = db.prepare('SELECT * FROM brain_lana_orders ORDER BY created_at DESC').all() as any[];
+
     return res.json({
       orders: enrichedOrders,
       summary: data.summary,
+      lanaOrders: lanaOrders.map((o: any) => ({
+        id: o.id,
+        transactionRef: o.transaction_ref,
+        orderType: o.order_type,
+        toWallet: o.to_wallet,
+        toHex: o.to_hex,
+        lanaAmount: o.lana_amount,
+        fiatValue: o.fiat_value,
+        currency: o.currency,
+        exchangeRate: o.exchange_rate,
+        txHash: o.tx_hash,
+        status: o.status,
+        createdAt: o.created_at,
+      })),
       localBatches: localBatches.map((b: any) => ({
         id: b.id,
         batchRef: b.batch_ref,

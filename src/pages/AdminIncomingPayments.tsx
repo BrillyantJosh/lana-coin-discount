@@ -47,6 +47,21 @@ interface LocalBatch {
   createdAt: string;
 }
 
+interface LanaOrder {
+  id: string;
+  transactionRef: string;
+  orderType: string;
+  toWallet: string;
+  toHex: string;
+  lanaAmount: number; // lanoshis
+  fiatValue: number;
+  currency: string;
+  exchangeRate: number;
+  txHash: string | null;
+  status: string;
+  createdAt: string;
+}
+
 interface BatchGroup {
   batchRef: string;
   batchId: number | null;
@@ -90,6 +105,13 @@ function shortenWallet(w: string): string {
   return w.length > 16 ? `${w.slice(0, 8)}...${w.slice(-6)}` : w;
 }
 
+function formatLana(lanoshis: number): string {
+  const lana = lanoshis / 100_000_000;
+  if (Number.isInteger(lana)) return lana.toLocaleString();
+  // Show up to 3 decimal places, strip trailing zeros
+  return parseFloat(lana.toFixed(3)).toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
 function PaymentTypeIcon({ type }: { type: string | null }) {
   if ((type || 'lana') === 'lana') {
     return (
@@ -116,6 +138,7 @@ const AdminIncomingPayments = () => {
   const { session, isLoading: authLoading, isAdmin } = useAuth();
   const navigate = useNavigate();
   const [orders, setOrders] = useState<FiatOrder[]>([]);
+  const [lanaOrders, setLanaOrders] = useState<LanaOrder[]>([]);
   const [localBatches, setLocalBatches] = useState<LocalBatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>('incoming');
@@ -138,6 +161,7 @@ const AdminIncomingPayments = () => {
       // Only show orders destined for lana_discount
       const ldOrders = (data.orders || []).filter((o: FiatOrder) => o.destinationType === 'lana_discount');
       setOrders(ldOrders);
+      setLanaOrders(data.lanaOrders || []);
       setLocalBatches(data.localBatches || []);
       try {
         const spRes = await fetch('/api/system-params');
@@ -480,7 +504,7 @@ const AdminIncomingPayments = () => {
                       </div>
                       {batch.orders.map(o => {
                         const pc = purposeConfig[o.orderType || ''] || { label: o.orderType || '?', cls: 'bg-muted text-muted-foreground' };
-                        const lanaAmount = exchangeRate > 0 ? Math.round(o.amountFiat / exchangeRate) : 0;
+                        const lanaAmount = exchangeRate > 0 ? parseFloat((o.amountFiat / exchangeRate).toFixed(3)) : 0;
                         return (
                           <div key={o.id} className="px-4 py-2 text-xs flex items-center justify-between">
                             <div className="flex items-center gap-4 min-w-0">
@@ -506,6 +530,47 @@ const AdminIncomingPayments = () => {
                           </div>
                         );
                       })}
+
+                      {/* LANA Recipients breakdown (for lana_bought and lana_sent tabs) */}
+                      {(activeTab === 'lana_bought' || activeTab === 'lana_sent') && (() => {
+                        const txRefs = [...new Set(batch.orders.map(o => o.transactionRef).filter(Boolean))];
+                        const recipients = lanaOrders.filter(lo => txRefs.includes(lo.transactionRef));
+                        if (recipients.length === 0) return null;
+                        const totalLanoshis = recipients.reduce((s, r) => s + r.lanaAmount, 0);
+                        return (
+                          <div className="border-t bg-purple-500/5">
+                            <div className="px-4 py-1.5 text-[10px] text-purple-400 font-semibold uppercase tracking-wider flex items-center justify-between">
+                              <span>LANA Recipients ({recipients.length})</span>
+                              <span className="tabular-nums">{formatLana(totalLanoshis)} LANA total</span>
+                            </div>
+                            {recipients.map(r => {
+                              const pc = purposeConfig[r.orderType] || { label: r.orderType, cls: 'bg-muted text-muted-foreground' };
+                              return (
+                                <div key={r.id} className="px-4 py-2 text-xs flex items-center justify-between border-t border-purple-500/10">
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${pc.cls}`}>{pc.label}</span>
+                                    <span className="font-mono text-muted-foreground truncate max-w-[180px]" title={r.toWallet}>
+                                      → {shortenWallet(r.toWallet)}
+                                    </span>
+                                    {r.txHash && (
+                                      <a href={`https://chainz.cryptoid.info/lana/tx.dws?${r.txHash}`} target="_blank" rel="noopener noreferrer" className="text-emerald-500 hover:underline font-mono text-[10px]">
+                                        {r.txHash.slice(0, 8)}...
+                                      </a>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-3 shrink-0">
+                                    <span className="text-muted-foreground tabular-nums w-16 text-right">{formatFiat(r.fiatValue, r.currency)}</span>
+                                    <span className="font-semibold text-purple-400 tabular-nums w-16 text-right">{formatLana(r.lanaAmount)}</span>
+                                    <span className={`text-[10px] w-12 text-right ${r.status === 'sent' ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                      {r.status === 'sent' ? '✓ Sent' : '⏳'}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
 
                       {/* Timestamps */}
                       {batch.localBatch && (
