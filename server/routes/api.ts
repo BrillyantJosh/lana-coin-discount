@@ -1757,4 +1757,161 @@ router.get('/brain/buyback-balance', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/admin/send-batch-lana
+ * Send LANA from buyback wallet to all recipients in pending brain_lana_orders
+ * for a given set of transaction_refs (linked to a Direct.Fund batch)
+ */
+router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
+  const adminHex = req.headers['x-admin-hex-id'] as string;
+  if (!adminHex) {
+    return res.status(403).json({ error: 'Admin authentication required' });
+  }
+
+  try {
+    const { transaction_refs } = req.body;
+    if (!Array.isArray(transaction_refs) || transaction_refs.length === 0) {
+      return res.status(400).json({ error: 'transaction_refs must be a non-empty array' });
+    }
+
+    // Get buyback wallet WIF from env
+    const buybackWif = process.env.BUYBACK_WIF;
+    if (!buybackWif) {
+      return res.status(500).json({ error: 'BUYBACK_WIF not configured' });
+    }
+
+    // Find all pending lana orders for these transaction refs
+    const placeholders = transaction_refs.map(() => '?').join(',');
+    const orders = db.prepare(`
+      SELECT * FROM brain_lana_orders
+      WHERE transaction_ref IN (${placeholders})
+        AND status = 'pending'
+      ORDER BY created_at
+    `).all(...transaction_refs) as any[];
+
+    if (orders.length === 0) {
+      return res.status(400).json({ error: 'No pending LANA orders found for these transactions' });
+    }
+
+    // Build recipients array
+    const recipients = orders.map((o: any) => ({
+      address: o.to_wallet,
+      amount_lanoshis: o.lana_amount,
+    }));
+
+    const totalLanoshis = recipients.reduce((sum: number, r: any) => sum + r.amount_lanoshis, 0);
+    const totalLana = totalLanoshis / 100_000_000;
+
+    console.log(`[lana-discount] Admin send-batch-lana: ${orders.length} orders, ${totalLana} LANA total`);
+
+    // Derive sender address from buyback WIF
+    const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress } = await import('../lib/transaction.js');
+    const { electrumCall } = await import('../lib/electrum.js');
+    const { buildSignedTx } = await import('../lib/transaction.js');
+
+    const normalizedKey = normalizeWif(buybackWif);
+    const privateKeyBytes = base58CheckDecode(normalizedKey);
+    const uint8ArrayToHex = (arr: Uint8Array) => Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+    const privateKeyHex = uint8ArrayToHex(privateKeyBytes.slice(1, 33));
+
+    const uncompressedPubKey = privateKeyToUncompressedPublicKey(privateKeyHex);
+    const uncompressedAddress = publicKeyToAddress(uncompressedPubKey);
+    const compressedPubKey = privateKeyToPublicKey(privateKeyHex);
+    const compressedAddress = publicKeyToAddress(compressedPubKey);
+
+    // Check which address has UTXOs
+    const electrumServers = getElectrumServersFromDb();
+    let useAddress = uncompressedAddress;
+    let useCompressed = false;
+
+    let utxos = await electrumCall('blockchain.address.listunspent', [uncompressedAddress], electrumServers);
+    if (!utxos || utxos.length === 0) {
+      utxos = await electrumCall('blockchain.address.listunspent', [compressedAddress], electrumServers);
+      if (utxos && utxos.length > 0) {
+        useAddress = compressedAddress;
+        useCompressed = true;
+      }
+    }
+
+    if (!utxos || utxos.length === 0) {
+      return res.status(400).json({ error: 'No UTXOs available in buyback wallet' });
+    }
+
+    // Build recipient list
+    const txRecipients = recipients.map((r: any) => ({
+      address: normalizeAddress(r.address),
+      amount: r.amount_lanoshis,
+    }));
+
+    // UTXO selection
+    const actualOutputCount = txRecipients.length + 1;
+    const sortedUtxos = [...utxos].sort((a: any, b: any) => b.value - a.value);
+
+    let selectedUTXOs: any[] = [];
+    let totalSelected = 0;
+    let fee = 0;
+
+    for (const utxo of sortedUtxos) {
+      if (selectedUTXOs.length >= 100) break;
+      selectedUTXOs.push(utxo);
+      totalSelected += utxo.value;
+      const baseFee = (selectedUTXOs.length * 180 + actualOutputCount * 34 + 10) * 100;
+      fee = Math.floor(baseFee * 1.5);
+      if (totalSelected >= totalLanoshis + fee) break;
+    }
+
+    if (totalSelected < totalLanoshis + fee) {
+      return res.status(400).json({
+        error: 'Insufficient balance in buyback wallet',
+        required: totalLanoshis + fee,
+        available: totalSelected,
+      });
+    }
+
+    // Build and sign TX
+    const rawTx = buildSignedTx(
+      selectedUTXOs,
+      txRecipients,
+      useAddress,
+      privateKeyHex,
+      fee,
+      useCompressed
+    );
+
+    // Broadcast
+    const txHash = await electrumCall('blockchain.transaction.broadcast', [rawTx], electrumServers);
+
+    if (!txHash || typeof txHash !== 'string' || txHash.length !== 64) {
+      return res.status(500).json({ error: 'Broadcast failed', response: txHash });
+    }
+
+    console.log(`[lana-discount] Batch LANA sent: ${txHash} (${orders.length} recipients, ${totalLana} LANA)`);
+
+    // Update all orders
+    const updateOrder = db.prepare(`
+      UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ?
+    `);
+    for (const o of orders) {
+      updateOrder.run(txHash, o.id);
+    }
+
+    return res.json({
+      status: 'sent',
+      tx_hash: txHash,
+      orders_count: orders.length,
+      total_lana: totalLana,
+      from_address: useAddress,
+      recipients: orders.map((o: any) => ({
+        order_id: o.id,
+        order_type: o.order_type,
+        to_wallet: o.to_wallet,
+        lana_amount: o.lana_amount,
+      })),
+    });
+  } catch (error: any) {
+    console.error('[lana-discount] send-batch-lana error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export default router;

@@ -186,6 +186,36 @@ const AdminIncomingPayments = () => {
     }
   };
 
+  const sendBatchLana = async (batch: BatchGroup) => {
+    if (!session) return;
+    // Collect unique transaction_refs from the batch orders
+    const txRefs = [...new Set(batch.orders.map(o => o.transactionRef).filter(Boolean))];
+    if (txRefs.length === 0) {
+      toast.error('No transaction references found');
+      return;
+    }
+    if (!confirm(`Send LANA to ${batch.orders.length} recipients from buyback wallet?\n\nTotal: ${formatFiat(batch.totalFiat, batch.currency)} → ≈${batch.totalLana.toLocaleString()} LANA\n\nThis will broadcast a blockchain transaction.`)) {
+      return;
+    }
+    setUpdating(batch.batchRef);
+    try {
+      const res = await fetch('/api/admin/send-batch-lana', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        body: JSON.stringify({ transaction_refs: txRefs }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to send LANA');
+      toast.success(`LANA sent! TX: ${data.tx_hash?.slice(0, 12)}... (${data.orders_count} recipients)`);
+      // Move batch to lana_sent
+      await updateBatchStatus(batch, 'lana_sent');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to send LANA');
+    } finally {
+      setUpdating(null);
+    }
+  };
+
   if (authLoading || !session || !isAdmin) return null;
 
   // Orders not yet paid by investor (pending on direct.lana.fund)
@@ -412,7 +442,15 @@ const AdminIncomingPayments = () => {
                             </p>
                           )}
                         </div>
-                        {action.label && (
+                        {activeTab === 'lana_bought' ? (
+                          <button
+                            onClick={e => { e.stopPropagation(); sendBatchLana(batch); }}
+                            disabled={updating === batch.batchRef}
+                            className="px-3 py-2 rounded-lg text-xs font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {updating === batch.batchRef ? 'Sending...' : 'Send LANA'}
+                          </button>
+                        ) : action.label ? (
                           <button
                             onClick={e => { e.stopPropagation(); updateBatchStatus(batch, action.next); }}
                             disabled={updating === batch.batchRef}
@@ -420,7 +458,7 @@ const AdminIncomingPayments = () => {
                           >
                             {updating === batch.batchRef ? '...' : action.label}
                           </button>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   </div>
