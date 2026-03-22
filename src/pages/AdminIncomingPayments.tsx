@@ -90,6 +90,21 @@ function shortenWallet(w: string): string {
   return w.length > 16 ? `${w.slice(0, 8)}...${w.slice(-6)}` : w;
 }
 
+function PaymentTypeIcon({ type }: { type: string | null }) {
+  if ((type || 'lana') === 'lana') {
+    return (
+      <span className="inline-flex items-center px-1 py-0.5 rounded bg-[hsl(43,74%,49%)]/10 border border-[hsl(43,74%,49%)]/20" title="LANA">
+        <img src="/lana-logo.png" alt="LANA" className="h-3.5 w-3.5 dark:invert opacity-70" />
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-1 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20" title="Cash">
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="12" x="2" y="6" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/></svg>
+    </span>
+  );
+}
+
 const purposeConfig: Record<string, { label: string; cls: string }> = {
   lana_purchase: { label: 'LANA Purchase', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' },
   merchant_payment: { label: 'Shop Invoice', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
@@ -372,6 +387,7 @@ const AdminIncomingPayments = () => {
                             return <span key={t} className={`px-2 py-0.5 rounded text-[10px] font-semibold ${pc.cls}`}>{pc.label}</span>;
                           })}
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-muted text-muted-foreground">{batch.currency}</span>
+                          <PaymentTypeIcon type={batch.orders[0]?.paymentType} />
                         </div>
 
                         {batch.shopName && <p className="text-sm">{batch.shopName}</p>}
@@ -436,6 +452,7 @@ const AdminIncomingPayments = () => {
                                 <span className="text-muted-foreground ml-1">{formatTime(o.createdAt)}</span>
                               </div>
                               <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold w-24 text-center ${pc.cls}`}>{pc.label}</span>
+                              <PaymentTypeIcon type={o.paymentType} />
                               {o.recipientWallet && (
                                 <span className="font-mono text-muted-foreground truncate max-w-[140px]" title={o.recipientWallet}>
                                   {shortenWallet(o.recipientWallet)}
