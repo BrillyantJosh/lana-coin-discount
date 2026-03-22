@@ -719,6 +719,23 @@ router.put('/admin/settings', (req: Request, res: Response) => {
       setAppSetting('active_currencies', JSON.stringify(active_currencies), adminHex);
     }
 
+    // Commission rates
+    const { commission_lanapays, commission_other } = req.body;
+    if (commission_lanapays !== undefined) {
+      const val = parseFloat(commission_lanapays);
+      if (isNaN(val) || val < 0 || val > 100) {
+        return res.status(400).json({ error: 'LanaPays commission must be between 0 and 100' });
+      }
+      setAppSetting('commission_lanapays', String(val), adminHex);
+    }
+    if (commission_other !== undefined) {
+      const val = parseFloat(commission_other);
+      if (isNaN(val) || val < 0 || val > 100) {
+        return res.status(400).json({ error: 'Other commission must be between 0 and 100' });
+      }
+      setAppSetting('commission_other', String(val), adminHex);
+    }
+
     const settings = getAllAppSettings();
     console.log(`[lana-discount] Settings updated by ${adminHex.slice(0, 12)}...`);
     return res.json({ success: true, settings });
@@ -846,7 +863,7 @@ router.get('/user/:hexId/sales', (req: Request, res: Response) => {
  */
 router.post('/sell/preview', (req: Request, res: Response) => {
   try {
-    const { lanaAmount, currency } = req.body;
+    const { lanaAmount, currency, walletType } = req.body;
 
     if (!lanaAmount || lanaAmount <= 0) {
       return res.status(400).json({ error: 'Invalid LANA amount' });
@@ -878,7 +895,11 @@ router.post('/sell/preview', (req: Request, res: Response) => {
     const split = getSplitFromDb();
     const lanaAmountLanoshis = Math.floor(lanaAmount * 100000000);
     const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
-    const commissionPercent = 30;
+
+    // Dynamic commission based on wallet type
+    const commissionPercent = walletType === 'LanaPays'
+      ? parseFloat(getAppSetting('commission_lanapays') || '30')
+      : parseFloat(getAppSetting('commission_other') || '21');
     const commissionFiat = Math.round(grossFiat * commissionPercent / 100 * 100) / 100;
     const netFiat = Math.round((grossFiat - commissionFiat) * 100) / 100;
 
@@ -910,7 +931,7 @@ router.post('/sell/preview', (req: Request, res: Response) => {
  */
 router.post('/sell/execute', async (req: Request, res: Response) => {
   try {
-    const { hexId, senderAddress, lanaAmount, currency, privateKey, emptyWallet } = req.body;
+    const { hexId, senderAddress, lanaAmount, currency, privateKey, emptyWallet, walletType } = req.body;
 
     if (!hexId || !senderAddress || !lanaAmount || !currency || !privateKey) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -942,7 +963,11 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
     const split = getSplitFromDb();
     const lanaAmountLanoshis = Math.floor(lanaAmount * 100000000);
     const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
-    const commissionPercent = 30;
+
+    // Dynamic commission based on wallet type
+    const commissionPercent = walletType === 'LanaPays'
+      ? parseFloat(getAppSetting('commission_lanapays') || '30')
+      : parseFloat(getAppSetting('commission_other') || '21');
     const commissionFiat = Math.round(grossFiat * commissionPercent / 100 * 100) / 100;
     const netFiat = Math.round((grossFiat - commissionFiat) * 100) / 100;
 
@@ -1417,7 +1442,8 @@ router.post('/external/sale', (req: Request, res: Response) => {
 
     // Calculate financials
     const lanaAmountLanoshis = Math.floor(lana_amount * 100000000);
-    const commissionPct = typeof commission_percent === 'number' ? commission_percent : 30;
+    const defaultCommission = parseFloat(getAppSetting('commission_other') || '21');
+    const commissionPct = typeof commission_percent === 'number' ? commission_percent : defaultCommission;
     const grossFiat = Math.round(lana_amount * exchange_rate * 100) / 100;
     const commissionFiat = Math.round(grossFiat * commissionPct / 100 * 100) / 100;
     const netFiat = Math.round((grossFiat - commissionFiat) * 100) / 100;

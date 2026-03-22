@@ -34,6 +34,12 @@ const AdminSettings = () => {
   const [activeCurrencies, setActiveCurrencies] = useState<string[]>([]);
   const [availableCurrencies, setAvailableCurrencies] = useState<string[]>([]);
 
+  // Commission state
+  const [commissionLanapays, setCommissionLanapays] = useState('30');
+  const [commissionOther, setCommissionOther] = useState('21');
+  const [initialCommissionLanapays, setInitialCommissionLanapays] = useState('30');
+  const [initialCommissionOther, setInitialCommissionOther] = useState('21');
+
   // Track initial values for dirty check
   const [initialWalletId, setInitialWalletId] = useState('');
   const [initialCurrencies, setInitialCurrencies] = useState<string[]>([]);
@@ -67,6 +73,13 @@ const AdminSettings = () => {
       setInitialWalletId(bwId);
       setInitialCurrencies(currencies);
 
+      const cLp = data.settings.commission_lanapays || '30';
+      const cOt = data.settings.commission_other || '21';
+      setCommissionLanapays(cLp);
+      setCommissionOther(cOt);
+      setInitialCommissionLanapays(cLp);
+      setInitialCommissionOther(cOt);
+
       // Fetch bank accounts
       try {
         const bankRes = await fetch('/api/admin/bank-accounts', {
@@ -93,6 +106,8 @@ const AdminSettings = () => {
     if (walletId !== initialWalletId) return true;
     if (activeCurrencies.length !== initialCurrencies.length) return true;
     if (activeCurrencies.some(c => !initialCurrencies.includes(c))) return true;
+    if (commissionLanapays !== initialCommissionLanapays) return true;
+    if (commissionOther !== initialCommissionOther) return true;
     return false;
   })();
 
@@ -115,6 +130,8 @@ const AdminSettings = () => {
         body: JSON.stringify({
           buyback_wallet_id: walletId.trim(),
           active_currencies: activeCurrencies,
+          commission_lanapays: commissionLanapays,
+          commission_other: commissionOther,
         }),
       });
 
@@ -126,6 +143,8 @@ const AdminSettings = () => {
 
       setInitialWalletId(walletId.trim());
       setInitialCurrencies([...activeCurrencies]);
+      setInitialCommissionLanapays(commissionLanapays);
+      setInitialCommissionOther(commissionOther);
       toast.success('Settings saved');
     } catch (err) {
       console.error('Save settings error:', err);
@@ -222,6 +241,52 @@ const AdminSettings = () => {
               <p className="mt-3 text-xs text-muted-foreground">
                 {activeCurrencies.length} of {availableCurrencies.length} currencies active
               </p>
+            </div>
+
+            {/* Commission Rates */}
+            <div className="rounded-2xl border-2 border-border bg-card p-6">
+              <h2 className="text-lg font-semibold text-foreground mb-1">Commission Rates</h2>
+              <p className="text-sm text-muted-foreground mb-4">
+                Set the buyback commission percentage per wallet type. The commission is deducted from the gross FIAT payout.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">LanaPays.Us Wallets</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={commissionLanapays}
+                      onChange={e => setCommissionLanapays(e.target.value)}
+                      className="w-full rounded-lg border border-border bg-background px-4 py-3 pr-10 text-sm font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground font-bold">%</span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Applied when seller uses a <span className="font-medium">LanaPays</span> registered wallet.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">Other Wallets</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={commissionOther}
+                      onChange={e => setCommissionOther(e.target.value)}
+                      className="w-full rounded-lg border border-border bg-background px-4 py-3 pr-10 text-sm font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground font-bold">%</span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Applied for all other wallet types (personal wallets, etc.).
+                  </p>
+                </div>
+              </div>
             </div>
 
             {/* Bank Accounts per Currency */}

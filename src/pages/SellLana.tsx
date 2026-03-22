@@ -212,7 +212,11 @@ const SellLana = () => {
       const res = await fetch('/api/sell/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lanaAmount: amount, currency: selectedCurrency }),
+        body: JSON.stringify({
+          lanaAmount: amount,
+          currency: selectedCurrency,
+          walletType: wallets.find(w => w.walletId === selectedWallet)?.walletType || '',
+        }),
       });
       const data = await res.json();
       if (data.error) {
@@ -266,6 +270,7 @@ const SellLana = () => {
           currency: selectedCurrency,
           privateKey: privateKey.trim(),
           emptyWallet: isEmptyWallet,
+          walletType: wallets.find(w => w.walletId === selectedWallet)?.walletType || '',
         }),
       });
 

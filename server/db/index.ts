@@ -257,6 +257,11 @@ if (settingsCount === 0) {
   console.log('[lana-discount] Seeded app_settings with defaults');
 }
 
+// --- Safe migration: add commission settings if missing ---
+const ensureSetting = db.prepare('INSERT OR IGNORE INTO app_settings (key, value, updated_by) VALUES (?, ?, ?)');
+ensureSetting.run('commission_lanapays', '30', 'system');
+ensureSetting.run('commission_other', '21', 'system');
+
 // --- Helpers ---
 
 export function getRelaysFromDb(): string[] {
