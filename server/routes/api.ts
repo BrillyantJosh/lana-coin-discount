@@ -897,7 +897,7 @@ router.post('/sell/preview', (req: Request, res: Response) => {
     const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
 
     // Dynamic commission based on wallet type
-    const commissionPercent = walletType === 'LanaPays'
+    const commissionPercent = walletType === 'LanaPays.Us'
       ? parseFloat(getAppSetting('commission_lanapays') || '30')
       : parseFloat(getAppSetting('commission_other') || '21');
     const commissionFiat = Math.round(grossFiat * commissionPercent / 100 * 100) / 100;
@@ -965,7 +965,7 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
     const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
 
     // Dynamic commission based on wallet type
-    const commissionPercent = walletType === 'LanaPays'
+    const commissionPercent = walletType === 'LanaPays.Us'
       ? parseFloat(getAppSetting('commission_lanapays') || '30')
       : parseFloat(getAppSetting('commission_other') || '21');
     const commissionFiat = Math.round(grossFiat * commissionPercent / 100 * 100) / 100;
