@@ -12,12 +12,13 @@ const NOSTR_PRIVATE_KEY = process.env.NOSTR_PRIVATE_KEY || '';
 /**
  * Publish KIND 30936 — Buyback Transaction event to Nostr relays
  */
-async function publishBuybackEvent(tx: {
+export async function publishBuybackEvent(tx: {
   id: number | string; tx_hash: string; user_hex_id: string; sender_wallet_id: string;
   buyback_wallet_id: string; lana_amount_lanoshis: number; lana_amount_display: number;
   currency: string; exchange_rate: number; gross_fiat: number; commission_percent: number;
   commission_fiat: number; net_fiat: number; split: string; source?: string; status: string;
-  paid_fiat?: number;
+  paid_fiat?: number; rpc_verified?: number; rpc_confirmations?: number;
+  rpc_block_hash?: string; rpc_block_height?: number; rpc_verified_at?: string;
 }) {
   if (!NOSTR_PRIVATE_KEY) return;
   const relays = getRelaysFromDb();
@@ -40,6 +41,14 @@ async function publishBuybackEvent(tx: {
     ['status', tx.status],
     ['paid_fiat', String(tx.paid_fiat || 0)],
   ];
+  // RPC blockchain verification data
+  if (tx.rpc_verified) {
+    tags.push(['rpc_verified', '1']);
+    if (tx.rpc_confirmations) tags.push(['rpc_confirmations', String(tx.rpc_confirmations)]);
+    if (tx.rpc_block_hash) tags.push(['rpc_block_hash', tx.rpc_block_hash]);
+    if (tx.rpc_block_height) tags.push(['rpc_block_height', String(tx.rpc_block_height)]);
+    if (tx.rpc_verified_at) tags.push(['rpc_verified_at', tx.rpc_verified_at]);
+  }
   await signAndPublishEvent(30936, tags, '', NOSTR_PRIVATE_KEY, relays);
 }
 

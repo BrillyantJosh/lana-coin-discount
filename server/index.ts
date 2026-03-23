@@ -150,6 +150,16 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
             WHERE id = ?
           `).run(result.confirmations, result.blockHash || null, txBlockHeight, tx.id);
           console.log(`[lana-discount] TX#${tx.id} RPC verified: ${result.confirmations} conf, block #${txBlockHeight} — status → ${newStatus}`);
+
+          // Re-publish KIND 30936 with RPC data
+          try {
+            const fullTx = db.prepare('SELECT * FROM buyback_transactions WHERE id = ?').get(tx.id) as any;
+            if (fullTx) {
+              const { publishBuybackEvent } = await import('./routes/api.js');
+              await publishBuybackEvent(fullTx);
+            }
+          } catch { /* non-critical */ }
+
           verified++;
         }
       } catch (err: any) {
