@@ -313,7 +313,7 @@ const AdminSettings = () => {
             <div className="rounded-2xl border-2 border-border bg-card p-6">
               <h2 className="text-lg font-semibold text-foreground mb-1">Minimum Sell Amount</h2>
               <p className="text-sm text-muted-foreground mb-4">
-                Set the minimum LANA amount a user must sell per currency. Set to 0 to allow any amount.
+                Set the minimum FIAT payout value per currency. If the gross value of a sale is below this amount, the user cannot proceed. Set to 0 to allow any amount.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                 {activeCurrencies.map(curr => (
@@ -323,12 +323,12 @@ const AdminSettings = () => {
                       <input
                         type="number"
                         min="0"
-                        step="1"
+                        step="0.01"
                         value={minSellAmounts[curr] || '0'}
                         onChange={e => setMinSellAmounts(prev => ({ ...prev, [curr]: e.target.value }))}
-                        className="w-full rounded-lg border border-border bg-background px-4 py-3 pr-16 text-sm font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                        className="w-full rounded-lg border border-border bg-background px-4 py-3 pr-14 text-sm font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
                       />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-bold">LANA</span>
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-bold">{curr}</span>
                     </div>
                   </div>
                 ))}

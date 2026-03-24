@@ -913,8 +913,8 @@ router.post('/sell/preview', (req: Request, res: Response) => {
       return res.status(400).json({ error: `No exchange rate available for ${currency}` });
     }
 
-    // Minimum sell amount per currency
-    const minSellAmount = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
+    // Minimum sell amount in FIAT per currency
+    const minSellAmountFiat = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
 
     const split = getSplitFromDb();
     const lanaAmountLanoshis = Math.floor(lanaAmount * 100000000);
@@ -942,7 +942,7 @@ router.post('/sell/preview', (req: Request, res: Response) => {
       netFiat,
       buybackWalletId,
       estimatedFee,
-      minSellAmount,
+      minSellAmountFiat,
     });
   } catch (error) {
     console.error('Sell preview error:', error);
@@ -985,12 +985,6 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
       return res.status(400).json({ error: `No exchange rate for ${currency}` });
     }
 
-    // Minimum sell amount check
-    const minSellAmount = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
-    if (minSellAmount > 0 && lanaAmount < minSellAmount) {
-      return res.status(400).json({ error: `Minimum sell amount is ${minSellAmount.toLocaleString()} LANA for ${currency}` });
-    }
-
     const split = getSplitFromDb();
     const lanaAmountLanoshis = Math.floor(lanaAmount * 100000000);
     const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
@@ -1001,6 +995,12 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
       : parseFloat(getAppSetting('commission_other') || '21');
     const commissionFiat = Math.round(grossFiat * commissionPercent / 100 * 100) / 100;
     const netFiat = Math.round((grossFiat - commissionFiat) * 100) / 100;
+
+    // Minimum sell amount check (FIAT)
+    const minSellAmountFiat = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
+    if (minSellAmountFiat > 0 && grossFiat < minSellAmountFiat) {
+      return res.status(400).json({ error: `Minimum sell value is ${minSellAmountFiat} ${currency}` });
+    }
 
     // Get Electrum servers
     const electrumServers = getElectrumServersFromDb();
