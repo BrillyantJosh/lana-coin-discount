@@ -52,6 +52,7 @@ interface PreviewResult {
   netFiat: number;
   buybackWalletId: string;
   estimatedFee: number;
+  minSellAmount: number;
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -647,6 +648,18 @@ const SellLana = () => {
                       <p className="text-xs text-muted-foreground animate-pulse">Calculating payout...</p>
                     )}
 
+                    {/* Minimum amount warning */}
+                    {preview && preview.minSellAmount > 0 && preview.lanaAmount < preview.minSellAmount && (
+                      <div className="rounded-xl border-2 border-red-200 bg-red-50 dark:bg-red-950/30 dark:border-red-800 p-4 flex items-center gap-3">
+                        <svg className="h-5 w-5 text-red-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                        </svg>
+                        <p className="text-sm text-red-700 dark:text-red-400 font-medium">
+                          Minimum sell amount for {preview.currency} is <span className="font-mono font-bold">{preview.minSellAmount.toLocaleString()} LANA</span>
+                        </p>
+                      </div>
+                    )}
+
                     {/* Preview breakdown */}
                     {preview && (
                       <div className="rounded-xl border-2 border-primary/20 bg-primary/5 p-5 space-y-3">
@@ -700,9 +713,11 @@ const SellLana = () => {
                   </button>
                   <button
                     onClick={() => setStep(4)}
-                    disabled={!preview}
+                    disabled={!preview || (preview.minSellAmount > 0 && preview.lanaAmount < preview.minSellAmount)}
                     className={`rounded-xl px-6 py-3 font-semibold text-white transition-all ${
-                      preview ? 'bg-primary hover:bg-primary/90 shadow-lg' : 'bg-muted-foreground/30 cursor-not-allowed'
+                      preview && !(preview.minSellAmount > 0 && preview.lanaAmount < preview.minSellAmount)
+                        ? 'bg-primary hover:bg-primary/90 shadow-lg'
+                        : 'bg-muted-foreground/30 cursor-not-allowed'
                     }`}
                   >
                     Proceed to Confirm

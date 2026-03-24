@@ -40,6 +40,10 @@ const AdminSettings = () => {
   const [initialCommissionLanapays, setInitialCommissionLanapays] = useState('21');
   const [initialCommissionOther, setInitialCommissionOther] = useState('30');
 
+  // Minimum sell amounts per currency
+  const [minSellAmounts, setMinSellAmounts] = useState<Record<string, string>>({});
+  const [initialMinSellAmounts, setInitialMinSellAmounts] = useState<Record<string, string>>({});
+
   // Track initial values for dirty check
   const [initialWalletId, setInitialWalletId] = useState('');
   const [initialCurrencies, setInitialCurrencies] = useState<string[]>([]);
@@ -80,6 +84,17 @@ const AdminSettings = () => {
       setInitialCommissionLanapays(cLp);
       setInitialCommissionOther(cOt);
 
+      // Load minimum sell amounts per currency
+      const mins: Record<string, string> = {};
+      for (const key of Object.keys(data.settings)) {
+        if (key.startsWith('min_sell_')) {
+          const curr = key.replace('min_sell_', '').toUpperCase();
+          mins[curr] = data.settings[key] || '0';
+        }
+      }
+      setMinSellAmounts(mins);
+      setInitialMinSellAmounts({ ...mins });
+
       // Fetch bank accounts
       try {
         const bankRes = await fetch('/api/admin/bank-accounts', {
@@ -108,6 +123,9 @@ const AdminSettings = () => {
     if (activeCurrencies.some(c => !initialCurrencies.includes(c))) return true;
     if (commissionLanapays !== initialCommissionLanapays) return true;
     if (commissionOther !== initialCommissionOther) return true;
+    for (const curr of activeCurrencies) {
+      if ((minSellAmounts[curr] || '0') !== (initialMinSellAmounts[curr] || '0')) return true;
+    }
     return false;
   })();
 
@@ -132,6 +150,7 @@ const AdminSettings = () => {
           active_currencies: activeCurrencies,
           commission_lanapays: commissionLanapays,
           commission_other: commissionOther,
+          min_sell_amounts: minSellAmounts,
         }),
       });
 
@@ -145,6 +164,7 @@ const AdminSettings = () => {
       setInitialCurrencies([...activeCurrencies]);
       setInitialCommissionLanapays(commissionLanapays);
       setInitialCommissionOther(commissionOther);
+      setInitialMinSellAmounts({ ...minSellAmounts });
       toast.success('Settings saved');
     } catch (err) {
       console.error('Save settings error:', err);
@@ -287,6 +307,35 @@ const AdminSettings = () => {
                   </p>
                 </div>
               </div>
+            </div>
+
+            {/* Minimum Sell Amount per Currency */}
+            <div className="rounded-2xl border-2 border-border bg-card p-6">
+              <h2 className="text-lg font-semibold text-foreground mb-1">Minimum Sell Amount</h2>
+              <p className="text-sm text-muted-foreground mb-4">
+                Set the minimum LANA amount a user must sell per currency. Set to 0 to allow any amount.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                {activeCurrencies.map(curr => (
+                  <div key={curr}>
+                    <label className="block text-sm font-medium text-foreground mb-1.5">{curr}</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={minSellAmounts[curr] || '0'}
+                        onChange={e => setMinSellAmounts(prev => ({ ...prev, [curr]: e.target.value }))}
+                        className="w-full rounded-lg border border-border bg-background px-4 py-3 pr-16 text-sm font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-bold">LANA</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {activeCurrencies.length === 0 && (
+                <p className="text-sm text-muted-foreground">No active currencies. Enable currencies above first.</p>
+              )}
             </div>
 
             {/* Bank Accounts per Currency */}

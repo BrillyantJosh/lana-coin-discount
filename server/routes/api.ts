@@ -745,6 +745,18 @@ router.put('/admin/settings', (req: Request, res: Response) => {
       setAppSetting('commission_other', String(val), adminHex);
     }
 
+    // Minimum sell amounts per currency
+    const { min_sell_amounts } = req.body;
+    if (min_sell_amounts && typeof min_sell_amounts === 'object') {
+      for (const [curr, amount] of Object.entries(min_sell_amounts)) {
+        const val = parseFloat(amount as string);
+        if (isNaN(val) || val < 0) {
+          return res.status(400).json({ error: `Invalid minimum amount for ${curr}` });
+        }
+        setAppSetting(`min_sell_${curr.toLowerCase()}`, String(val), adminHex);
+      }
+    }
+
     const settings = getAllAppSettings();
     console.log(`[lana-discount] Settings updated by ${adminHex.slice(0, 12)}...`);
     return res.json({ success: true, settings });
@@ -901,6 +913,9 @@ router.post('/sell/preview', (req: Request, res: Response) => {
       return res.status(400).json({ error: `No exchange rate available for ${currency}` });
     }
 
+    // Minimum sell amount per currency
+    const minSellAmount = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
+
     const split = getSplitFromDb();
     const lanaAmountLanoshis = Math.floor(lanaAmount * 100000000);
     const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
@@ -927,6 +942,7 @@ router.post('/sell/preview', (req: Request, res: Response) => {
       netFiat,
       buybackWalletId,
       estimatedFee,
+      minSellAmount,
     });
   } catch (error) {
     console.error('Sell preview error:', error);
@@ -967,6 +983,12 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
     const exchangeRate = exchangeRates[currency];
     if (!exchangeRate) {
       return res.status(400).json({ error: `No exchange rate for ${currency}` });
+    }
+
+    // Minimum sell amount check
+    const minSellAmount = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
+    if (minSellAmount > 0 && lanaAmount < minSellAmount) {
+      return res.status(400).json({ error: `Minimum sell amount is ${minSellAmount.toLocaleString()} LANA for ${currency}` });
     }
 
     const split = getSplitFromDb();
