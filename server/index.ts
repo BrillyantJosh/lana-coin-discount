@@ -342,23 +342,40 @@ async function autoSendPendingLana(): Promise<void> {
     }
 
     // Update incoming_batches per-batch: if all orders for a batch are sent, mark it lana_sent
-    // Check each lana_bought batch to see if it has any remaining pending orders
     const boughtBatches = db.prepare("SELECT * FROM incoming_batches WHERE status = 'lana_bought'").all() as any[];
     for (const batch of boughtBatches) {
-      // A batch's orders are linked via transaction_ref matching the fiat orders' transactionRef
-      // We check if ANY brain_lana_orders with status='pending' exist that reference this batch
-      // Since we don't have a direct link, check if all pending orders globally are zero (old behavior)
-      // OR better: if no pending orders remain at all, move all lana_bought batches
-      const stillPending = (db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE status = 'pending'").get() as any).c;
-      if (stillPending === 0) {
-        const updated = db.prepare(`
+      // Check if this batch has any pending orders via batch_ref
+      const pendingForBatch = (db.prepare(
+        "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ? AND status = 'pending'"
+      ).get(batch.batch_ref) as any).c;
+      const totalForBatch = (db.prepare(
+        "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ?"
+      ).get(batch.batch_ref) as any).c;
+
+      if (totalForBatch > 0 && pendingForBatch === 0) {
+        // All orders for this batch are sent — get the tx_hash from one of the sent orders
+        const sentOrder = db.prepare(
+          "SELECT tx_hash FROM brain_lana_orders WHERE batch_ref = ? AND status = 'sent' AND tx_hash IS NOT NULL LIMIT 1"
+        ).get(batch.batch_ref) as any;
+        const batchTxHash = sentOrder?.tx_hash || txHash;
+
+        db.prepare(`
           UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
-          WHERE status = 'lana_bought'
-        `).run(txHash);
-        if (updated.changes > 0) {
-          console.log(`[lana-discount] Updated ${updated.changes} incoming batches → lana_sent`);
-        }
-        break; // done, all moved
+          WHERE id = ?
+        `).run(batchTxHash, batch.id);
+        console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (all ${totalForBatch} orders sent)`);
+      }
+    }
+
+    // Fallback for batches without batch_ref linked orders: if no pending orders globally, move remaining
+    const stillPendingGlobal = (db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE status = 'pending'").get() as any).c;
+    if (stillPendingGlobal === 0) {
+      const updated = db.prepare(`
+        UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
+        WHERE status = 'lana_bought'
+      `).run(txHash);
+      if (updated.changes > 0) {
+        console.log(`[lana-discount] Fallback: moved ${updated.changes} remaining batches → lana_sent`);
       }
     }
   } catch (err: any) {

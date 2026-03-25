@@ -1603,6 +1603,8 @@ db.exec(`
     completed_at TEXT
   )
 `);
+// Safe migration: add batch_ref column
+try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN batch_ref TEXT"); } catch {}
 
 /**
  * POST /api/brain/lana-order
@@ -1613,7 +1615,7 @@ router.post('/brain/lana-order', async (req: Request, res: Response) => {
   if (!auth) return;
 
   try {
-    const { order_id, tx_ref, order_type, to_wallet, to_hex, lana_amount, fiat_value, currency, exchange_rate } = req.body;
+    const { order_id, tx_ref, batch_ref, order_type, to_wallet, to_hex, lana_amount, fiat_value, currency, exchange_rate } = req.body;
 
     if (!order_id || !order_type || !to_wallet || !to_hex || !lana_amount) {
       return res.status(400).json({ error: 'Missing required fields', required: ['order_id', 'order_type', 'to_wallet', 'to_hex', 'lana_amount'] });
@@ -1622,9 +1624,9 @@ router.post('/brain/lana-order', async (req: Request, res: Response) => {
     // Store the order
     try {
       db.prepare(`
-        INSERT INTO brain_lana_orders (id, transaction_ref, order_type, to_wallet, to_hex, lana_amount, fiat_value, currency, exchange_rate)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(order_id, tx_ref || null, order_type, to_wallet, to_hex, lana_amount, fiat_value || 0, currency || 'EUR', exchange_rate || 0);
+        INSERT INTO brain_lana_orders (id, transaction_ref, batch_ref, order_type, to_wallet, to_hex, lana_amount, fiat_value, currency, exchange_rate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(order_id, tx_ref || null, batch_ref || null, order_type, to_wallet, to_hex, lana_amount, fiat_value || 0, currency || 'EUR', exchange_rate || 0);
     } catch (err: any) {
       if (err.message?.includes('UNIQUE constraint')) {
         return res.status(409).json({ status: 'exists', error: 'Order already exists' });
