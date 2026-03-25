@@ -317,7 +317,8 @@ async function autoSendPendingLana(): Promise<void> {
       return;
     }
 
-    console.log(`[lana-discount] Auto-send LANA TX: ${txHash} (${pendingOrders.length} recipients, ${totalLana.toFixed(3)} LANA)`);
+    const sentLana = totalLanoshis / 100_000_000;
+    console.log(`[lana-discount] Auto-send LANA TX: ${txHash} (${pendingOrders.length} recipients, ${sentLana.toFixed(3)} LANA)`);
 
     // Update all orders to 'sent'
     const updateStmt = db.prepare("UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ?");
