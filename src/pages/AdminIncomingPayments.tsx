@@ -364,6 +364,20 @@ const AdminIncomingPayments = () => {
     lana_sent: { label: '', next: 'lana_sent' },
   };
 
+  // Calculate pending/sent LANA only for orders belonging to lana_bought/lana_sent batches
+  const lanaBoughtBatches = allBatches.filter(b => b.discountStatus === 'lana_bought');
+  const lanaSentBatches = allBatches.filter(b => b.discountStatus === 'lana_sent');
+  const getBatchTxRefs = (batches: BatchGroup[]) =>
+    [...new Set(batches.flatMap(b => b.orders.map(o => o.transactionRef).filter(Boolean)))];
+  const boughtTxRefs = getBatchTxRefs(lanaBoughtBatches);
+  const sentTxRefs = getBatchTxRefs(lanaSentBatches);
+  const batchedPendingLanoshis = lanaOrders
+    .filter(lo => lo.status === 'pending' && boughtTxRefs.includes(lo.transactionRef))
+    .reduce((s, lo) => s + lo.lanaAmount, 0);
+  const batchedSentLanoshis = lanaOrders
+    .filter(lo => lo.status === 'sent' && [...boughtTxRefs, ...sentTxRefs].includes(lo.transactionRef))
+    .reduce((s, lo) => s + lo.lanaAmount, 0);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <AdminNav />
@@ -450,16 +464,16 @@ const AdminIncomingPayments = () => {
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500">Pending to Send</p>
-                <p className="text-lg font-bold tabular-nums text-amber-500">{formatLana(lanaObligations.pendingLanoshis)}</p>
+                <p className="text-lg font-bold tabular-nums text-amber-500">{formatLana(batchedPendingLanoshis)}</p>
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-500">Already Sent</p>
-                <p className="text-lg font-bold tabular-nums text-emerald-500">{formatLana(lanaObligations.sentLanoshis)}</p>
+                <p className="text-lg font-bold tabular-nums text-emerald-500">{formatLana(batchedSentLanoshis)}</p>
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Available</p>
                 {(() => {
-                  const pendingLana = lanaObligations.pendingLanoshis / 100_000_000;
+                  const pendingLana = batchedPendingLanoshis / 100_000_000;
                   const available = buybackBalance.balanceLana - pendingLana;
                   return (
                     <p className={`text-lg font-bold tabular-nums ${available >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
