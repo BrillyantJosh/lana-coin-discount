@@ -111,6 +111,8 @@ const AUTO_SEND_OFFSET = 3;
 let heartbeatCount = 0;
 let lastAutoSendAt: string | null = null;
 let nextAutoSendIn = AUTO_SEND_CYCLE - AUTO_SEND_OFFSET; // initial countdown
+let autoSendSkipUntil = 0; // timestamp — skip auto-send until this time (insufficient balance cooldown)
+let autoSendRunning = false; // prevent concurrent auto-send runs
 
 async function verifyUnconfirmedTransactions(): Promise<void> {
   try {
@@ -180,6 +182,20 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function autoSendPendingLana(): Promise<void> {
+  // Prevent concurrent runs
+  if (autoSendRunning) {
+    console.log('[lana-discount] Auto-send already running — skipping');
+    return;
+  }
+
+  // Skip if in cooldown (insufficient balance)
+  if (Date.now() < autoSendSkipUntil) {
+    const remainSec = Math.ceil((autoSendSkipUntil - Date.now()) / 1000);
+    console.log(`[lana-discount] Auto-send: insufficient balance cooldown (${remainSec}s remaining) — skipping`);
+    return;
+  }
+
+  autoSendRunning = true;
   try {
     const buybackWif = process.env.BUYBACK_WIF;
     if (!buybackWif) return;
@@ -287,7 +303,9 @@ async function autoSendPendingLana(): Promise<void> {
       if (affordableGroups.length === 0) {
         const smallestGroup = txGroups[0];
         const smallestTotal = smallestGroup?.reduce((s: number, o: any) => s + o.lana_amount, 0) || 0;
-        console.warn(`[lana-discount] Auto-send: cannot afford even smallest group (${(smallestTotal / 100_000_000).toFixed(3)} LANA, ${smallestGroup?.length} orders, available: ${(total / 100_000_000).toFixed(3)} LANA) — skipping`);
+        // Cooldown for 15 minutes — don't keep retrying when balance is too low
+        autoSendSkipUntil = Date.now() + 15 * 60 * 1000;
+        console.warn(`[lana-discount] Auto-send: cannot afford even smallest group (${(smallestTotal / 100_000_000).toFixed(3)} LANA, ${smallestGroup?.length} orders, available: ${(total / 100_000_000).toFixed(3)} LANA) — cooldown 15min`);
         return;
       }
 
@@ -380,6 +398,8 @@ async function autoSendPendingLana(): Promise<void> {
     }
   } catch (err: any) {
     console.error('[lana-discount] Auto-send LANA error:', err.message);
+  } finally {
+    autoSendRunning = false;
   }
 }
 
