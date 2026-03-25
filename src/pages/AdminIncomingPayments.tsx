@@ -386,7 +386,9 @@ const AdminIncomingPayments = () => {
                         {formatFiat(v, c)}
                       </p>
                     ))}
-                    <p className="text-[10px] text-muted-foreground">{count} batch{count !== 1 ? 'es' : ''}</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {count} {tab.id === 'pending_direct' ? (count !== 1 ? 'orders' : 'order') : (count !== 1 ? 'batches' : 'batch')}
+                    </p>
                   </>
                 ) : (
                   <p className="text-lg font-bold text-muted-foreground">—</p>
@@ -399,15 +401,37 @@ const AdminIncomingPayments = () => {
         {/* LANA Balance Overview */}
         {buybackBalance.wallet && (
           <div className="rounded-xl border bg-card p-4">
-            {/* Auto-send countdown */}
-            {heartbeatInfo.pendingLanaOrders > 0 && (
-              <div className="flex items-center justify-center gap-2 mb-3 pb-3 border-b">
-                <span className="text-xs text-muted-foreground">Auto-send {heartbeatInfo.pendingLanaOrders} pending order{heartbeatInfo.pendingLanaOrders !== 1 ? 's' : ''} in</span>
-                <span className="text-sm font-bold tabular-nums text-amber-500">
-                  {countdown > 0 ? `${Math.floor(countdown / 60)}:${(countdown % 60).toString().padStart(2, '0')}` : 'sending...'}
+            {/* Heartbeat status */}
+            <div className="flex items-center justify-center gap-4 mb-3 pb-3 border-b text-xs">
+              {heartbeatInfo.pendingLanaOrders > 0 ? (
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                  <span className="text-muted-foreground">Auto-send {heartbeatInfo.pendingLanaOrders} pending order{heartbeatInfo.pendingLanaOrders !== 1 ? 's' : ''} in</span>
+                  <span className="font-bold tabular-nums text-amber-500">
+                    {countdown > 0 ? `${Math.floor(countdown / 60)}:${(countdown % 60).toString().padStart(2, '0')}` : 'sending...'}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <span className="text-muted-foreground">No pending LANA orders</span>
+                </div>
+              )}
+              <span className="text-muted-foreground/50">|</span>
+              <span className="text-muted-foreground">
+                Next heartbeat in <span className="font-bold tabular-nums text-foreground">
+                  {countdown > 0 ? `${Math.floor(countdown / 60)}:${(countdown % 60).toString().padStart(2, '0')}` : '< 1 min'}
                 </span>
-              </div>
-            )}
+              </span>
+              {heartbeatInfo.lastAutoSendAt && (
+                <>
+                  <span className="text-muted-foreground/50">|</span>
+                  <span className="text-muted-foreground">
+                    Last send: {formatDate(heartbeatInfo.lastAutoSendAt)} {formatTime(heartbeatInfo.lastAutoSendAt)}
+                  </span>
+                </>
+              )}
+            </div>
             <div className="grid grid-cols-4 gap-4 text-center">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Buyback Wallet</p>
