@@ -262,7 +262,9 @@ async function autoSendPendingLana(): Promise<void> {
 
       for (const o of sortedOrders) {
         const newTotal = runningTotal + o.lana_amount;
-        const estFee = Math.floor(((selected.length) * 180 + (affordableOrders.length + 2) * 34 + 10) * 150);
+        // Estimate fee with minimal UTXOs needed (1-2 inputs typical)
+        const estInputs = Math.min(3, sorted.length); // assume few inputs for small partial sends
+        const estFee = Math.floor((estInputs * 180 + (affordableOrders.length + 2) * 34 + 10) * 150);
         if (newTotal + estFee <= total) {
           affordableOrders.push(o);
           runningTotal = newTotal;
@@ -270,18 +272,33 @@ async function autoSendPendingLana(): Promise<void> {
       }
 
       if (affordableOrders.length === 0) {
-        console.warn('[lana-discount] Auto-send: cannot afford even 1 order — skipping');
+        console.warn(`[lana-discount] Auto-send: cannot afford even 1 order (smallest: ${sortedOrders[0]?.lana_amount}, available: ${total}) — skipping`);
         return;
       }
 
       const originalCount = pendingOrders.length;
       console.log(`[lana-discount] Auto-send partial: sending ${affordableOrders.length}/${originalCount} orders (${(runningTotal / 100_000_000).toFixed(3)} LANA)`);
 
+      // Re-select UTXOs for partial amount only
+      selected = [];
+      total = 0;
+      const partialOutputCount = affordableOrders.length + 1;
+      for (const u of sorted) {
+        if (selected.length >= 30) break;
+        selected.push(u);
+        total += u.value;
+        fee = Math.floor((selected.length * 180 + partialOutputCount * 34 + 10) * 150);
+        if (total >= runningTotal + fee) break;
+      }
+
+      if (total < runningTotal + fee) {
+        console.warn('[lana-discount] Auto-send partial: still insufficient after UTXO re-select — skipping');
+        return;
+      }
+
       // Replace with affordable subset
       pendingOrders = affordableOrders;
       totalLanoshis = runningTotal;
-      const newOutputCount = affordableOrders.length + 1;
-      fee = Math.floor((selected.length * 180 + newOutputCount * 34 + 10) * 150);
 
       // Rebuild recipients for partial set
       txRecipients.length = 0;
