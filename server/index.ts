@@ -113,6 +113,7 @@ let lastAutoSendAt: string | null = null;
 let nextAutoSendIn = AUTO_SEND_CYCLE - AUTO_SEND_OFFSET; // initial countdown
 let autoSendSkipUntil = 0; // timestamp — skip auto-send until this time (insufficient balance cooldown)
 let autoSendRunning = false; // prevent concurrent auto-send runs
+let lastKnownBalance = 0; // LANA balance from last Electrum fetch (for quick pre-check)
 
 async function verifyUnconfirmedTransactions(): Promise<void> {
   try {
@@ -229,6 +230,15 @@ async function autoSendPendingLana(): Promise<void> {
 
     console.log(`[lana-discount] Auto-send LANA: ${pendingOrders.length} orders in ${txGroups.length} groups, ${totalLana.toFixed(3)} LANA total`);
 
+    // Quick balance check: use cached balance from last Electrum fetch to skip early
+    const smallestGroupLanoshis = txGroups[0].reduce((s: number, o: any) => s + o.lana_amount, 0);
+    const smallestGroupLana = smallestGroupLanoshis / 100_000_000;
+    if (lastKnownBalance > 0 && lastKnownBalance < smallestGroupLana + 1) {
+      autoSendSkipUntil = Date.now() + 15 * 60 * 1000;
+      console.log(`[lana-discount] Auto-send: known balance (${lastKnownBalance.toFixed(3)} LANA) too low for smallest group (${smallestGroupLana.toFixed(3)} LANA) — cooldown 15min`);
+      return;
+    }
+
     const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress, buildSignedTx } = await import('./lib/transaction.js');
     const { electrumCall } = await import('./lib/electrum.js');
 
@@ -257,8 +267,12 @@ async function autoSendPendingLana(): Promise<void> {
 
     if (!utxos || utxos.length === 0) {
       console.warn('[lana-discount] Auto-send: no UTXOs in buyback wallet');
+      autoSendSkipUntil = Date.now() + 15 * 60 * 1000;
       return;
     }
+
+    // Update known balance from UTXOs
+    lastKnownBalance = utxos.reduce((s: number, u: any) => s + u.value, 0) / 100_000_000;
 
     // Build recipients
     const txRecipients = pendingOrders.map((o: any) => ({
