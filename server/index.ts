@@ -427,33 +427,38 @@ async function autoSendPendingLana(): Promise<void> {
 let heartbeatRunning = true;
 
 async function heartbeatLoop() {
+  console.log(`[lana-discount] Heartbeat loop started (interval: ${HEARTBEAT_INTERVAL / 1000}s)`);
   while (heartbeatRunning) {
     await sleep(HEARTBEAT_INTERVAL);
     if (!heartbeatRunning) break;
     heartbeatCount++;
+    console.log(`[lana-discount] Heartbeat #${heartbeatCount}`);
+    try {
+      // KIND 38888 sync every 60 heartbeats (= every hour)
+      if (heartbeatCount % 60 === 0) {
+        await withTimeout(() => syncKind38888ToDb(), 'KIND 38888 sync', 30000);
+      }
 
-    // KIND 38888 sync every 60 heartbeats (= every hour)
-    if (heartbeatCount % 60 === 0) {
-      await withTimeout(() => syncKind38888ToDb(), 'KIND 38888 sync', 30000);
-    }
+      // RPC transaction verification every 10 heartbeats (= every 10 minutes)
+      if (heartbeatCount % 10 === 0) {
+        await withTimeout(() => verifyUnconfirmedTransactions(), 'RPC verification', 30000);
+      }
 
-    // RPC transaction verification every 10 heartbeats (= every 10 minutes)
-    if (heartbeatCount % 10 === 0) {
-      await withTimeout(() => verifyUnconfirmedTransactions(), 'RPC verification', 30000);
-    }
-
-    // Auto-send pending LANA every 5 heartbeats (= every 5 minutes)
-    nextAutoSendIn = AUTO_SEND_CYCLE - ((heartbeatCount % AUTO_SEND_CYCLE) - AUTO_SEND_OFFSET + AUTO_SEND_CYCLE) % AUTO_SEND_CYCLE;
-    if (nextAutoSendIn === AUTO_SEND_CYCLE) nextAutoSendIn = 0;
-    if (heartbeatCount % AUTO_SEND_CYCLE === AUTO_SEND_OFFSET) {
-      await withTimeout(() => autoSendPendingLana(), 'Auto-send LANA', 45000);
-      lastAutoSendAt = new Date().toISOString();
-      nextAutoSendIn = AUTO_SEND_CYCLE;
+      // Auto-send pending LANA every 5 heartbeats (= every 5 minutes)
+      nextAutoSendIn = AUTO_SEND_CYCLE - ((heartbeatCount % AUTO_SEND_CYCLE) - AUTO_SEND_OFFSET + AUTO_SEND_CYCLE) % AUTO_SEND_CYCLE;
+      if (nextAutoSendIn === AUTO_SEND_CYCLE) nextAutoSendIn = 0;
+      if (heartbeatCount % AUTO_SEND_CYCLE === AUTO_SEND_OFFSET) {
+        await withTimeout(() => autoSendPendingLana(), 'Auto-send LANA', 45000);
+        lastAutoSendAt = new Date().toISOString();
+        nextAutoSendIn = AUTO_SEND_CYCLE;
+      }
+    } catch (err: any) {
+      console.error(`[lana-discount] Heartbeat #${heartbeatCount} error:`, err.message);
     }
   }
 }
 
-heartbeatLoop(); // fire-and-forget
+heartbeatLoop().catch(err => console.error('[lana-discount] Heartbeat loop crashed:', err));
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
