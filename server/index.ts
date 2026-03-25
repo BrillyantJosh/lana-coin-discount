@@ -208,11 +208,13 @@ async function autoSendPendingLana(): Promise<void> {
     const buybackWif = process.env.BUYBACK_WIF;
     if (!buybackWif) return;
 
-    // Find all pending brain_lana_orders
+    // Find pending brain_lana_orders only from lana_bought batches
+    // Orders without batch_ref are NOT eligible (batch must be confirmed first)
     let pendingOrders = db.prepare(`
-      SELECT * FROM brain_lana_orders
-      WHERE status = 'pending'
-      ORDER BY created_at ASC
+      SELECT blo.* FROM brain_lana_orders blo
+      INNER JOIN incoming_batches ib ON blo.batch_ref = ib.batch_ref
+      WHERE blo.status = 'pending' AND ib.status = 'lana_bought'
+      ORDER BY blo.created_at ASC
       LIMIT 30
     `).all() as any[];
 

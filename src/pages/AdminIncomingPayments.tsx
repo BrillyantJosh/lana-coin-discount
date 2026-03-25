@@ -247,6 +247,7 @@ const AdminIncomingPayments = () => {
             currency: o.currency,
             recipientWallet: o.recipientWallet,
             shopName: o.shopName,
+            transactionRef: o.transactionRef,
           })),
         }),
       });

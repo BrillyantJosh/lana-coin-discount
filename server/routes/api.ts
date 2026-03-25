@@ -1461,6 +1461,26 @@ router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Respo
 
   db.prepare(`UPDATE incoming_batches SET ${updates.join(', ')} WHERE batch_ref = ?`).run(batchRef);
 
+  // When batch moves to lana_bought, backfill batch_ref on brain_lana_orders
+  // so auto-send knows which orders are eligible
+  if (status === 'lana_bought') {
+    const { payments } = req.body;
+    if (Array.isArray(payments)) {
+      const txRefs = [...new Set(payments.map((p: any) => p.transactionRef).filter(Boolean))];
+      if (txRefs.length > 0) {
+        const updateBatchRef = db.prepare(`UPDATE brain_lana_orders SET batch_ref = ? WHERE transaction_ref = ? AND batch_ref IS NULL`);
+        let updated_count = 0;
+        for (const ref of txRefs) {
+          const r = updateBatchRef.run(batchRef, ref);
+          updated_count += r.changes;
+        }
+        if (updated_count > 0) {
+          console.log(`[lana-discount] Backfilled batch_ref=${batchRef} on ${updated_count} brain_lana_orders`);
+        }
+      }
+    }
+  }
+
   const updated = db.prepare('SELECT * FROM incoming_batches WHERE batch_ref = ?').get(batchRef);
   res.json({ success: true, batch: updated });
 });
