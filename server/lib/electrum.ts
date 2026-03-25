@@ -15,18 +15,20 @@ export interface WalletBalance {
 /**
  * Connect to the first available Electrum server
  */
-async function connectElectrum(servers: ElectrumServer[], maxRetries = 2): Promise<net.Socket> {
+async function connectElectrum(servers: ElectrumServer[], maxRetries = 1): Promise<net.Socket> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     for (const server of servers) {
       try {
         const socket = await new Promise<net.Socket>((resolve, reject) => {
           const conn = net.connect(server.port, server.host, () => {
-            console.log(`[electrum] Connected to ${server.host}:${server.port}`);
             resolve(conn);
           });
-          conn.setTimeout(10000);
+          conn.setTimeout(8000);
           conn.on('error', reject);
-          conn.on('timeout', () => reject(new Error('Connection timeout')));
+          conn.on('timeout', () => {
+            try { conn.destroy(); } catch {}
+            reject(new Error('Connection timeout'));
+          });
         });
         return socket;
       } catch (error: any) {
@@ -34,7 +36,7 @@ async function connectElectrum(servers: ElectrumServer[], maxRetries = 2): Promi
       }
     }
     if (attempt < maxRetries - 1) {
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 500));
     }
   }
   throw new Error('Failed to connect to any Electrum server');
@@ -47,7 +49,7 @@ export async function electrumCall(
   method: string,
   params: any[],
   servers: ElectrumServer[],
-  timeout = 30000
+  timeout = 15000
 ): Promise<any> {
   let socket: net.Socket | null = null;
   try {
@@ -101,7 +103,7 @@ export async function electrumCall(
 export async function fetchBatchBalances(
   servers: ElectrumServer[],
   addresses: string[],
-  connectionTimeout = 15000
+  connectionTimeout = 10000
 ): Promise<WalletBalance[]> {
   for (const server of servers) {
     try {

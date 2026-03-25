@@ -89,16 +89,22 @@ async function syncKind38888ToDb(): Promise<boolean> {
 // withTimeout — prevents any single heartbeat task from blocking forever
 // ---------------------------------------------------------------------------
 
-function withTimeout<T>(fn: () => Promise<T>, label: string, ms: number): Promise<T | undefined> {
+function withTimeout<T>(fn: (signal?: AbortSignal) => Promise<T>, label: string, ms: number): Promise<T | undefined> {
+  const controller = new AbortController();
   return Promise.race([
-    fn(),
+    fn(controller.signal),
     new Promise<undefined>((resolve) =>
       setTimeout(() => {
+        controller.abort();
         console.warn(`[lana-discount] ${label} timed out after ${ms / 1000}s — skipping this cycle`);
         resolve(undefined);
       }, ms)
     ),
   ]);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -417,28 +423,37 @@ async function autoSendPendingLana(): Promise<void> {
   }
 }
 
-const heartbeatTimer = setInterval(async () => {
-  heartbeatCount++;
+// Heartbeat loop — waits for tasks to finish before sleeping (no overlap)
+let heartbeatRunning = true;
 
-  // KIND 38888 sync every 60 heartbeats (= every hour)
-  if (heartbeatCount % 60 === 0) {
-    await withTimeout(() => syncKind38888ToDb(), 'KIND 38888 sync', 45000);
-  }
+async function heartbeatLoop() {
+  while (heartbeatRunning) {
+    await sleep(HEARTBEAT_INTERVAL);
+    if (!heartbeatRunning) break;
+    heartbeatCount++;
 
-  // RPC transaction verification every 10 heartbeats (= every 10 minutes)
-  if (heartbeatCount % 10 === 0) {
-    await verifyUnconfirmedTransactions();
-  }
+    // KIND 38888 sync every 60 heartbeats (= every hour)
+    if (heartbeatCount % 60 === 0) {
+      await withTimeout(() => syncKind38888ToDb(), 'KIND 38888 sync', 30000);
+    }
 
-  // Auto-send pending LANA every 5 heartbeats (= every 5 minutes)
-  nextAutoSendIn = AUTO_SEND_CYCLE - ((heartbeatCount % AUTO_SEND_CYCLE) - AUTO_SEND_OFFSET + AUTO_SEND_CYCLE) % AUTO_SEND_CYCLE;
-  if (nextAutoSendIn === AUTO_SEND_CYCLE) nextAutoSendIn = 0;
-  if (heartbeatCount % AUTO_SEND_CYCLE === AUTO_SEND_OFFSET) {
-    await withTimeout(() => autoSendPendingLana(), 'Auto-send LANA', 60000);
-    lastAutoSendAt = new Date().toISOString();
-    nextAutoSendIn = AUTO_SEND_CYCLE;
+    // RPC transaction verification every 10 heartbeats (= every 10 minutes)
+    if (heartbeatCount % 10 === 0) {
+      await withTimeout(() => verifyUnconfirmedTransactions(), 'RPC verification', 30000);
+    }
+
+    // Auto-send pending LANA every 5 heartbeats (= every 5 minutes)
+    nextAutoSendIn = AUTO_SEND_CYCLE - ((heartbeatCount % AUTO_SEND_CYCLE) - AUTO_SEND_OFFSET + AUTO_SEND_CYCLE) % AUTO_SEND_CYCLE;
+    if (nextAutoSendIn === AUTO_SEND_CYCLE) nextAutoSendIn = 0;
+    if (heartbeatCount % AUTO_SEND_CYCLE === AUTO_SEND_OFFSET) {
+      await withTimeout(() => autoSendPendingLana(), 'Auto-send LANA', 45000);
+      lastAutoSendAt = new Date().toISOString();
+      nextAutoSendIn = AUTO_SEND_CYCLE;
+    }
   }
-}, HEARTBEAT_INTERVAL);
+}
+
+heartbeatLoop(); // fire-and-forget
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
@@ -446,7 +461,7 @@ const heartbeatTimer = setInterval(async () => {
 
 function shutdown(signal: string) {
   console.log(`[lana-discount] ${signal} received — shutting down gracefully`);
-  clearInterval(heartbeatTimer);
+  heartbeatRunning = false;
   closeDb();
   process.exit(0);
 }

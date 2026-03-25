@@ -1288,11 +1288,12 @@ const DIRECT_FUND_URL = process.env.DIRECT_FUND_URL || 'http://lana-direct-fund-
 
 // Cache buyback balance to avoid Electrum calls on every page load
 let cachedBuybackBalance = { wallet: '', balanceLana: 0, fetchedAt: 0 };
-const BALANCE_CACHE_TTL = 120_000; // 2 minutes
+const BALANCE_CACHE_TTL = 300_000; // 5 minutes (heartbeat keeps it fresh)
 
 // Cache Direct Fund API response to avoid 429 rate limiting
 let cachedDirectFundData: { orders: any[]; summary: any; fetchedAt: number } = { orders: [], summary: {}, fetchedAt: 0 };
-const DIRECT_FUND_CACHE_TTL = 60_000; // 1 minute
+const DIRECT_FUND_CACHE_TTL = 120_000; // 2 minutes
+let directFundFetching = false; // concurrency guard
 
 router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
   const adminHex = requireAdmin(req, res);
@@ -1303,11 +1304,30 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
     let data: any;
     if (now - cachedDirectFundData.fetchedAt < DIRECT_FUND_CACHE_TTL && cachedDirectFundData.orders.length > 0) {
       data = cachedDirectFundData;
+    } else if (directFundFetching) {
+      // Another request is already fetching — use stale cache
+      data = cachedDirectFundData.orders.length > 0 ? cachedDirectFundData : { orders: [], summary: {} };
     } else {
-      const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/fiat-orders`);
-      if (!resp.ok) throw new Error(`Direct Fund API error: ${resp.status}`);
-      data = await resp.json();
-      cachedDirectFundData = { ...data, fetchedAt: now };
+      directFundFetching = true;
+      try {
+        const controller = new AbortController();
+        const fetchTimer = setTimeout(() => controller.abort(), 15000);
+        const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/fiat-orders`, { signal: controller.signal });
+        clearTimeout(fetchTimer);
+        if (!resp.ok) throw new Error(`Direct Fund API error: ${resp.status}`);
+        data = await resp.json();
+        cachedDirectFundData = { ...data, fetchedAt: now };
+      } catch (fetchErr: any) {
+        if (fetchErr.name === 'AbortError') {
+          console.warn('[lana-discount] Direct Fund fetch timed out (15s)');
+        } else {
+          console.error('[lana-discount] Direct Fund fetch error:', fetchErr.message);
+        }
+        // Fall back to stale cache
+        data = cachedDirectFundData.orders.length > 0 ? cachedDirectFundData : { orders: [], summary: {} };
+      } finally {
+        directFundFetching = false;
+      }
     }
 
     // Enrich with local batch status
