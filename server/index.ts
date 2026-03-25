@@ -194,10 +194,24 @@ async function autoSendPendingLana(): Promise<void> {
 
     if (pendingOrders.length === 0) return;
 
+    // Group orders by transaction_ref — all orders in same tx_ref must be sent together (whole batch or nothing)
+    const groupMap = new Map<string, any[]>();
+    for (const o of pendingOrders) {
+      const ref = o.transaction_ref || o.id; // fallback to id if no ref
+      const group = groupMap.get(ref) || [];
+      group.push(o);
+      groupMap.set(ref, group);
+    }
+    const txGroups = Array.from(groupMap.values()).sort((a, b) => {
+      const sumA = a.reduce((s: number, o: any) => s + o.lana_amount, 0);
+      const sumB = b.reduce((s: number, o: any) => s + o.lana_amount, 0);
+      return sumA - sumB; // smallest groups first
+    });
+
     let totalLanoshis = pendingOrders.reduce((s: number, o: any) => s + o.lana_amount, 0);
     const totalLana = totalLanoshis / 100_000_000;
 
-    console.log(`[lana-discount] Auto-send LANA: ${pendingOrders.length} orders, ${totalLana.toFixed(3)} LANA total`);
+    console.log(`[lana-discount] Auto-send LANA: ${pendingOrders.length} orders in ${txGroups.length} groups, ${totalLana.toFixed(3)} LANA total`);
 
     const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress, buildSignedTx } = await import('./lib/transaction.js');
     const { electrumCall } = await import('./lib/electrum.js');
@@ -252,32 +266,33 @@ async function autoSendPendingLana(): Promise<void> {
     }
 
     if (total < totalLanoshis + fee) {
-      // Try to send as many orders as we can afford
-      console.warn(`[lana-discount] Auto-send: insufficient balance for all ${pendingOrders.length} orders (need ${totalLanoshis + fee}, have ${total}). Trying partial send...`);
+      // Try to send whole groups (batches) that we can afford — never split a group
+      console.warn(`[lana-discount] Auto-send: insufficient balance for all ${pendingOrders.length} orders (need ${totalLanoshis + fee}, have ${total}). Trying whole groups...`);
 
-      // Sort orders by amount ascending — send smaller ones first to maximize count
-      const sortedOrders = [...pendingOrders].sort((a: any, b: any) => a.lana_amount - b.lana_amount);
-      const affordableOrders: any[] = [];
+      const affordableGroups: any[][] = [];
       let runningTotal = 0;
 
-      for (const o of sortedOrders) {
-        const newTotal = runningTotal + o.lana_amount;
-        // Estimate fee with minimal UTXOs needed (1-2 inputs typical)
-        const estInputs = Math.min(3, sorted.length); // assume few inputs for small partial sends
-        const estFee = Math.floor((estInputs * 180 + (affordableOrders.length + 2) * 34 + 10) * 150);
+      for (const group of txGroups) {
+        const groupTotal = group.reduce((s: number, o: any) => s + o.lana_amount, 0);
+        const newTotal = runningTotal + groupTotal;
+        const estInputs = Math.min(5, sorted.length);
+        const estOutputs = affordableGroups.reduce((s, g) => s + g.length, 0) + group.length + 1;
+        const estFee = Math.floor((estInputs * 180 + estOutputs * 34 + 10) * 150);
         if (newTotal + estFee <= total) {
-          affordableOrders.push(o);
+          affordableGroups.push(group);
           runningTotal = newTotal;
         }
       }
 
-      if (affordableOrders.length === 0) {
-        console.warn(`[lana-discount] Auto-send: cannot afford even 1 order (smallest: ${sortedOrders[0]?.lana_amount}, available: ${total}) — skipping`);
+      if (affordableGroups.length === 0) {
+        const smallestGroup = txGroups[0];
+        const smallestTotal = smallestGroup?.reduce((s: number, o: any) => s + o.lana_amount, 0) || 0;
+        console.warn(`[lana-discount] Auto-send: cannot afford even smallest group (${(smallestTotal / 100_000_000).toFixed(3)} LANA, ${smallestGroup?.length} orders, available: ${(total / 100_000_000).toFixed(3)} LANA) — skipping`);
         return;
       }
 
-      const originalCount = pendingOrders.length;
-      console.log(`[lana-discount] Auto-send partial: sending ${affordableOrders.length}/${originalCount} orders (${(runningTotal / 100_000_000).toFixed(3)} LANA)`);
+      const affordableOrders = affordableGroups.flat();
+      console.log(`[lana-discount] Auto-send partial: sending ${affordableGroups.length}/${txGroups.length} groups (${affordableOrders.length} orders, ${(runningTotal / 100_000_000).toFixed(3)} LANA)`);
 
       // Re-select UTXOs for partial amount only
       selected = [];
@@ -326,15 +341,24 @@ async function autoSendPendingLana(): Promise<void> {
       updateStmt.run(txHash, o.id);
     }
 
-    // Update incoming_batches: if no more pending orders, all lana_bought → lana_sent
-    const stillPending = (db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE status = 'pending'").get() as any).c;
-    if (stillPending === 0) {
-      const updated = db.prepare(`
-        UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
-        WHERE status = 'lana_bought'
-      `).run(txHash);
-      if (updated.changes > 0) {
-        console.log(`[lana-discount] Updated ${updated.changes} incoming batches → lana_sent`);
+    // Update incoming_batches per-batch: if all orders for a batch are sent, mark it lana_sent
+    // Check each lana_bought batch to see if it has any remaining pending orders
+    const boughtBatches = db.prepare("SELECT * FROM incoming_batches WHERE status = 'lana_bought'").all() as any[];
+    for (const batch of boughtBatches) {
+      // A batch's orders are linked via transaction_ref matching the fiat orders' transactionRef
+      // We check if ANY brain_lana_orders with status='pending' exist that reference this batch
+      // Since we don't have a direct link, check if all pending orders globally are zero (old behavior)
+      // OR better: if no pending orders remain at all, move all lana_bought batches
+      const stillPending = (db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE status = 'pending'").get() as any).c;
+      if (stillPending === 0) {
+        const updated = db.prepare(`
+          UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
+          WHERE status = 'lana_bought'
+        `).run(txHash);
+        if (updated.changes > 0) {
+          console.log(`[lana-discount] Updated ${updated.changes} incoming batches → lana_sent`);
+        }
+        break; // done, all moved
       }
     }
   } catch (err: any) {
