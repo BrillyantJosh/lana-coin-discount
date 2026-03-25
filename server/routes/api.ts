@@ -1286,6 +1286,10 @@ router.post('/admin/reject-transaction/:id', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 const DIRECT_FUND_URL = process.env.DIRECT_FUND_URL || 'http://lana-direct-fund-web:3005';
 
+// Cache buyback balance to avoid Electrum calls on every page load
+let cachedBuybackBalance = { wallet: '', balanceLana: 0, fetchedAt: 0 };
+const BALANCE_CACHE_TTL = 120_000; // 2 minutes
+
 router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
   const adminHex = requireAdmin(req, res);
   if (!adminHex) return;
@@ -1310,19 +1314,23 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
     // Include brain_lana_orders for LANA recipient breakdown
     const lanaOrders = db.prepare('SELECT * FROM brain_lana_orders ORDER BY created_at DESC').all() as any[];
 
-    // Buyback wallet balance for overview
-    let buybackBalance = { wallet: '', balanceLana: 0 };
-    try {
-      const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
-      if (buybackWalletId) {
-        const electrumServers = getElectrumServersFromDb();
-        if (electrumServers.length > 0) {
-          const balArr = await fetchBatchBalances(electrumServers, [buybackWalletId]);
-          const wb = balArr.find((b: any) => b.wallet_id === buybackWalletId);
-          buybackBalance = { wallet: buybackWalletId, balanceLana: wb?.balance || 0 };
+    // Buyback wallet balance for overview (cached to avoid Electrum spam)
+    let buybackBalance = { wallet: cachedBuybackBalance.wallet, balanceLana: cachedBuybackBalance.balanceLana };
+    const now = Date.now();
+    if (now - cachedBuybackBalance.fetchedAt > BALANCE_CACHE_TTL) {
+      try {
+        const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
+        if (buybackWalletId) {
+          const electrumServers = getElectrumServersFromDb();
+          if (electrumServers.length > 0) {
+            const balArr = await fetchBatchBalances(electrumServers, [buybackWalletId]);
+            const wb = balArr.find((b: any) => b.wallet_id === buybackWalletId);
+            buybackBalance = { wallet: buybackWalletId, balanceLana: wb?.balance || 0 };
+            cachedBuybackBalance = { ...buybackBalance, fetchedAt: now };
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
     // LANA obligation summary (raw DB rows = snake_case)
     const pendingLanoshis = lanaOrders
