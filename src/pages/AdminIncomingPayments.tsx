@@ -140,8 +140,9 @@ const AdminIncomingPayments = () => {
   const [orders, setOrders] = useState<FiatOrder[]>([]);
   const [lanaOrders, setLanaOrders] = useState<LanaOrder[]>([]);
   const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; balanceLana: number }>({ wallet: '', balanceLana: 0 });
-  const [heartbeatInfo, setHeartbeatInfo] = useState<{ nextAutoSendMin: number; pendingLanaOrders: number; lastAutoSendAt: string | null }>({ nextAutoSendMin: 0, pendingLanaOrders: 0, lastAutoSendAt: null });
+  const [heartbeatInfo, setHeartbeatInfo] = useState<{ nextAutoSendMin: number; nextHeartbeatSec: number; pendingLanaOrders: number; lastAutoSendAt: string | null }>({ nextAutoSendMin: 0, nextHeartbeatSec: 60, pendingLanaOrders: 0, lastAutoSendAt: null });
   const [countdown, setCountdown] = useState(0);
+  const [hbCountdown, setHbCountdown] = useState(60);
   const [lanaObligations, setLanaObligations] = useState<{ pendingLanoshis: number; sentLanoshis: number }>({ pendingLanoshis: 0, sentLanoshis: 0 });
   const [localBatches, setLocalBatches] = useState<LocalBatch[]>([]);
   const [loading, setLoading] = useState(true);
@@ -192,6 +193,7 @@ const AdminIncomingPayments = () => {
           const data = await res.json();
           setHeartbeatInfo(data);
           setCountdown(data.nextAutoSendMin * 60); // seconds
+          setHbCountdown(data.nextHeartbeatSec || 60);
         }
       } catch {}
     };
@@ -202,19 +204,21 @@ const AdminIncomingPayments = () => {
 
   // Countdown every second
   useEffect(() => {
-    if (countdown <= 0) return;
     const t = setInterval(() => {
       setCountdown(c => {
         if (c <= 1) {
-          // Auto-refresh data when countdown hits 0
           fetchData();
           return 0;
         }
         return c - 1;
       });
+      setHbCountdown(c => {
+        if (c <= 1) return 60; // reset to 60s
+        return c - 1;
+      });
     }, 1000);
     return () => clearInterval(t);
-  }, [countdown, fetchData]);
+  }, [fetchData]);
 
   const updateBatchStatus = async (batch: BatchGroup, newStatus: TabId) => {
     if (!session) return;
@@ -420,7 +424,7 @@ const AdminIncomingPayments = () => {
               <span className="text-muted-foreground/50">|</span>
               <span className="text-muted-foreground">
                 Next heartbeat in <span className="font-bold tabular-nums text-foreground">
-                  {countdown > 0 ? `${Math.floor(countdown / 60)}:${(countdown % 60).toString().padStart(2, '0')}` : '< 1 min'}
+                  {hbCountdown > 0 ? `${hbCountdown}s` : 'now'}
                 </span>
               </span>
               {heartbeatInfo.lastAutoSendAt && (

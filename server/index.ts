@@ -185,7 +185,7 @@ async function autoSendPendingLana(): Promise<void> {
     if (!buybackWif) return;
 
     // Find all pending brain_lana_orders
-    const pendingOrders = db.prepare(`
+    let pendingOrders = db.prepare(`
       SELECT * FROM brain_lana_orders
       WHERE status = 'pending'
       ORDER BY created_at ASC
@@ -194,7 +194,7 @@ async function autoSendPendingLana(): Promise<void> {
 
     if (pendingOrders.length === 0) return;
 
-    const totalLanoshis = pendingOrders.reduce((s: number, o: any) => s + o.lana_amount, 0);
+    let totalLanoshis = pendingOrders.reduce((s: number, o: any) => s + o.lana_amount, 0);
     const totalLana = totalLanoshis / 100_000_000;
 
     console.log(`[lana-discount] Auto-send LANA: ${pendingOrders.length} orders, ${totalLana.toFixed(3)} LANA total`);
@@ -252,8 +252,43 @@ async function autoSendPendingLana(): Promise<void> {
     }
 
     if (total < totalLanoshis + fee) {
-      console.warn(`[lana-discount] Auto-send: insufficient balance (need ${totalLanoshis + fee}, have ${total})`);
-      return;
+      // Try to send as many orders as we can afford
+      console.warn(`[lana-discount] Auto-send: insufficient balance for all ${pendingOrders.length} orders (need ${totalLanoshis + fee}, have ${total}). Trying partial send...`);
+
+      // Sort orders by amount ascending — send smaller ones first to maximize count
+      const sortedOrders = [...pendingOrders].sort((a: any, b: any) => a.lana_amount - b.lana_amount);
+      const affordableOrders: any[] = [];
+      let runningTotal = 0;
+
+      for (const o of sortedOrders) {
+        const newTotal = runningTotal + o.lana_amount;
+        const estFee = Math.floor(((selected.length) * 180 + (affordableOrders.length + 2) * 34 + 10) * 150);
+        if (newTotal + estFee <= total) {
+          affordableOrders.push(o);
+          runningTotal = newTotal;
+        }
+      }
+
+      if (affordableOrders.length === 0) {
+        console.warn('[lana-discount] Auto-send: cannot afford even 1 order — skipping');
+        return;
+      }
+
+      const originalCount = pendingOrders.length;
+      console.log(`[lana-discount] Auto-send partial: sending ${affordableOrders.length}/${originalCount} orders (${(runningTotal / 100_000_000).toFixed(3)} LANA)`);
+
+      // Replace with affordable subset
+      pendingOrders = affordableOrders;
+      totalLanoshis = runningTotal;
+      const newOutputCount = affordableOrders.length + 1;
+      fee = Math.floor((selected.length * 180 + newOutputCount * 34 + 10) * 150);
+
+      // Rebuild recipients for partial set
+      txRecipients.length = 0;
+      txRecipients.push(...affordableOrders.map((o: any) => ({
+        address: normalizeAddress(o.to_wallet),
+        amount: o.lana_amount,
+      })));
     }
 
     // Build, sign, broadcast
@@ -333,11 +368,17 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // Heartbeat status endpoint for UI
 app.get('/api/heartbeat-status', (req, res) => {
   const pendingCount = (db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE status = 'pending'").get() as any).c;
+  // Calculate seconds until next heartbeat (60s cycle)
+  const now = Date.now();
+  const elapsedSinceLastHb = now % HEARTBEAT_INTERVAL;
+  const nextHbSec = Math.ceil((HEARTBEAT_INTERVAL - elapsedSinceLastHb) / 1000);
+
   res.json({
     heartbeatCount,
     heartbeatIntervalSec: HEARTBEAT_INTERVAL / 1000,
     autoSendCycleMin: AUTO_SEND_CYCLE,
     nextAutoSendMin: nextAutoSendIn,
+    nextHeartbeatSec: nextHbSec,
     lastAutoSendAt,
     pendingLanaOrders: pendingCount,
   });
