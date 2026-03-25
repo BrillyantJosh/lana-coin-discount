@@ -1327,7 +1327,6 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
 
     // Buyback wallet balance for overview (cached to avoid Electrum spam)
     let buybackBalance = { wallet: cachedBuybackBalance.wallet, balanceLana: cachedBuybackBalance.balanceLana };
-    const now = Date.now();
     if (now - cachedBuybackBalance.fetchedAt > BALANCE_CACHE_TTL) {
       try {
         const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
