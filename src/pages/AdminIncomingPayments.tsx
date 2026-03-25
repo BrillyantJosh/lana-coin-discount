@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
@@ -192,7 +192,9 @@ const AdminIncomingPayments = () => {
         if (res.ok) {
           const data = await res.json();
           setHeartbeatInfo(data);
-          setCountdown(data.nextAutoSendMin * 60); // seconds
+          // Only update countdown if server reports > 0 minutes remaining
+          const serverSec = (data.nextAutoSendMin || 0) * 60;
+          if (serverSec > 0) setCountdown(serverSec);
           setHbCountdown(data.nextHeartbeatSec || 60);
         }
       } catch {}
@@ -202,18 +204,23 @@ const AdminIncomingPayments = () => {
     return () => clearInterval(hbTimer);
   }, []);
 
-  // Countdown every second
+  // Countdown every second — auto-refresh data when countdown reaches 0
+  const fetchingRef = useRef(false);
   useEffect(() => {
     const t = setInterval(() => {
       setCountdown(c => {
         if (c <= 1) {
-          fetchData();
-          return 0;
+          // Debounce: don't fire if already fetching
+          if (!fetchingRef.current) {
+            fetchingRef.current = true;
+            fetchData().finally(() => { fetchingRef.current = false; });
+          }
+          return 300; // reset to 5 minutes (not 0 — prevents rapid re-fetch)
         }
         return c - 1;
       });
       setHbCountdown(c => {
-        if (c <= 1) return 60; // reset to 60s
+        if (c <= 1) return 60;
         return c - 1;
       });
     }, 1000);

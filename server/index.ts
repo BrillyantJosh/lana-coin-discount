@@ -91,15 +91,16 @@ async function syncKind38888ToDb(): Promise<boolean> {
 
 function withTimeout<T>(fn: (signal?: AbortSignal) => Promise<T>, label: string, ms: number): Promise<T | undefined> {
   const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
   return Promise.race([
-    fn(controller.signal),
-    new Promise<undefined>((resolve) =>
-      setTimeout(() => {
+    fn(controller.signal).then(result => { clearTimeout(timer); return result; }),
+    new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => {
         controller.abort();
         console.warn(`[lana-discount] ${label} timed out after ${ms / 1000}s — skipping this cycle`);
         resolve(undefined);
-      }, ms)
-    ),
+      }, ms);
+    }),
   ]);
 }
 
