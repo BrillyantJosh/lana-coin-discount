@@ -208,13 +208,16 @@ async function autoSendPendingLana(): Promise<void> {
     const buybackWif = process.env.BUYBACK_WIF;
     if (!buybackWif) return;
 
-    // Only send LANA orders explicitly authorized by Brain
-    // Brain sets brain_authorized=1 after payment_status reaches DiscountReceived
+    // Send LANA orders that are either:
+    // 1. Explicitly authorized by Brain (brain_authorized=1), OR
+    // 2. In a batch with incoming_batches.status = 'lana_bought' (admin confirmed receipt)
     let pendingOrders = db.prepare(`
-      SELECT * FROM brain_lana_orders
-      WHERE status = 'pending' AND brain_authorized = 1
-      ORDER BY created_at ASC
-      LIMIT 30
+      SELECT DISTINCT blo.* FROM brain_lana_orders blo
+      LEFT JOIN incoming_batches ib ON blo.batch_ref = ib.batch_ref
+      WHERE blo.status = 'pending'
+        AND (blo.brain_authorized = 1 OR ib.status = 'lana_bought')
+      ORDER BY blo.created_at ASC
+      LIMIT 100
     `).all() as any[];
 
     if (pendingOrders.length === 0) return;
