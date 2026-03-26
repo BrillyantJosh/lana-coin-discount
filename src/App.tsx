@@ -8,7 +8,6 @@ import ErrorBoundary from "@/components/ErrorBoundary";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
-import Wallets from "./pages/Wallets";
 import AdminDashboard from "./pages/AdminDashboard";
 import AdminUsers from "./pages/AdminUsers";
 import AdminSettings from "./pages/AdminSettings";
@@ -34,7 +33,6 @@ const App = () => (
             <Route path="/" element={<Index />} />
             <Route path="/login" element={<Login />} />
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/wallets" element={<Wallets />} />
             <Route path="/sell" element={<SellLana />} />
             <Route path="/docs/api" element={<ApiDocs />} />
             <Route path="/admin" element={<AdminDashboard />} />

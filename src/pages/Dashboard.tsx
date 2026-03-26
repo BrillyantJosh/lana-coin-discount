@@ -187,30 +187,6 @@ const Dashboard = () => {
             </div>
           </Link>
 
-          {/* Option 2: Register Wallets for Monitoring */}
-          <Link to="/wallets" className="group relative rounded-2xl border-2 border-border bg-card p-8 hover:border-primary transition-colors cursor-pointer block">
-            <div className="space-y-4">
-              <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center">
-                <svg className="h-7 w-7 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                </svg>
-              </div>
-              <h2 className="text-2xl font-bold text-foreground">Register Wallets</h2>
-              <p className="text-muted-foreground leading-relaxed">
-                Submit wallet addresses you'd like us to monitor for buyback opportunities.
-                We'll notify you when your coins are ready for instant payout.
-              </p>
-              <div className="pt-2">
-                <span className="inline-flex items-center gap-1 text-primary font-semibold group-hover:gap-2 transition-all">
-                  Register Wallets
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                  </svg>
-                </span>
-              </div>
-            </div>
-          </Link>
         </div>
 
         {/* ============ SALES HISTORY ============ */}

@@ -462,12 +462,10 @@ const SellLana = () => {
                       })}
                     </div>
                   ) : (
-                    <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 text-center">
-                      <p className="text-sm text-amber-700 font-medium mb-1">No registered wallets found</p>
-                      <p className="text-xs text-amber-600">
-                        Please register your wallets first via the{' '}
-                        <Link to="/wallets" className="underline font-medium hover:text-amber-800">Register Wallets</Link>{' '}
-                        page.
+                    <div className="rounded-lg border border-amber-200 bg-amber-50/50 dark:bg-amber-950/30 dark:border-amber-800 p-4 text-center">
+                      <p className="text-sm text-amber-700 dark:text-amber-400 font-medium mb-1">No registered wallets found</p>
+                      <p className="text-xs text-amber-600 dark:text-amber-500">
+                        No wallets are registered for your account. Please contact support.
                       </p>
                     </div>
                   )}

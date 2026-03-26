@@ -261,55 +261,7 @@ router.post('/wallets/balances', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * GET /api/user/:hexId/watched-wallets
- * Get user's watched wallets from SQLite.
- */
-router.get('/user/:hexId/watched-wallets', (req: Request, res: Response) => {
-  const rows = db.prepare('SELECT * FROM watched_wallets WHERE user_hex_id = ? ORDER BY created_at ASC')
-    .all(req.params.hexId);
-  return res.json({ watchedWallets: rows });
-});
-
-/**
- * POST /api/user/:hexId/watched-wallets
- * Save which wallets user wants monitored. Replaces all existing watched wallets.
- */
-router.post('/user/:hexId/watched-wallets', (req: Request, res: Response) => {
-  try {
-    const { hexId } = req.params;
-    const { wallets } = req.body;
-
-    if (!wallets || !Array.isArray(wallets)) {
-      return res.status(400).json({ error: 'Missing wallets array' });
-    }
-
-    const saveAll = db.transaction(() => {
-      // Remove old selections
-      db.prepare('DELETE FROM watched_wallets WHERE user_hex_id = ?').run(hexId);
-
-      // Insert new selections
-      const insert = db.prepare(`
-        INSERT INTO watched_wallets (user_hex_id, wallet_id, wallet_type, note)
-        VALUES (?, ?, ?, ?)
-      `);
-
-      for (const w of wallets) {
-        insert.run(hexId, w.walletId, w.walletType || null, w.note || null);
-      }
-    });
-
-    saveAll();
-
-    const rows = db.prepare('SELECT * FROM watched_wallets WHERE user_hex_id = ? ORDER BY created_at ASC')
-      .all(hexId);
-
-    return res.json({ success: true, watchedWallets: rows });
-  } catch (error) {
-    console.error('Save watched wallets error:', error);
-    return res.status(500).json({ error: 'Failed to save watched wallets' });
-  }
-});
+// watched-wallets endpoints removed — Register Wallets feature discontinued
 
 // ---------------------------------------------------------------------------
 // Admin endpoints
