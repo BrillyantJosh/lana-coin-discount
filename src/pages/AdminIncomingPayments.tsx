@@ -184,6 +184,13 @@ const AdminIncomingPayments = () => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Auto-refresh data every 30 seconds
+  useEffect(() => {
+    if (!session || !isAdmin) return;
+    const interval = setInterval(fetchData, 30000);
+    return () => clearInterval(interval);
+  }, [session, isAdmin, fetchData]);
+
   // Poll heartbeat status every 30s + countdown timer
   useEffect(() => {
     const fetchHb = async () => {
