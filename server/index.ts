@@ -241,15 +241,6 @@ async function autoSendPendingLana(): Promise<void> {
 
     console.log(`[lana-discount] Auto-send LANA: ${pendingOrders.length} orders in ${txGroups.length} groups, ${totalLana.toFixed(3)} LANA total`);
 
-    // Quick balance check: use cached balance from last Electrum fetch to skip early
-    const smallestGroupLanoshis = txGroups[0].reduce((s: number, o: any) => s + o.lana_amount, 0);
-    const smallestGroupLana = smallestGroupLanoshis / 100_000_000;
-    if (lastKnownBalance > 0 && lastKnownBalance < smallestGroupLana + 1) {
-      autoSendSkipUntil = Date.now() + 15 * 60 * 1000;
-      console.log(`[lana-discount] Auto-send: known balance (${lastKnownBalance.toFixed(3)} LANA) too low for smallest group (${smallestGroupLana.toFixed(3)} LANA) — cooldown 15min`);
-      return;
-    }
-
     const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress, buildSignedTx } = await import('./lib/transaction.js');
     const { electrumCall } = await import('./lib/electrum.js');
 
@@ -278,7 +269,7 @@ async function autoSendPendingLana(): Promise<void> {
 
     if (!utxos || utxos.length === 0) {
       console.warn('[lana-discount] Auto-send: no UTXOs in buyback wallet');
-      autoSendSkipUntil = Date.now() + 15 * 60 * 1000;
+      autoSendSkipUntil = Date.now() + 3 * 60 * 1000;
       return;
     }
 
@@ -329,8 +320,8 @@ async function autoSendPendingLana(): Promise<void> {
         const smallestGroup = txGroups[0];
         const smallestTotal = smallestGroup?.reduce((s: number, o: any) => s + o.lana_amount, 0) || 0;
         // Cooldown for 15 minutes — don't keep retrying when balance is too low
-        autoSendSkipUntil = Date.now() + 15 * 60 * 1000;
-        console.warn(`[lana-discount] Auto-send: cannot afford even smallest group (${(smallestTotal / 100_000_000).toFixed(3)} LANA, ${smallestGroup?.length} orders, available: ${(total / 100_000_000).toFixed(3)} LANA) — cooldown 15min`);
+        autoSendSkipUntil = Date.now() + 3 * 60 * 1000;
+        console.warn(`[lana-discount] Auto-send: cannot afford even smallest group (${(smallestTotal / 100_000_000).toFixed(3)} LANA, ${smallestGroup?.length} orders, available: ${(total / 100_000_000).toFixed(3)} LANA) — cooldown 3min`);
         return;
       }
 
