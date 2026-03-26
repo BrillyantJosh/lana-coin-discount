@@ -372,12 +372,8 @@ const AdminIncomingPayments = () => {
     [...new Set(batches.flatMap(b => b.orders.map(o => o.transactionRef).filter(Boolean)))];
   const boughtTxRefs = getBatchTxRefs(lanaBoughtBatches);
   const sentTxRefs = getBatchTxRefs(lanaSentBatches);
-  const batchedPendingLanoshis = lanaOrders
-    .filter(lo => lo.status === 'pending' && boughtTxRefs.includes(lo.transactionRef))
-    .reduce((s, lo) => s + lo.lanaAmount, 0);
-  const batchedSentLanoshis = lanaOrders
-    .filter(lo => lo.status === 'sent' && [...boughtTxRefs, ...sentTxRefs].includes(lo.transactionRef))
-    .reduce((s, lo) => s + lo.lanaAmount, 0);
+  // Pending LANA = sum from lana_bought batches (using batch totalLana which is consistent with what's displayed)
+  const batchedPendingLana = lanaBoughtBatches.reduce((s, b) => s + b.totalLana, 0);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -458,7 +454,7 @@ const AdminIncomingPayments = () => {
                 </>
               )}
             </div>
-            <div className="grid grid-cols-4 gap-4 text-center">
+            <div className="grid grid-cols-3 gap-4 text-center">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Buyback Wallet</p>
                 <p className="text-lg font-bold tabular-nums">{buybackBalance.balanceLana.toLocaleString(undefined, { maximumFractionDigits: 2 })} <span className="text-xs text-muted-foreground">LANA</span></p>
@@ -470,18 +466,12 @@ const AdminIncomingPayments = () => {
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500">Pending to Send</p>
-                <p className="text-lg font-bold tabular-nums text-amber-500">{formatLana(batchedPendingLanoshis)}</p>
-              </div>
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-500">Already Sent</p>
-                <p className="text-lg font-bold tabular-nums text-emerald-500">{formatLana(batchedSentLanoshis)}</p>
+                <p className="text-lg font-bold tabular-nums text-amber-500">{batchedPendingLana.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Available</p>
                 {(() => {
-                  const pendingLana = batchedPendingLanoshis / 100_000_000;
-                  const confirmed = buybackBalance.balanceLana; // already confirmed-only from backend
-                  const available = confirmed - pendingLana;
+                  const available = buybackBalance.balanceLana - batchedPendingLana;
                   return (
                     <p className={`text-lg font-bold tabular-nums ${available >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
                       {available.toLocaleString(undefined, { maximumFractionDigits: 2 })}
