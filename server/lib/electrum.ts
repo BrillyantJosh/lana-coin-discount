@@ -8,6 +8,8 @@ export interface ElectrumServer {
 export interface WalletBalance {
   wallet_id: string;
   balance: number;
+  confirmedBalance?: number;
+  unconfirmedBalance?: number;
   status: string;
   error?: string;
 }
@@ -178,10 +180,14 @@ async function fetchBatchFromServer(
             if (resp && resp.result) {
               const confirmed = resp.result.confirmed || 0;
               const unconfirmed = resp.result.unconfirmed || 0;
-              const totalLana = (confirmed + unconfirmed) / LANOSHI_DIVISOR;
+              const confirmedLana = confirmed / LANOSHI_DIVISOR;
+              const unconfirmedLana = unconfirmed / LANOSHI_DIVISOR;
+              const totalLana = confirmedLana + unconfirmedLana;
               return {
                 wallet_id: address,
                 balance: Math.round(totalLana * 100) / 100,
+                confirmedBalance: Math.round(confirmedLana * 100) / 100,
+                unconfirmedBalance: Math.round(unconfirmedLana * 100) / 100,
                 status: totalLana > 0 ? 'active' : 'inactive',
               };
             } else {

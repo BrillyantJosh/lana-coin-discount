@@ -139,7 +139,7 @@ const AdminIncomingPayments = () => {
   const navigate = useNavigate();
   const [orders, setOrders] = useState<FiatOrder[]>([]);
   const [lanaOrders, setLanaOrders] = useState<LanaOrder[]>([]);
-  const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; balanceLana: number }>({ wallet: '', balanceLana: 0 });
+  const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; balanceLana: number; confirmedLana?: number; unconfirmedLana?: number }>({ wallet: '', balanceLana: 0 });
   const [heartbeatInfo, setHeartbeatInfo] = useState<{ nextAutoSendMin: number; nextHeartbeatSec: number; pendingLanaOrders: number; lastAutoSendAt: string | null }>({ nextAutoSendMin: 0, nextHeartbeatSec: 60, pendingLanaOrders: 0, lastAutoSendAt: null });
   const [countdown, setCountdown] = useState(0);
   const [hbCountdown, setHbCountdown] = useState(60);
@@ -462,6 +462,11 @@ const AdminIncomingPayments = () => {
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Buyback Wallet</p>
                 <p className="text-lg font-bold tabular-nums">{buybackBalance.balanceLana.toLocaleString(undefined, { maximumFractionDigits: 2 })} <span className="text-xs text-muted-foreground">LANA</span></p>
+                {(buybackBalance.unconfirmedLana ?? 0) !== 0 && (
+                  <p className="text-[10px] text-amber-500 font-mono">
+                    +{(buybackBalance.unconfirmedLana ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} incoming
+                  </p>
+                )}
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500">Pending to Send</p>
@@ -475,7 +480,8 @@ const AdminIncomingPayments = () => {
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Available</p>
                 {(() => {
                   const pendingLana = batchedPendingLanoshis / 100_000_000;
-                  const available = buybackBalance.balanceLana - pendingLana;
+                  const confirmed = buybackBalance.balanceLana; // already confirmed-only from backend
+                  const available = confirmed - pendingLana;
                   return (
                     <p className={`text-lg font-bold tabular-nums ${available >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
                       {available.toLocaleString(undefined, { maximumFractionDigits: 2 })}

@@ -1287,7 +1287,7 @@ router.post('/admin/reject-transaction/:id', (req: Request, res: Response) => {
 const DIRECT_FUND_URL = process.env.DIRECT_FUND_URL || 'http://lana-direct-fund-web:3005';
 
 // Cache buyback balance to avoid Electrum calls on every page load
-let cachedBuybackBalance = { wallet: '', balanceLana: 0, fetchedAt: 0 };
+let cachedBuybackBalance = { wallet: '', balanceLana: 0, confirmedLana: 0, unconfirmedLana: 0, fetchedAt: 0 };
 const BALANCE_CACHE_TTL = 300_000; // 5 minutes (heartbeat keeps it fresh)
 
 // Cache Direct Fund API response to avoid 429 rate limiting
@@ -1346,7 +1346,12 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
     const lanaOrders = db.prepare('SELECT * FROM brain_lana_orders ORDER BY created_at DESC').all() as any[];
 
     // Buyback wallet balance for overview (cached to avoid Electrum spam)
-    let buybackBalance = { wallet: cachedBuybackBalance.wallet, balanceLana: cachedBuybackBalance.balanceLana };
+    let buybackBalance = {
+      wallet: cachedBuybackBalance.wallet,
+      balanceLana: cachedBuybackBalance.balanceLana,
+      confirmedLana: cachedBuybackBalance.confirmedLana,
+      unconfirmedLana: cachedBuybackBalance.unconfirmedLana,
+    };
     if (now - cachedBuybackBalance.fetchedAt > BALANCE_CACHE_TTL) {
       try {
         const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
@@ -1355,7 +1360,12 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
           if (electrumServers.length > 0) {
             const balArr = await fetchBatchBalances(electrumServers, [buybackWalletId]);
             const wb = balArr.find((b: any) => b.wallet_id === buybackWalletId);
-            buybackBalance = { wallet: buybackWalletId, balanceLana: wb?.balance || 0 };
+            buybackBalance = {
+              wallet: buybackWalletId,
+              balanceLana: wb?.confirmedBalance || 0,
+              confirmedLana: wb?.confirmedBalance || 0,
+              unconfirmedLana: wb?.unconfirmedBalance || 0,
+            };
             cachedBuybackBalance = { ...buybackBalance, fetchedAt: now };
           }
         }
