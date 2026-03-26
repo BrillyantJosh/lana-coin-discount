@@ -208,13 +208,12 @@ async function autoSendPendingLana(): Promise<void> {
     const buybackWif = process.env.BUYBACK_WIF;
     if (!buybackWif) return;
 
-    // Find pending brain_lana_orders only from lana_bought batches
-    // Orders without batch_ref are NOT eligible (batch must be confirmed first)
+    // Only send LANA orders explicitly authorized by Brain
+    // Brain sets brain_authorized=1 after payment_status reaches DiscountReceived
     let pendingOrders = db.prepare(`
-      SELECT blo.* FROM brain_lana_orders blo
-      INNER JOIN incoming_batches ib ON blo.batch_ref = ib.batch_ref
-      WHERE blo.status = 'pending' AND ib.status = 'lana_bought'
-      ORDER BY blo.created_at ASC
+      SELECT * FROM brain_lana_orders
+      WHERE status = 'pending' AND brain_authorized = 1
+      ORDER BY created_at ASC
       LIMIT 30
     `).all() as any[];
 
@@ -380,6 +379,23 @@ async function autoSendPendingLana(): Promise<void> {
     const updateStmt = db.prepare("UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ?");
     for (const o of pendingOrders) {
       updateStmt.run(txHash, o.id);
+    }
+
+    // Notify Brain that LANA was sent (callback)
+    const sentTxRefs = [...new Set(pendingOrders.map((o: any) => o.transaction_ref).filter(Boolean))];
+    if (sentTxRefs.length > 0) {
+      const brainUrl = process.env.BRAIN_CALLBACK_URL || process.env.BRAIN_API_URL;
+      const brainKey = process.env.BRAIN_CALLBACK_KEY || process.env.LANA_DISCOUNT_API_KEY;
+      if (brainUrl) {
+        fetch(`${brainUrl}/api/callbacks/lana-sent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-callback-key': brainKey || '' },
+          body: JSON.stringify({ transaction_refs: sentTxRefs, tx_hash: txHash }),
+        }).then(r => {
+          if (r.ok) console.log(`[lana-discount] Brain callback lana-sent: ${sentTxRefs.length} txs`);
+          else console.warn(`[lana-discount] Brain callback failed: HTTP ${r.status}`);
+        }).catch(err => console.warn('[lana-discount] Brain callback error:', err.message));
+      }
     }
 
     // Update incoming_batches per-batch: if all orders for a batch are sent, mark it lana_sent

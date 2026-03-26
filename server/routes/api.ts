@@ -1643,8 +1643,39 @@ db.exec(`
     completed_at TEXT
   )
 `);
-// Safe migration: add batch_ref column
+// Safe migrations
 try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN batch_ref TEXT"); } catch {}
+try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN brain_authorized INTEGER DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN brain_authorized_at TEXT"); } catch {}
+
+/**
+ * POST /api/brain/authorize-send
+ * Brain tells Discount it can send LANA for specific transactions
+ * Body: { transaction_refs: string[] }
+ */
+router.post('/brain/authorize-send', (req: Request, res: Response) => {
+  const auth = requireApiKey(req, res);
+  if (!auth) return;
+
+  const { transaction_refs } = req.body;
+  if (!Array.isArray(transaction_refs) || transaction_refs.length === 0) {
+    return res.status(400).json({ error: 'transaction_refs required' });
+  }
+
+  const update = db.prepare(`
+    UPDATE brain_lana_orders
+    SET brain_authorized = 1, brain_authorized_at = datetime('now')
+    WHERE transaction_ref = ? AND brain_authorized = 0
+  `);
+
+  let authorized = 0;
+  for (const ref of transaction_refs) {
+    authorized += update.run(ref).changes;
+  }
+
+  console.log(`[lana-discount] Brain authorized LANA send for ${transaction_refs.length} transactions (${authorized} orders)`);
+  return res.json({ success: true, authorized });
+});
 
 /**
  * POST /api/brain/lana-order
