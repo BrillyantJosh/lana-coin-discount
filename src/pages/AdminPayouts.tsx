@@ -216,13 +216,10 @@ const AdminPayouts = () => {
 
   if (authLoading || !session || !isAdmin) return null;
 
-  // Filter out pending_verification — those belong on the Verify TX page
+  // Show all sales including pending_verification (external API sales)
   // Sort sales within each user: unpaid/partial first, then fully paid
   // Sort users: those with remaining > 0 first, fully paid last
-  const sortedUsers = users.map(user => {
-    const filteredSales = user.sales.filter(s => s.status !== 'pending_verification');
-    return { ...user, sales: filteredSales };
-  }).filter(user => user.sales.length > 0).map(user => {
+  const sortedUsers = users.filter(user => user.sales.length > 0).map(user => {
     const totalOwed = user.sales.reduce((s, sale) => s + sale.netFiat, 0);
     const totalPaid = user.sales.reduce((s, sale) => s + sale.totalPaid, 0);
     const remaining = Math.round((totalOwed - totalPaid) * 100) / 100;
