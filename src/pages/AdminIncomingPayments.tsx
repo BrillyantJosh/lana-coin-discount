@@ -379,8 +379,8 @@ const AdminIncomingPayments = () => {
     [...new Set(batches.flatMap(b => b.orders.map(o => o.transactionRef).filter(Boolean)))];
   const boughtTxRefs = getBatchTxRefs(lanaBoughtBatches);
   const sentTxRefs = getBatchTxRefs(lanaSentBatches);
-  // Pending LANA = sum from actual brain_lana_orders for lana_bought batches (includes merchant + cashback LANA)
-  const boughtLanaOrders = lanaOrders.filter(lo => boughtTxRefs.includes(lo.transactionRef) && lo.status === 'pending');
+  // Pending LANA = sum from ALL brain_lana_orders for lana_bought batches (pending + sent, includes merchant + cashback)
+  const boughtLanaOrders = lanaOrders.filter(lo => boughtTxRefs.includes(lo.transactionRef));
   const batchedPendingLana = Math.round(boughtLanaOrders.reduce((s, lo) => s + lo.lanaAmount, 0) / 100_000_000);
 
   return (
