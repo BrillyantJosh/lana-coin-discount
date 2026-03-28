@@ -1545,6 +1545,16 @@ router.post('/external/sale', (req: Request, res: Response) => {
 
     console.log(`[lana-discount] External sale received from "${auth.appName}": ${lana_amount} LANA, TX#${txId}, hash=${tx_hash.slice(0, 16)}...`);
 
+    // Publish KIND 30936 to Nostr (same as internal sales)
+    publishBuybackEvent({
+      id: txId, tx_hash, user_hex_id: hexId,
+      sender_wallet_id, buyback_wallet_id,
+      lana_amount_lanoshis: lanaAmountLanoshis, lana_amount_display: lana_amount,
+      currency, exchange_rate, gross_fiat: grossFiat,
+      commission_percent: commissionPct, commission_fiat: commissionFiat,
+      net_fiat: netFiat, split, source: 'external', status: 'pending_verification',
+    }).catch(err => console.error('[lana-discount] Nostr publish failed:', err.message));
+
     return res.status(201).json({
       success: true,
       transactionId: txId,
