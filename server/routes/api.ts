@@ -1423,6 +1423,26 @@ router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Respo
 
   db.prepare(`UPDATE incoming_batches SET ${updates.join(', ')} WHERE batch_ref = ?`).run(batchRef);
 
+  // When batch moves to received, notify Brain so it can authorize LANA send
+  if (status === 'received') {
+    const brainUrl = process.env.BRAIN_CALLBACK_URL;
+    const brainKey = process.env.BRAIN_CALLBACK_KEY;
+    if (brainUrl && brainKey) {
+      const { payments } = req.body;
+      const txRefs = Array.isArray(payments)
+        ? [...new Set(payments.map((p: any) => p.transactionRef).filter(Boolean))]
+        : [];
+      fetch(`${brainUrl}/api/callbacks/fiat-received`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-callback-key': brainKey },
+        body: JSON.stringify({ batch_ref: batchRef, transaction_refs: txRefs }),
+      }).then(r => {
+        if (r.ok) console.log(`[lana-discount] Brain callback fiat-received: ${batchRef}`);
+        else console.warn(`[lana-discount] Brain callback fiat-received failed: HTTP ${r.status}`);
+      }).catch(err => console.warn('[lana-discount] Brain callback error:', err.message));
+    }
+  }
+
   // When batch moves to lana_bought, backfill batch_ref on brain_lana_orders
   // so auto-send knows which orders are eligible
   if (status === 'lana_bought') {
