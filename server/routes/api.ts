@@ -1470,6 +1470,9 @@ router.post('/external/sale', (req: Request, res: Response) => {
     if (!tx_hash || typeof tx_hash !== 'string') {
       return res.status(400).json({ error: 'tx_hash is required' });
     }
+    if (!/^[a-fA-F0-9]{64}$/.test(tx_hash)) {
+      return res.status(400).json({ error: 'tx_hash must be a 64-character hex string' });
+    }
     if (!sender_wallet_id || typeof sender_wallet_id !== 'string') {
       return res.status(400).json({ error: 'sender_wallet_id is required' });
     }
