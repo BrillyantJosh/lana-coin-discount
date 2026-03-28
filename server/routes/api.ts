@@ -1677,8 +1677,17 @@ router.post('/brain/lana-order', async (req: Request, res: Response) => {
       return res.json({ status: 'failed', error: 'No buyback wallet configured' });
     }
 
-    // Queue the order — actual sending will be done by admin or automated process
-    // For now, mark as pending and return
+    // Auto-assign batch_ref: if another order with same transaction_ref already has a batch_ref, use it
+    if (tx_ref && !batch_ref) {
+      const sibling = db.prepare(
+        `SELECT batch_ref FROM brain_lana_orders WHERE transaction_ref = ? AND batch_ref IS NOT NULL LIMIT 1`
+      ).get(tx_ref) as any;
+      if (sibling) {
+        db.prepare('UPDATE brain_lana_orders SET batch_ref = ? WHERE id = ?').run(sibling.batch_ref, order_id);
+        console.log(`[lana-discount] Auto-assigned batch_ref=${sibling.batch_ref} to LANA order ${order_id}`);
+      }
+    }
+
     console.log(`[lana-discount] Brain LANA order received: ${order_id} (${order_type}), ${lana_amount} lanoshis → ${to_wallet}`);
 
     return res.status(201).json({
