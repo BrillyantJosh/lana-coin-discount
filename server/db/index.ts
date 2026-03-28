@@ -465,7 +465,7 @@ export function getUserSalesWithPayouts(hexId: string): any[] {
   // Get all completed/paid sales for this user (exclude failed)
   const sales = db.prepare(`
     SELECT * FROM buyback_transactions
-    WHERE user_hex_id = ? AND status IN ('broadcast', 'completed', 'paid')
+    WHERE user_hex_id = ? AND status IN ('broadcast', 'pending_verification', 'completed', 'paid')
     ORDER BY created_at DESC
   `).all(hexId) as any[];
 
