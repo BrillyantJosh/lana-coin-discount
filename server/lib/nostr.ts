@@ -370,3 +370,28 @@ export async function signAndPublishEvent(
     return null;
   }
 }
+
+/**
+ * Fetch KIND 30321 payment score for a user
+ */
+export async function fetchPaymentScore(hexId: string, relays: string[]): Promise<{ score: number; qualifies: boolean } | null> {
+  try {
+    const events = await queryEventsFromRelays(relays, {
+      kinds: [30321],
+      '#d': [hexId],
+      limit: 10,
+    }, 8000);
+
+    if (events.length === 0) return null;
+
+    // Get newest event
+    const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
+    const scoreTag = newest.tags.find((t: string[]) => t[0] === 'score');
+    const score = scoreTag ? parseFloat(scoreTag[1]) : 0;
+
+    return { score, qualifies: score >= 9 };
+  } catch (error: any) {
+    console.error(`[lana-discount] Failed to fetch payment score for ${hexId}:`, error.message);
+    return null;
+  }
+}

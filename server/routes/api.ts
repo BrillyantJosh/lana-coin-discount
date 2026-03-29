@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { createHash, randomBytes } from 'crypto';
 import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
-import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent } from '../lib/nostr.js';
+import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore } from '../lib/nostr.js';
 import { fetchBatchBalances } from '../lib/electrum.js';
 
 const router = Router();
@@ -831,6 +831,27 @@ router.get('/user/:hexId/sales', (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/user/:hexId/payment-score
+ * Fetch user's payment discipline rating from KIND 30321
+ */
+router.get('/user/:hexId/payment-score', async (req: Request, res: Response) => {
+  const { hexId } = req.params;
+  if (!hexId || hexId.length !== 64) {
+    return res.json({ score: null, qualifies: false });
+  }
+  try {
+    const relays = getRelaysFromDb();
+    const result = await fetchPaymentScore(hexId, relays);
+    if (!result) {
+      return res.json({ score: null, qualifies: false });
+    }
+    res.json(result);
+  } catch {
+    res.json({ score: null, qualifies: false });
+  }
+});
+
+/**
  * POST /api/sell/preview
  * Calculate payout preview before execution.
  */
@@ -915,6 +936,23 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
     }
     if (lanaAmount <= 0) {
       return res.status(400).json({ error: 'Invalid LANA amount' });
+    }
+
+    // Validate payment rating (must be >= 9)
+    try {
+      const relays = getRelaysFromDb();
+      const ratingResult = await fetchPaymentScore(hexId, relays);
+      if (!ratingResult || !ratingResult.qualifies) {
+        const score = ratingResult?.score ?? 'none';
+        console.log(`[lana-discount] Sell blocked: user ${hexId.slice(0, 12)}... rating ${score} < 9`);
+        return res.status(403).json({
+          error: 'Selling is only available to users with a payment rating of 9 or above.',
+          rating: score,
+        });
+      }
+    } catch (err: any) {
+      console.warn('[lana-discount] Rating check failed, blocking sale:', err.message);
+      return res.status(403).json({ error: 'Unable to verify payment rating. Please try again.' });
     }
 
     // Validate currency

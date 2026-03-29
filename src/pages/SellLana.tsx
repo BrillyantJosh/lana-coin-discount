@@ -73,6 +73,10 @@ const SellLana = () => {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(true);
 
+  // Rating check
+  const [userRating, setUserRating] = useState<number | null>(null);
+  const [ratingChecked, setRatingChecked] = useState(false);
+
   // Step 1 state
   const [wallets, setWallets] = useState<RegisteredWallet[]>([]);
   const [balances, setBalances] = useState<Record<string, number>>({});
@@ -116,12 +120,17 @@ const SellLana = () => {
     if (!session) return;
     setLoading(true);
     try {
-      // Fetch registered wallets (KIND 30889), system params, and profile in parallel
-      const [walletsRes, paramsRes, profileRes] = await Promise.all([
+      // Fetch rating, wallets, system params, and profile in parallel
+      const [ratingRes, walletsRes, paramsRes, profileRes] = await Promise.all([
+        fetch(`/api/user/${session.nostrHexId}/payment-score`),
         fetch(`/api/user/${session.nostrHexId}/wallets`),
         fetch('/api/system-params'),
         fetch(`/api/user/${session.nostrHexId}/profile`),
       ]);
+
+      const ratingData = await ratingRes.json();
+      setUserRating(ratingData.score);
+      setRatingChecked(true);
 
       const walletsData = await walletsRes.json();
       const paramsData = await paramsRes.json();
@@ -392,6 +401,28 @@ const SellLana = () => {
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          </div>
+        ) : ratingChecked && (userRating === null || userRating < 9) ? (
+          <div className="space-y-4">
+            <div className="rounded-2xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-6 text-center space-y-4">
+              <div className="mx-auto w-16 h-16 rounded-full bg-red-100 dark:bg-red-900/50 flex items-center justify-center">
+                <svg className="h-8 w-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </div>
+              <h2 className="text-xl font-bold text-red-700 dark:text-red-400">Selling Not Available</h2>
+              <p className="text-sm text-red-600 dark:text-red-400 max-w-md mx-auto leading-relaxed">
+                Selling registered LanaCoins is only available to users who have fully paid their subscriptions and achieved a rating of 9 or above. Please settle any outstanding payments to unlock this feature.
+              </p>
+              {userRating !== null && (
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-100 dark:bg-red-900/40">
+                  <span className="text-sm font-medium text-red-700 dark:text-red-400">
+                    Your current rating: {userRating}/10
+                  </span>
+                </div>
+              )}
+              {userRating === null && (
+                <p className="text-xs text-red-500/70">No payment rating found for your account.</p>
+              )}
+            </div>
           </div>
         ) : (
           <>
