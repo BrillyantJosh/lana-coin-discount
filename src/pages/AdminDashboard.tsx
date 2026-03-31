@@ -104,13 +104,19 @@ const AdminDashboard = () => {
       setTxTotal(data.total || 0);
       setTxTotalPages(data.totalPages || 0);
 
-      // Resolve anonymous names
+      // Resolve anonymous names via KIND 0 profile, then payout-account as fallback
       const anon = (data.transactions || []).filter((tx: Transaction) => tx.user === 'Anonymous' && tx.fullHexId);
       const uniqueIds = [...new Set(anon.map((tx: Transaction) => tx.fullHexId))] as string[];
       if (uniqueIds.length > 0) {
         const names: Record<string, string> = {};
         await Promise.all(uniqueIds.map(async (hexId) => {
           try {
+            // Try KIND 0 profile first (display_name / name)
+            const profileRes = await fetch(`/api/user/${hexId}/profile`);
+            const profileData = await profileRes.json();
+            if (profileData.displayName) { names[hexId] = profileData.displayName; return; }
+            if (profileData.fullName) { names[hexId] = profileData.fullName; return; }
+            // Fallback: payout account holder
             const r = await fetch(`/api/user/${hexId}/payout-account`);
             const d = await r.json();
             if (d.payoutAccount?.fields?.account_holder) names[hexId] = d.payoutAccount.fields.account_holder;
