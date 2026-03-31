@@ -149,14 +149,17 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
         const result = await verifyTransaction(tx.tx_hash);
         if (result.confirmed) {
           const txBlockHeight = rpcStatus.blockHeight ? rpcStatus.blockHeight - result.confirmations + 1 : null;
-          // Update RPC fields + promote 'broadcast' → 'completed'
-          const newStatus = tx.status === 'broadcast' ? 'completed' : tx.status;
+          // Update RPC fields + auto-promote broadcast/pending_verification → completed
+          const shouldPromote = tx.status === 'broadcast' || tx.status === 'pending_verification';
+          const newStatus = shouldPromote ? 'completed' : tx.status;
           db.prepare(`
             UPDATE buyback_transactions
             SET rpc_verified = 1, rpc_confirmations = ?, rpc_verified_at = datetime('now'),
                 rpc_block_hash = ?, rpc_block_height = ?,
-                status = CASE WHEN status = 'broadcast' THEN 'completed' ELSE status END,
-                completed_at = CASE WHEN status = 'broadcast' THEN datetime('now') ELSE completed_at END
+                status = CASE WHEN status IN ('broadcast', 'pending_verification') THEN 'completed' ELSE status END,
+                verified_at = CASE WHEN status = 'pending_verification' THEN datetime('now') ELSE verified_at END,
+                verified_by = CASE WHEN status = 'pending_verification' THEN 'rpc_auto' ELSE verified_by END,
+                completed_at = CASE WHEN status IN ('broadcast', 'pending_verification') THEN datetime('now') ELSE completed_at END
             WHERE id = ?
           `).run(result.confirmations, result.blockHash || null, txBlockHeight, tx.id);
           console.log(`[lana-discount] TX#${tx.id} RPC verified: ${result.confirmations} conf, block #${txBlockHeight} — status → ${newStatus}`);
