@@ -787,32 +787,43 @@ router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
 
     if (kind0Event) {
       const content = JSON.parse(kind0Event.content);
+      const displayName = content.display_name || content.displayName || null;
+      const fullName = content.name || null;
 
-      // Also update the cached raw_kind0 in DB so it stays fresh
-      db.prepare('UPDATE users SET raw_kind0 = ?, updated_at = datetime(\'now\') WHERE nostr_hex_id = ?')
-        .run(JSON.stringify(content), hexId);
+      // Upsert user row with KIND 0 data (creates if missing, e.g. external API users)
+      const rawJson = JSON.stringify(content);
+      db.prepare(`
+        INSERT INTO users (nostr_hex_id, display_name, full_name, raw_kind0)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(nostr_hex_id) DO UPDATE SET
+          display_name = COALESCE(excluded.display_name, display_name),
+          full_name = COALESCE(excluded.full_name, full_name),
+          raw_kind0 = excluded.raw_kind0,
+          updated_at = datetime('now')
+      `).run(hexId, displayName, fullName, rawJson);
 
-      return res.json({ profile: content });
+      return res.json({ profile: content, displayName: displayName || fullName, fullName });
     }
 
     // Fallback to cached DB data if relay fetch fails
-    const user = db.prepare('SELECT raw_kind0 FROM users WHERE nostr_hex_id = ?').get(hexId) as any;
+    const user = db.prepare('SELECT raw_kind0, display_name, full_name FROM users WHERE nostr_hex_id = ?').get(hexId) as any;
     if (user?.raw_kind0) {
       const profile = JSON.parse(user.raw_kind0);
-      return res.json({ profile });
+      return res.json({ profile, displayName: user.display_name || profile.display_name || profile.displayName || null, fullName: user.full_name || profile.name || null });
     }
 
-    return res.json({ profile: null });
+    return res.json({ profile: null, displayName: null, fullName: null });
   } catch (err) {
     console.error('Profile fetch error:', err);
     // Fallback to cached DB data on error
     try {
-      const user = db.prepare('SELECT raw_kind0 FROM users WHERE nostr_hex_id = ?').get(hexId) as any;
+      const user = db.prepare('SELECT raw_kind0, display_name, full_name FROM users WHERE nostr_hex_id = ?').get(hexId) as any;
       if (user?.raw_kind0) {
-        return res.json({ profile: JSON.parse(user.raw_kind0) });
+        const profile = JSON.parse(user.raw_kind0);
+        return res.json({ profile, displayName: user.display_name || profile.display_name || null, fullName: user.full_name || profile.name || null });
       }
     } catch {}
-    return res.json({ profile: null });
+    return res.json({ profile: null, displayName: null, fullName: null });
   }
 });
 
