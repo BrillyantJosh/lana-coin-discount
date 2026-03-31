@@ -276,7 +276,7 @@ const AdminIncomingPayments = () => {
       toast.error('No transaction references found');
       return;
     }
-    if (!confirm(`Send LANA to ${batch.orders.length} recipients from buyback wallet?\n\nTotal: ${formatFiat(batch.totalFiat, batch.currency)} → ≈${batch.totalLana.toLocaleString()} LANA\n\nThis will broadcast a blockchain transaction.`)) {
+    if (!confirm(`Send LANA to ${batch.orders.length} recipients from buyback wallet?\n\nTotal: ${formatFiat(batch.totalFiat, batch.currency)}\n\nThis will broadcast a blockchain transaction.`)) {
       return;
     }
     setUpdating(batch.batchRef);
@@ -594,11 +594,6 @@ const AdminIncomingPayments = () => {
                       <div className="flex items-center gap-3 shrink-0 ml-3">
                         <div className="text-right">
                           <p className="text-xl font-bold tabular-nums">{formatFiat(batch.totalFiat, batch.currency)}</p>
-                          {batch.totalLana > 0 && (
-                            <p className="text-sm text-muted-foreground tabular-nums">
-                              ≈ {batch.totalLana.toLocaleString()} LANA
-                            </p>
-                          )}
                         </div>
                         {activeTab === 'lana_bought' ? (
                           <button
