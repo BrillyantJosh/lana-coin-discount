@@ -47,6 +47,7 @@ interface UserWithSales {
     scheme: string;
     fields: Record<string, string>;
   } | null;
+  profileName?: string | null;
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -90,16 +91,22 @@ const AdminPayouts = () => {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
-      // Fetch payout accounts for each user
+      // Fetch payout accounts + KIND 0 profile for each user
       const usersWithAccounts = await Promise.all(
         (data.users || []).map(async (user: UserWithSales) => {
+          let payoutAccount = null;
+          let profileName: string | null = null;
           try {
-            const accRes = await fetch(`/api/user/${user.hexId}/payout-account`);
+            const [accRes, profileRes] = await Promise.all([
+              fetch(`/api/user/${user.hexId}/payout-account`),
+              fetch(`/api/user/${user.hexId}/profile`),
+            ]);
             const accData = await accRes.json();
-            return { ...user, payoutAccount: accData.payoutAccount };
-          } catch {
-            return { ...user, payoutAccount: null };
-          }
+            payoutAccount = accData.payoutAccount;
+            const profileData = await profileRes.json();
+            profileName = profileData.displayName || profileData.fullName || null;
+          } catch {}
+          return { ...user, payoutAccount, profileName };
         })
       );
 
@@ -190,9 +197,10 @@ const AdminPayouts = () => {
     }
   };
 
-  /** Resolve user display name: DB name → payout account holder → Anonymous */
+  /** Resolve user display name: DB name → KIND 0 profile → payout account holder → Anonymous */
   const resolveDisplayName = (user: UserWithSales): string => {
     if (user.displayName && user.displayName !== 'Anonymous') return user.displayName;
+    if (user.profileName) return user.profileName;
     if (user.payoutAccount?.fields?.account_holder) return user.payoutAccount.fields.account_holder;
     return user.displayName || 'Anonymous';
   };
