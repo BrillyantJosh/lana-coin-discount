@@ -4,8 +4,8 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './routes/api.js';
-import { fetchKind38888, Kind38888Data } from './lib/nostr.js';
-import db, { closeDb, getElectrumServersFromDb, getAppSetting } from './db/index.js';
+import { fetchKind38888, fetchKind0, Kind38888Data } from './lib/nostr.js';
+import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb } from './db/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -436,6 +436,56 @@ async function autoSendPendingLana(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Sync KIND 0 profiles for users without display names
+// ---------------------------------------------------------------------------
+async function syncUserProfiles(): Promise<void> {
+  try {
+    // Find users from buyback_transactions that have no display_name in users table
+    const unknownUsers = db.prepare(`
+      SELECT DISTINCT bt.user_hex_id
+      FROM buyback_transactions bt
+      LEFT JOIN users u ON bt.user_hex_id = u.nostr_hex_id
+      WHERE u.display_name IS NULL OR u.display_name = '' OR u.nostr_hex_id IS NULL
+      LIMIT 10
+    `).all() as any[];
+
+    if (unknownUsers.length === 0) return;
+
+    const relays = getRelaysFromDb();
+    if (relays.length === 0) return;
+
+    let resolved = 0;
+    for (const row of unknownUsers) {
+      try {
+        const kind0Event = await fetchKind0(row.user_hex_id, relays);
+        if (kind0Event) {
+          const content = JSON.parse(kind0Event.content);
+          const displayName = content.display_name || content.displayName || null;
+          const fullName = content.name || null;
+          if (displayName || fullName) {
+            db.prepare(`
+              INSERT INTO users (nostr_hex_id, display_name, full_name, raw_kind0)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(nostr_hex_id) DO UPDATE SET
+                display_name = COALESCE(excluded.display_name, display_name),
+                full_name = COALESCE(excluded.full_name, full_name),
+                raw_kind0 = excluded.raw_kind0,
+                updated_at = datetime('now')
+            `).run(row.user_hex_id, displayName, fullName, JSON.stringify(content));
+            resolved++;
+          }
+        }
+      } catch {}
+    }
+    if (resolved > 0) {
+      console.log(`[lana-discount] Profile sync: resolved ${resolved}/${unknownUsers.length} user names`);
+    }
+  } catch (err: any) {
+    console.error('[lana-discount] Profile sync error:', err.message);
+  }
+}
+
 // Heartbeat loop — waits for tasks to finish before sleeping (no overlap)
 let heartbeatRunning = true;
 
@@ -455,6 +505,11 @@ async function heartbeatLoop() {
       // RPC transaction verification every 10 heartbeats (= every 10 minutes)
       if (heartbeatCount % 10 === 0) {
         await withTimeout(() => verifyUnconfirmedTransactions(), 'RPC verification', 30000);
+      }
+
+      // Sync KIND 0 profiles for users without names every 30 heartbeats (= every 30 min)
+      if (heartbeatCount % 30 === 5) {
+        await withTimeout(() => syncUserProfiles(), 'Profile sync', 30000);
       }
 
       // Auto-send pending LANA every 5 heartbeats (= every 5 minutes)
