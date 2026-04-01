@@ -148,7 +148,7 @@ const AdminIncomingPayments = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>('incoming');
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const [exchangeRate, setExchangeRate] = useState(0.016);
+  const [exchangeRate, setExchangeRate] = useState(0);
   const [updating, setUpdating] = useState<string | null>(null);
 
   useEffect(() => {
@@ -173,7 +173,8 @@ const AdminIncomingPayments = () => {
       try {
         const spRes = await fetch('/api/system-params');
         const spData = await spRes.json();
-        if (spData.exchange_rates?.EUR) setExchangeRate(spData.exchange_rates.EUR);
+        const rates = spData.exchangeRates || spData.exchange_rates;
+        if (rates?.EUR) setExchangeRate(rates.EUR);
       } catch {}
     } catch {
       toast.error('Failed to load incoming payments');
