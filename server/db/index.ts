@@ -193,7 +193,7 @@ if (kind38888Count === 0) {
     { host: 'electrum3.lanacoin.com', port: '5097' },
   ];
 
-  const defaultExchangeRates = { EUR: 0.00001, USD: 0.000011, GBP: 0.0000085 };
+  const defaultExchangeRates = { EUR: 0, USD: 0, GBP: 0 };
   const defaultTrustedSigners = {
     '9eb71bf1e9c3189c78800e4c3831c1c1a93ab43b61118818c32e4490891a35b3': ['system'],
   };
@@ -222,7 +222,7 @@ if (kind38888Count === 0) {
     JSON.stringify(defaultRelays),
     JSON.stringify(defaultElectrumServers),
     JSON.stringify(defaultExchangeRates),
-    '0.001',
+    '',
     '1.0.0',
     Math.floor(Date.now() / 1000),
     0,
@@ -341,7 +341,7 @@ export function getExchangeRatesFromDb(): Record<string, number> {
   if (row?.exchange_rates) {
     try { return JSON.parse(row.exchange_rates); } catch {}
   }
-  return { EUR: 0.00001 };
+  return { EUR: 0 };
 }
 
 export function getSplitFromDb(): string | null {
