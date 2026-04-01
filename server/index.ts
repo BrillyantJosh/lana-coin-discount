@@ -500,10 +500,8 @@ async function heartbeatLoop() {
     heartbeatCount++;
     console.log(`[lana-discount] Heartbeat #${heartbeatCount}`);
     try {
-      // KIND 38888 sync every 60 heartbeats (= every hour)
-      if (heartbeatCount % 60 === 0) {
-        await withTimeout(() => syncKind38888ToDb(), 'KIND 38888 sync', 30000);
-      }
+      // KIND 38888 sync every heartbeat (= every minute)
+      await withTimeout(() => syncKind38888ToDb(), 'KIND 38888 sync', 30000);
 
       // RPC transaction verification every 10 heartbeats (= every 10 minutes)
       if (heartbeatCount % 10 === 0) {
