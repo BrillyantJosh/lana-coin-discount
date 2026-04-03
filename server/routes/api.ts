@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'crypto';
 import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore } from '../lib/nostr.js';
-import { fetchBatchBalances } from '../lib/electrum.js';
+import { fetchBatchBalances, electrumCall } from '../lib/electrum.js';
 
 const router = Router();
 
@@ -258,6 +258,31 @@ router.post('/wallets/balances', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Fetch balances error:', error);
     return res.status(500).json({ error: 'Failed to fetch balances' });
+  }
+});
+
+/**
+ * POST /api/wallets/utxo-info
+ * Returns UTXO count for a given wallet address.
+ */
+router.post('/wallets/utxo-info', async (req: Request, res: Response) => {
+  try {
+    const { address } = req.body;
+    if (!address) return res.status(400).json({ error: 'Missing address' });
+
+    const servers = getElectrumServersFromDb();
+    const utxos = await electrumCall('blockchain.address.listunspent', [address], servers);
+    const utxoList = Array.isArray(utxos) ? utxos : [];
+    const totalBalance = utxoList.reduce((s: number, u: any) => s + (u.value || 0), 0);
+
+    return res.json({
+      success: true,
+      utxoCount: utxoList.length,
+      totalBalance,
+    });
+  } catch (error) {
+    console.error('UTXO info error:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch UTXO info' });
   }
 });
 

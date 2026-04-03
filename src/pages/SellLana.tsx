@@ -83,11 +83,17 @@ const SellLana = () => {
   const [balancesLoading, setBalancesLoading] = useState(false);
   const [selectedWallet, setSelectedWallet] = useState<string>('');
 
-  // Step 2 state
+  // Step 2 state (currency auto-set from profile)
   const [systemParams, setSystemParams] = useState<SystemParams | null>(null);
   const [selectedCurrency, setSelectedCurrency] = useState('');
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
   const [legacyBank, setLegacyBank] = useState<any>(null);
+
+  // UTXO check
+  const [utxoCount, setUtxoCount] = useState<number | null>(null);
+  const [utxoLoading, setUtxoLoading] = useState(false);
+  const MAX_UTXOS = 20;
+  const tooManyUtxos = utxoCount !== null && utxoCount > MAX_UTXOS;
 
   // Step 3 state
   const [lanaAmount, setLanaAmount] = useState('');
@@ -178,8 +184,11 @@ const SellLana = () => {
         }
       }
 
-      // Pre-select first active currency
-      if (paramsData.activeCurrencies?.length > 0) {
+      // Auto-set currency from user's KIND 0 profile
+      const profileCurrency = profileData.profile?.currency;
+      if (profileCurrency && paramsData.activeCurrencies?.includes(profileCurrency)) {
+        setSelectedCurrency(profileCurrency);
+      } else if (paramsData.activeCurrencies?.length > 0) {
         setSelectedCurrency(paramsData.activeCurrencies[0]);
       }
     } catch (err) {
@@ -189,6 +198,25 @@ const SellLana = () => {
       setLoading(false);
     }
   };
+
+  // Check UTXO count when wallet is selected
+  useEffect(() => {
+    if (!selectedWallet) { setUtxoCount(null); return; }
+    const checkUtxos = async () => {
+      setUtxoLoading(true);
+      try {
+        const res = await fetch('/api/wallets/utxo-info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address: selectedWallet }),
+        });
+        const data = await res.json();
+        if (data.success) setUtxoCount(data.utxoCount || 0);
+      } catch (e) { console.error('UTXO check failed:', e); }
+      finally { setUtxoLoading(false); }
+    };
+    checkUtxos();
+  }, [selectedWallet]);
 
   const getSenderAddress = () => selectedWallet;
 
@@ -380,7 +408,7 @@ const SellLana = () => {
 
         {/* Step Indicator */}
         <div className="flex items-center gap-2 mb-8">
-          {[1, 2, 3, 4, 5].map(s => (
+          {[1, 3, 4, 5].map(s => (
             <div key={s} className="flex items-center gap-2">
               <div className={`h-8 w-8 rounded-full flex items-center justify-center text-sm font-bold transition-colors ${
                 s === step ? 'bg-primary text-white' :
@@ -393,7 +421,7 @@ const SellLana = () => {
                   </svg>
                 ) : s}
               </div>
-              {s < 5 && <div className={`w-8 h-0.5 ${s < step ? 'bg-primary/40' : 'bg-border'}`} />}
+              {s !== 5 && <div className={`w-8 h-0.5 ${s < step ? 'bg-primary/40' : 'bg-border'}`} />}
             </div>
           ))}
         </div>
@@ -512,15 +540,70 @@ const SellLana = () => {
                   )}
                 </div>
 
+                {/* Payout currency from profile */}
+                {selectedCurrency && (
+                  <div className="rounded-lg border border-border bg-muted/30 p-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Payout Currency</p>
+                      <p className="text-sm font-semibold">{selectedCurrency}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-muted-foreground">Exchange Rate</p>
+                      <p className="text-sm font-mono">1 LANA = {systemParams?.exchangeRates?.[selectedCurrency] || '...'} {selectedCurrency}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* UTXO consolidation warning */}
+                {selectedWallet && tooManyUtxos && (
+                  <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-4 space-y-2">
+                    <p className="text-sm font-semibold text-red-700 dark:text-red-400">
+                      Wallet Consolidation Required
+                    </p>
+                    <p className="text-xs text-red-600 dark:text-red-500">
+                      This wallet has <strong>{utxoCount} UTXOs</strong> which exceeds the maximum of {MAX_UTXOS} inputs per transaction.
+                      You must consolidate your wallet before you can sell LANA.
+                    </p>
+                    <a href="https://youtu.be/kBi4MKcc4qM?si=bIeWS_dlgHjFproo" target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:underline">
+                      Watch: How to consolidate your wallet
+                    </a>
+                  </div>
+                )}
+
+                {selectedWallet && utxoLoading && (
+                  <p className="text-xs text-muted-foreground flex items-center gap-1">
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent inline-block" />
+                    Checking wallet UTXOs...
+                  </p>
+                )}
+
+                {/* Missing payout account warning */}
+                {selectedCurrency && !getPayoutInfo() && (
+                  <div className="rounded-xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4 space-y-2">
+                    <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+                      Payout Account Required
+                    </p>
+                    <p className="text-xs text-amber-600 dark:text-amber-500">
+                      No payout account found for <strong>{selectedCurrency}</strong> in your profile.
+                      You must add your bank account details (IBAN, SWIFT/BIC) before you can sell LANA.
+                    </p>
+                    <a href="https://app.mejmosefajn.org/profile" target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 hover:underline">
+                      Go to Lana HUB Profile to add payment details
+                    </a>
+                  </div>
+                )}
+
                 <div className="flex justify-between">
                   <Link to="/dashboard" className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                     Cancel
                   </Link>
                   <button
-                    onClick={() => setStep(2)}
-                    disabled={!getSenderAddress()}
+                    onClick={() => setStep(3)}
+                    disabled={!getSenderAddress() || tooManyUtxos || utxoLoading || !selectedCurrency || !getPayoutInfo()}
                     className={`rounded-xl px-6 py-3 font-semibold text-white transition-all ${
-                      getSenderAddress()
+                      getSenderAddress() && !tooManyUtxos && !utxoLoading && selectedCurrency && getPayoutInfo()
                         ? 'bg-primary hover:bg-primary/90 shadow-lg'
                         : 'bg-muted-foreground/30 cursor-not-allowed'
                     }`}
@@ -747,7 +830,7 @@ const SellLana = () => {
                 </div>
 
                 <div className="flex justify-between">
-                  <button onClick={() => setStep(2)} className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+                  <button onClick={() => setStep(1)} className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                     Back
                   </button>
                   <button
