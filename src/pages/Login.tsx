@@ -1,13 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+
+const QrScanner = lazy(() => import('@/components/QrScanner'));
 
 const Login = () => {
   const [wif, setWif] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [relays, setRelays] = useState<string[]>([]);
+  const [showQrScanner, setShowQrScanner] = useState(false);
   const { login, session } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -76,15 +79,27 @@ const Login = () => {
               <label htmlFor="wif" className="text-sm font-medium text-foreground">
                 WIF Private Key
               </label>
-              <input
-                id="wif"
-                type="password"
-                placeholder="Enter your WIF key..."
-                value={wif}
-                onChange={(e) => setWif(e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-4 py-3 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-                autoComplete="off"
-              />
+              <div className="flex gap-2">
+                <input
+                  id="wif"
+                  type="password"
+                  placeholder="Enter your WIF key..."
+                  value={wif}
+                  onChange={(e) => setWif(e.target.value)}
+                  className="flex-1 rounded-lg border border-border bg-background px-4 py-3 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowQrScanner(true)}
+                  className="rounded-lg border border-border bg-background px-3 py-3 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  title="Scan QR code"
+                >
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -133,6 +148,20 @@ const Login = () => {
           </div>
         </div>
       </div>
+
+      {/* QR Scanner Modal */}
+      {showQrScanner && (
+        <Suspense fallback={null}>
+          <QrScanner
+            onScan={(value: string) => {
+              setWif(value);
+              setShowQrScanner(false);
+              toast({ title: "QR Scanned", description: "WIF key captured from QR code." });
+            }}
+            onClose={() => setShowQrScanner(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };
