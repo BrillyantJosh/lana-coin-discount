@@ -39,15 +39,42 @@ interface SaleEntry {
   payouts: PayoutEntry[];
 }
 
+interface PaymentMethod {
+  id?: string;
+  scope?: string;
+  country?: string;
+  scheme?: string;
+  currency?: string;
+  label?: string;
+  fields: Record<string, string>;
+  verified?: boolean;
+  primary?: boolean;
+}
+
+interface UserProfile {
+  displayName?: string;
+  fullName?: string;
+  name?: string;
+  display_name?: string;
+  country?: string;
+  location?: string;
+  email?: string;
+  phone?: string;
+  phone_country_code?: string;
+  payment_methods?: PaymentMethod[];
+  // legacy
+  bankName?: string;
+  bankAccount?: string;
+  bankSWIFT?: string;
+  bankAddress?: string;
+}
+
 interface UserWithSales {
   hexId: string;
   displayName: string;
   sales: SaleEntry[];
-  payoutAccount?: {
-    scheme: string;
-    fields: Record<string, string>;
-  } | null;
-  profileName?: string | null;
+  profile?: UserProfile | null;
+  paymentMethods?: PaymentMethod[];
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -91,26 +118,26 @@ const AdminPayouts = () => {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
-      // Fetch payout accounts + KIND 0 profile for each user
-      const usersWithAccounts = await Promise.all(
+      // Fetch full KIND 0 profile for each user (payment methods + names)
+      const usersWithProfiles = await Promise.all(
         (data.users || []).map(async (user: UserWithSales) => {
-          let payoutAccount = null;
-          let profileName: string | null = null;
+          let profile: UserProfile | null = null;
+          let paymentMethods: PaymentMethod[] = [];
           try {
-            const [accRes, profileRes] = await Promise.all([
-              fetch(`/api/user/${user.hexId}/payout-account`),
-              fetch(`/api/user/${user.hexId}/profile`),
-            ]);
-            const accData = await accRes.json();
-            payoutAccount = accData.payoutAccount;
+            const profileRes = await fetch(`/api/user/${user.hexId}/profile`);
             const profileData = await profileRes.json();
-            profileName = profileData.displayName || profileData.fullName || null;
+            if (profileData.profile) {
+              profile = profileData.profile;
+              paymentMethods = profile?.payment_methods?.filter(
+                (m: PaymentMethod) => m.scope === 'payout' || m.scope === 'both'
+              ) || [];
+            }
           } catch {}
-          return { ...user, payoutAccount, profileName };
+          return { ...user, profile, paymentMethods };
         })
       );
 
-      setUsers(usersWithAccounts);
+      setUsers(usersWithProfiles);
     } catch (err) {
       console.error('Failed to fetch payouts:', err);
       toast.error('Failed to load payouts data');
@@ -132,16 +159,17 @@ const AdminPayouts = () => {
     }
   };
 
-  const openPayoutForm = async (sale: SaleEntry, userPayoutAccount: any) => {
+  const openPayoutForm = async (sale: SaleEntry, user: UserWithSales) => {
     setPayoutFormSaleId(sale.id);
     setPayoutAmount(sale.remaining.toFixed(2));
     setPayoutNote('');
 
-    // Pre-fill payout account from user's KIND 0 profile
-    if (userPayoutAccount?.fields?.iban) {
-      setPayoutAccount(userPayoutAccount.fields.iban);
-    } else if (userPayoutAccount?.fields?.account_number) {
-      setPayoutAccount(userPayoutAccount.fields.account_number);
+    // Pre-fill payout account from user's payment methods (match currency)
+    const pm = getPaymentMethodForCurrency(user, sale.currency);
+    if (pm?.fields?.iban) {
+      setPayoutAccount(pm.fields.iban);
+    } else if (pm?.fields?.account_number) {
+      setPayoutAccount(pm.fields.account_number);
     } else {
       setPayoutAccount('');
     }
@@ -197,12 +225,50 @@ const AdminPayouts = () => {
     }
   };
 
-  /** Resolve user display name: DB name → KIND 0 profile → payout account holder → Anonymous */
+  /** Resolve user display name: DB name → KIND 0 display_name → KIND 0 name → Anonymous */
   const resolveDisplayName = (user: UserWithSales): string => {
     if (user.displayName && user.displayName !== 'Anonymous') return user.displayName;
-    if (user.profileName) return user.profileName;
-    if (user.payoutAccount?.fields?.account_holder) return user.payoutAccount.fields.account_holder;
+    if (user.profile?.display_name) return user.profile.display_name;
+    if (user.profile?.name) return user.profile.name;
+    // Fallback to account holder from payment methods
+    for (const pm of user.paymentMethods || []) {
+      if (pm.fields?.account_holder) return pm.fields.account_holder;
+    }
     return user.displayName || 'Anonymous';
+  };
+
+  /** Get full name (KIND 0 name field, different from display_name) */
+  const getFullName = (user: UserWithSales): string | null => {
+    const dn = user.profile?.display_name || user.displayName;
+    const n = user.profile?.name;
+    if (n && n !== dn) return n;
+    return null;
+  };
+
+  /** Find relevant payment method for a currency */
+  const getPaymentMethodForCurrency = (user: UserWithSales, currency: string): PaymentMethod | null => {
+    const methods = user.paymentMethods || [];
+    // Prefer method matching the transaction currency
+    const match = methods.find(m => m.currency === currency);
+    if (match) return match;
+    // Fallback to primary method
+    const primary = methods.find(m => m.primary);
+    if (primary) return primary;
+    // Fallback to first payout method
+    return methods[0] || null;
+  };
+
+  /** Format payment method fields for display */
+  const formatPaymentFields = (pm: PaymentMethod): string => {
+    const parts: string[] = [];
+    if (pm.fields.iban) parts.push(pm.fields.iban);
+    else if (pm.fields.account_number) {
+      if (pm.fields.sort_code) parts.push(`Sort: ${pm.fields.sort_code}`);
+      if (pm.fields.routing_number) parts.push(`Routing: ${pm.fields.routing_number}`);
+      parts.push(`Acc: ${pm.fields.account_number}`);
+    }
+    if (pm.fields.bic) parts.push(`BIC: ${pm.fields.bic}`);
+    return parts.join(' · ');
   };
 
   const formatDate = (iso: string) => {
@@ -302,18 +368,43 @@ const AdminPayouts = () => {
                       </svg>
 
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className={`font-bold ${userRemaining > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>{displayName}</span>
+                          {getFullName(user) && (
+                            <span className="text-xs text-muted-foreground">({getFullName(user)})</span>
+                          )}
                           <span className="text-xs text-muted-foreground font-mono">
                             {user.hexId.slice(0, 8)}...{user.hexId.slice(-6)}
                           </span>
                         </div>
-                        {user.payoutAccount && (
-                          <div className="text-xs text-muted-foreground mt-0.5">
-                            <span className="font-mono">{user.payoutAccount.scheme}</span>
-                            {user.payoutAccount.fields?.iban && (
-                              <span className="font-mono ml-1">{user.payoutAccount.fields.iban}</span>
-                            )}
+                        {(() => {
+                          const pm = getPaymentMethodForCurrency(user, mainCurrency);
+                          if (pm) {
+                            return (
+                              <div className="text-xs text-muted-foreground mt-0.5 font-mono">
+                                <span className="text-primary/70 font-sans font-medium">{pm.scheme}</span>
+                                {pm.currency && <span className="ml-1 font-sans">{pm.currency}</span>}
+                                {pm.label && <span className="ml-1 font-sans text-muted-foreground/70">· {pm.label}</span>}
+                                <span className="ml-1">{formatPaymentFields(pm)}</span>
+                                {pm.fields?.account_holder && <span className="ml-1 font-sans">· {pm.fields.account_holder}</span>}
+                              </div>
+                            );
+                          }
+                          // Legacy fallback
+                          if (user.profile?.bankAccount) {
+                            return (
+                              <div className="text-xs text-muted-foreground mt-0.5 font-mono">
+                                {user.profile.bankName && <span className="font-sans">{user.profile.bankName} · </span>}
+                                {user.profile.bankSWIFT && <span>SWIFT: {user.profile.bankSWIFT} · </span>}
+                                <span>{user.profile.bankAccount}</span>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
+                        {user.profile?.location && (
+                          <div className="text-[10px] text-muted-foreground/60 mt-0.5">
+                            {user.profile.location}{user.profile.country ? ` (${user.profile.country})` : ''}
                           </div>
                         )}
                       </div>
@@ -430,7 +521,7 @@ const AdminPayouts = () => {
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setExpandedSale(sale.id);
-                                      openPayoutForm(sale, user.payoutAccount);
+                                      openPayoutForm(sale, user);
                                     }}
                                     className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-green-600 text-white text-xs font-bold hover:bg-green-700 transition-colors flex-shrink-0 cursor-pointer"
                                   >
@@ -446,6 +537,51 @@ const AdminPayouts = () => {
                             {/* Sale expanded — payouts + add form */}
                             {isSaleExpanded && (
                               <div className={`px-4 sm:px-6 pb-4 pl-4 sm:pl-20 space-y-3 ${isFullyPaid ? 'opacity-100' : ''}`}>
+                                {/* Payment method details for this currency */}
+                                {(() => {
+                                  const pm = getPaymentMethodForCurrency(user, sale.currency);
+                                  if (!pm) return null;
+                                  return (
+                                    <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-1">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold text-primary uppercase">{pm.scheme}</span>
+                                        {pm.currency && <span className="text-xs text-muted-foreground">{pm.currency}</span>}
+                                        {pm.label && <span className="text-xs text-muted-foreground">· {pm.label}</span>}
+                                        {pm.verified && <span className="text-[10px] text-green-600 font-medium">✓ Verified</span>}
+                                      </div>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-0.5 text-xs">
+                                        {pm.fields.account_holder && (
+                                          <div><span className="text-muted-foreground">Account Holder: </span><span className="font-mono font-medium text-foreground">{pm.fields.account_holder}</span></div>
+                                        )}
+                                        {pm.fields.iban && (
+                                          <div><span className="text-muted-foreground">IBAN: </span><span className="font-mono font-medium text-foreground">{pm.fields.iban}</span></div>
+                                        )}
+                                        {pm.fields.bic && (
+                                          <div><span className="text-muted-foreground">BIC/SWIFT: </span><span className="font-mono font-medium text-foreground">{pm.fields.bic}</span></div>
+                                        )}
+                                        {pm.fields.account_number && (
+                                          <div><span className="text-muted-foreground">Account: </span><span className="font-mono font-medium text-foreground">{pm.fields.account_number}</span></div>
+                                        )}
+                                        {pm.fields.sort_code && (
+                                          <div><span className="text-muted-foreground">Sort Code: </span><span className="font-mono font-medium text-foreground">{pm.fields.sort_code}</span></div>
+                                        )}
+                                        {pm.fields.routing_number && (
+                                          <div><span className="text-muted-foreground">Routing: </span><span className="font-mono font-medium text-foreground">{pm.fields.routing_number}</span></div>
+                                        )}
+                                        {pm.fields.clabe && (
+                                          <div><span className="text-muted-foreground">CLABE: </span><span className="font-mono font-medium text-foreground">{pm.fields.clabe}</span></div>
+                                        )}
+                                        {pm.fields.pix_key && (
+                                          <div><span className="text-muted-foreground">PIX: </span><span className="font-mono font-medium text-foreground">{pm.fields.pix_key}</span></div>
+                                        )}
+                                        {pm.fields.ifsc && (
+                                          <div><span className="text-muted-foreground">IFSC: </span><span className="font-mono font-medium text-foreground">{pm.fields.ifsc}</span></div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+
                                 {/* Existing payouts */}
                                 {sale.payouts.length > 0 && (
                                   <div className="rounded-lg border border-border overflow-hidden">
@@ -497,7 +633,7 @@ const AdminPayouts = () => {
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          openPayoutForm(sale, user.payoutAccount);
+                                          openPayoutForm(sale, user);
                                         }}
                                         className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
                                       >
