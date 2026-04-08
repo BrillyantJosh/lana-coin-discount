@@ -172,12 +172,14 @@ const AdminPayouts = () => {
     setPayoutAmount(sale.remaining.toFixed(2));
     setPayoutNote('');
 
-    // Pre-fill payout account from user's payment methods (match currency)
+    // Pre-fill payout account from user's payment methods or legacy fields
     const pm = getPaymentMethodForCurrency(user, sale.currency);
     if (pm?.fields?.iban) {
       setPayoutAccount(pm.fields.iban);
     } else if (pm?.fields?.account_number) {
       setPayoutAccount(pm.fields.account_number);
+    } else if (user.profile?.bankAccount) {
+      setPayoutAccount(user.profile.bankAccount);
     } else {
       setPayoutAccount('');
     }
@@ -400,13 +402,15 @@ const AdminPayouts = () => {
                               </div>
                             );
                           }
-                          // Legacy fallback
+                          // Legacy fallback (bankName, bankSWIFT, bankAccount)
                           if (user.profile?.bankAccount) {
                             return (
                               <div className="text-xs text-muted-foreground mt-0.5 font-mono">
                                 {user.profile.bankName && <span className="font-sans">{user.profile.bankName} · </span>}
                                 {user.profile.bankSWIFT && <span>SWIFT: {user.profile.bankSWIFT} · </span>}
-                                <span>{user.profile.bankAccount}</span>
+                                <span className="cursor-pointer hover:text-foreground transition-colors" onClick={(e) => { e.stopPropagation(); copyToClipboard(user.profile!.bankAccount!); }} title="Click to copy">
+                                  {user.profile.bankAccount} {copiedText === user.profile.bankAccount ? '✓' : '📋'}
+                                </span>
                               </div>
                             );
                           }
@@ -547,9 +551,38 @@ const AdminPayouts = () => {
                             {/* Sale expanded — payouts + add form */}
                             {isSaleExpanded && (
                               <div className={`px-4 sm:px-6 pb-4 pl-4 sm:pl-20 space-y-3 ${isFullyPaid ? 'opacity-100' : ''}`}>
-                                {/* Payment method details for this currency */}
+                                {/* Payment method details for this currency (new or legacy) */}
                                 {(() => {
                                   const pm = getPaymentMethodForCurrency(user, sale.currency);
+                                  // Legacy fallback: bankName/bankSWIFT/bankAccount
+                                  if (!pm && user.profile?.bankAccount) {
+                                    return (
+                                      <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-1">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-xs font-bold text-primary uppercase">Bank Transfer</span>
+                                          <span className="text-[10px] text-amber-600 font-medium">Legacy format</span>
+                                        </div>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-0.5 text-xs">
+                                          {user.profile.bankName && (
+                                            <div><span className="text-muted-foreground">Bank: </span><span className="font-medium text-foreground">{user.profile.bankName}</span></div>
+                                          )}
+                                          {user.profile.bankSWIFT && (
+                                            <div><span className="text-muted-foreground">SWIFT/BIC: </span><span className="font-mono font-medium text-foreground">{user.profile.bankSWIFT}</span></div>
+                                          )}
+                                          {user.profile.bankAddress && (
+                                            <div><span className="text-muted-foreground">Bank Address: </span><span className="font-medium text-foreground">{user.profile.bankAddress}</span></div>
+                                          )}
+                                          <div className="flex items-center gap-1">
+                                            <span className="text-muted-foreground">Account: </span>
+                                            <span className="font-mono font-medium text-foreground">{user.profile.bankAccount}</span>
+                                            <button onClick={() => copyToClipboard(user.profile!.bankAccount!)} className="text-primary hover:text-primary/70 text-[10px] ml-1" title="Copy account">
+                                              {copiedText === user.profile.bankAccount ? '✓' : 'Copy'}
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  }
                                   if (!pm) return null;
                                   return (
                                     <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-1">
