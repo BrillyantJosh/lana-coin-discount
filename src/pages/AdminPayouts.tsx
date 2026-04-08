@@ -97,6 +97,14 @@ const AdminPayouts = () => {
   const [payoutAccount, setPayoutAccount] = useState('');
   const [nextPayoutId, setNextPayoutId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedText(text);
+    toast.success('Copied to clipboard');
+    setTimeout(() => setCopiedText(null), 2000);
+  };
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -385,7 +393,9 @@ const AdminPayouts = () => {
                                 <span className="text-primary/70 font-sans font-medium">{pm.scheme}</span>
                                 {pm.currency && <span className="ml-1 font-sans">{pm.currency}</span>}
                                 {pm.label && <span className="ml-1 font-sans text-muted-foreground/70">· {pm.label}</span>}
-                                <span className="ml-1">{formatPaymentFields(pm)}</span>
+                                <span className="ml-1 cursor-pointer hover:text-foreground transition-colors" onClick={(e) => { e.stopPropagation(); copyToClipboard(formatPaymentFields(pm)); }} title="Click to copy">
+                                  {formatPaymentFields(pm)} {copiedText === formatPaymentFields(pm) ? '✓' : '📋'}
+                                </span>
                                 {pm.fields?.account_holder && <span className="ml-1 font-sans">· {pm.fields.account_holder}</span>}
                               </div>
                             );
@@ -554,13 +564,25 @@ const AdminPayouts = () => {
                                           <div><span className="text-muted-foreground">Account Holder: </span><span className="font-mono font-medium text-foreground">{pm.fields.account_holder}</span></div>
                                         )}
                                         {pm.fields.iban && (
-                                          <div><span className="text-muted-foreground">IBAN: </span><span className="font-mono font-medium text-foreground">{pm.fields.iban}</span></div>
+                                          <div className="flex items-center gap-1">
+                                            <span className="text-muted-foreground">IBAN: </span>
+                                            <span className="font-mono font-medium text-foreground">{pm.fields.iban}</span>
+                                            <button onClick={() => copyToClipboard(pm.fields.iban)} className="text-primary hover:text-primary/70 text-[10px] ml-1" title="Copy IBAN">
+                                              {copiedText === pm.fields.iban ? '✓' : 'Copy'}
+                                            </button>
+                                          </div>
                                         )}
                                         {pm.fields.bic && (
                                           <div><span className="text-muted-foreground">BIC/SWIFT: </span><span className="font-mono font-medium text-foreground">{pm.fields.bic}</span></div>
                                         )}
                                         {pm.fields.account_number && (
-                                          <div><span className="text-muted-foreground">Account: </span><span className="font-mono font-medium text-foreground">{pm.fields.account_number}</span></div>
+                                          <div className="flex items-center gap-1">
+                                            <span className="text-muted-foreground">Account: </span>
+                                            <span className="font-mono font-medium text-foreground">{pm.fields.account_number}</span>
+                                            <button onClick={() => copyToClipboard(pm.fields.account_number)} className="text-primary hover:text-primary/70 text-[10px] ml-1" title="Copy account">
+                                              {copiedText === pm.fields.account_number ? '✓' : 'Copy'}
+                                            </button>
+                                          </div>
                                         )}
                                         {pm.fields.sort_code && (
                                           <div><span className="text-muted-foreground">Sort Code: </span><span className="font-mono font-medium text-foreground">{pm.fields.sort_code}</span></div>
