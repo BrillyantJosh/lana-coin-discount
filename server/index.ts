@@ -223,7 +223,45 @@ async function autoSendPendingLana(): Promise<void> {
       LIMIT 100
     `).all() as any[];
 
-    if (pendingOrders.length === 0) return;
+    if (pendingOrders.length === 0) {
+      // Even with no pending orders, check if any stuck batches should be marked as lana_sent
+      // (e.g. batch_ref mismatch — orders were sent via a different batch)
+      const stuckBatches = db.prepare("SELECT * FROM incoming_batches WHERE status = 'lana_bought'").all() as any[];
+      for (const batch of stuckBatches) {
+        const totalForBatch = (db.prepare(
+          "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ?"
+        ).get(batch.batch_ref) as any).c;
+
+        if (totalForBatch > 0) {
+          // Has linked orders — check if all are sent
+          const pendingForBatch = (db.prepare(
+            "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ? AND status = 'pending'"
+          ).get(batch.batch_ref) as any).c;
+          if (pendingForBatch === 0) {
+            const sentOrder = db.prepare(
+              "SELECT tx_hash FROM brain_lana_orders WHERE batch_ref = ? AND status = 'sent' AND tx_hash IS NOT NULL LIMIT 1"
+            ).get(batch.batch_ref) as any;
+            db.prepare(`UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ? WHERE id = ?`)
+              .run(sentOrder?.tx_hash || '', batch.id);
+            console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (all ${totalForBatch} orders sent, detected during idle check)`);
+          }
+        } else {
+          // No linked orders — fallback: if old enough (>10 min), assume sent via other batch
+          const boughtAge = batch.lana_bought_at
+            ? (Date.now() - new Date(batch.lana_bought_at + 'Z').getTime()) / 60000
+            : 0;
+          if (boughtAge > 10) {
+            const recentSent = db.prepare(
+              "SELECT tx_hash FROM brain_lana_orders WHERE status = 'sent' AND tx_hash IS NOT NULL ORDER BY completed_at DESC LIMIT 1"
+            ).get() as any;
+            db.prepare(`UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ? WHERE id = ? AND status = 'lana_bought'`)
+              .run(recentSent?.tx_hash || '', batch.id);
+            console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (no linked orders after ${Math.round(boughtAge)}min, assumed sent via other batch)`);
+          }
+        }
+      }
+      return;
+    }
 
     // Group orders by transaction_ref — all orders in same tx_ref must be sent together (whole batch or nothing)
     const groupMap = new Map<string, any[]>();
