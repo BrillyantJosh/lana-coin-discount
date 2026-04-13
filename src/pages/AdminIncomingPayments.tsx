@@ -19,6 +19,9 @@ interface FiatOrder {
   recipientWallet: string | null;
   recipientHex: string | null;
   shopName: string | null;
+  receiptUrl: string | null;
+  receiptType: string | null;
+  receiptDescription: string | null;
   status: string;
   lanaTxHash: string | null;
   rpcVerified: boolean;
@@ -650,6 +653,17 @@ const AdminIncomingPayments = () => {
                       {batch.orders.map(o => {
                         const pc = purposeConfig[o.orderType || ''] || { label: o.orderType || '?', cls: 'bg-muted text-muted-foreground' };
                         const lanaAmount = exchangeRate > 0 ? parseFloat((o.amountFiat / exchangeRate).toFixed(3)) : 0;
+                        // Resolve wallet: use recipientWallet, or fallback to lanaOrders caretaker_commission for same tx
+                        let displayWallet = o.recipientWallet;
+                        if (!displayWallet && o.orderType === 'caretaker_via_discount') {
+                          const caretakerLana = lanaOrders.find(lo => lo.transactionRef === o.transactionRef && lo.orderType === 'caretaker_commission');
+                          displayWallet = caretakerLana?.toWallet || null;
+                        }
+                        // Show receipt only on first order per transaction (avoid duplicates)
+                        const isFirstInTx = batch.orders.findIndex(s => s.transactionRef === o.transactionRef) === batch.orders.indexOf(o);
+                        const receiptUrl = isFirstInTx
+                          ? (o.receiptUrl || batch.orders.find(s => s.transactionRef === o.transactionRef && s.receiptUrl)?.receiptUrl || null)
+                          : null;
                         return (
                           <div key={o.id} className="px-4 py-2 text-xs">
                             <div className="flex items-center justify-between">
@@ -661,9 +675,9 @@ const AdminIncomingPayments = () => {
                                 </div>
                                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold w-24 text-center ${pc.cls}`}>{pc.label}</span>
                                 <PaymentTypeIcon type={o.paymentType} />
-                                {o.recipientWallet && (
-                                  <span className="font-mono text-muted-foreground truncate max-w-[140px]" title={o.recipientWallet}>
-                                    {shortenWallet(o.recipientWallet)}
+                                {displayWallet && (
+                                  <span className="font-mono text-muted-foreground truncate max-w-[140px]" title={displayWallet}>
+                                    {shortenWallet(displayWallet)}
                                   </span>
                                 )}
                               </div>
@@ -674,11 +688,17 @@ const AdminIncomingPayments = () => {
                                 </span>
                               </div>
                             </div>
-                            {o.shopName && (
-                              <div className="ml-12 mt-0.5 text-[10px] text-muted-foreground">
-                                {o.shopName}
-                              </div>
-                            )}
+                            <div className="flex items-center gap-2 ml-12 mt-0.5">
+                              {o.shopName && (
+                                <span className="text-[10px] text-muted-foreground">{o.shopName}</span>
+                              )}
+                              {receiptUrl && (
+                                <a href={receiptUrl} target="_blank" rel="noopener noreferrer"
+                                   className="inline-block" title={o.receiptDescription || 'Receipt'}>
+                                  <img src={receiptUrl} alt="receipt" className="h-8 w-8 rounded object-cover border border-border hover:h-32 hover:w-32 transition-all" />
+                                </a>
+                              )}
+                            </div>
                           </div>
                         );
                       })}
