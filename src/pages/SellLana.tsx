@@ -402,8 +402,11 @@ const SellLana = () => {
         <div className="mb-8 space-y-2">
           <h1 className="text-3xl font-bold text-foreground">Sell LanaCoin</h1>
           <p className="text-muted-foreground">
-            Sell your registered LanaCoins and receive an instant cash payout.
+            Sell your registered LanaCoins and receive a cash payout.
           </p>
+          <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-4 py-3 text-xs text-blue-700 dark:text-blue-400">
+            <strong>Payout timing:</strong> Funds are paid out as consumer spending generates revenue. This may take from a few days up to the next Split cycle. An exact timeframe cannot be guaranteed in advance.
+          </div>
         </div>
 
         {/* Step Indicator */}
