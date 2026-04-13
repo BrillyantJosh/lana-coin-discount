@@ -578,20 +578,44 @@ const SellLana = () => {
                   </p>
                 )}
 
-                {/* Missing payout account warning */}
+                {/* Currency-payment method mismatch warning */}
                 {selectedCurrency && !getPayoutInfo() && (
-                  <div className="rounded-xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4 space-y-2">
-                    <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
-                      Payout Account Required
+                  <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-4 space-y-3">
+                    <p className="text-sm font-bold text-red-700 dark:text-red-400">
+                      Currency Mismatch
                     </p>
-                    <p className="text-xs text-amber-600 dark:text-amber-500">
-                      No payout account found for <strong>{selectedCurrency}</strong> in your profile.
-                      You must add your bank account details (IBAN, SWIFT/BIC) before you can sell LANA.
+                    <p className="text-xs text-red-600 dark:text-red-500">
+                      You selected <strong>{selectedCurrency}</strong> as your payout currency, but you don't have a payment method configured for {selectedCurrency}.
                     </p>
-                    <a href="https://app.mejmosefajn.org/profile" target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 hover:underline">
-                      Go to Lana HUB Profile to add payment details
-                    </a>
+                    {paymentMethods.filter(pm => pm.scope === 'payout' || pm.scope === 'both').length > 0 ? (
+                      <div className="text-xs text-red-600 dark:text-red-500">
+                        <p className="font-medium mb-1">Your available payment methods:</p>
+                        <ul className="list-disc pl-4 space-y-0.5">
+                          {paymentMethods
+                            .filter(pm => pm.scope === 'payout' || pm.scope === 'both')
+                            .map((pm, i) => (
+                              <li key={i}>
+                                <strong>{pm.currency}</strong> — {pm.label || pm.scheme}
+                                {pm.fields?.iban && <span className="font-mono ml-1">({pm.fields.iban.slice(-4)})</span>}
+                                {pm.fields?.account_number && <span className="font-mono ml-1">({pm.fields.account_number.slice(-4)})</span>}
+                              </li>
+                            ))}
+                        </ul>
+                      </div>
+                    ) : legacyBank ? (
+                      <div className="text-xs text-red-600 dark:text-red-500">
+                        <p className="font-medium mb-1">Your profile has legacy bank details (no currency set):</p>
+                        <p className="font-mono">{legacyBank.bankName} — {legacyBank.bankAccount}</p>
+                      </div>
+                    ) : null}
+                    <p className="text-xs text-red-600 dark:text-red-500">
+                      Please either select a currency that matches your payment method, or{' '}
+                      <a href="https://app.mejmosefajn.org/profile" target="_blank" rel="noopener noreferrer"
+                        className="font-medium underline hover:text-red-800 dark:hover:text-red-300">
+                        update your profile
+                      </a>{' '}
+                      to add a payment method for {selectedCurrency}.
+                    </p>
                   </div>
                 )}
 
@@ -651,14 +675,32 @@ const SellLana = () => {
                       {(() => {
                         const info = getPayoutInfo();
                         if (!info) {
+                          const availableMethods = paymentMethods.filter(pm => pm.scope === 'payout' || pm.scope === 'both');
                           return (
-                            <div className="rounded-lg border border-red-200 bg-red-50/50 p-4">
-                              <p className="text-sm text-red-700 font-medium mb-1">
-                                No payout account found for {selectedCurrency}
+                            <div className="rounded-lg border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-4 space-y-2">
+                              <p className="text-sm text-red-700 dark:text-red-400 font-bold">
+                                Currency Mismatch
                               </p>
-                              <p className="text-xs text-red-600">
-                                Your Nostr profile does not contain payment information for this currency.
-                                Please update your profile with payout details (e.g. IBAN) before proceeding.
+                              <p className="text-xs text-red-600 dark:text-red-500">
+                                You selected <strong>{selectedCurrency}</strong> but your profile has no payment method for this currency.
+                              </p>
+                              {availableMethods.length > 0 && (
+                                <div className="text-xs text-red-600 dark:text-red-500">
+                                  <p className="font-medium">Your payment methods support:</p>
+                                  <div className="flex flex-wrap gap-1 mt-1">
+                                    {availableMethods.map((pm, i) => (
+                                      <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-100 dark:bg-red-900/30 font-medium">
+                                        {pm.currency} — {pm.label || pm.scheme}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              <p className="text-xs text-red-600 dark:text-red-500">
+                                Select a matching currency above, or{' '}
+                                <a href="https://app.mejmosefajn.org/profile" target="_blank" rel="noopener noreferrer"
+                                  className="font-medium underline">update your profile</a>{' '}
+                                to add a {selectedCurrency} payment method.
                               </p>
                             </div>
                           );
