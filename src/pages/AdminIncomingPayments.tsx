@@ -74,6 +74,7 @@ interface BatchGroup {
   allPaid: boolean;
   recipientWallet: string | null;
   shopName: string | null;
+  investorHex: string;
   localBatch: LocalBatch | null;
 }
 
@@ -150,6 +151,7 @@ const AdminIncomingPayments = () => {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [exchangeRate, setExchangeRate] = useState(0);
   const [updating, setUpdating] = useState<string | null>(null);
+  const [investorNames, setInvestorNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -176,6 +178,20 @@ const AdminIncomingPayments = () => {
         const rates = spData.exchangeRates || spData.exchange_rates;
         if (rates?.EUR) setExchangeRate(rates.EUR);
       } catch {}
+
+      // Resolve investor names from KIND 0 profiles
+      const uniqueInvestors = [...new Set(ldOrders.map((o: FiatOrder) => o.investorHex).filter(Boolean))];
+      const newNames: Record<string, string> = {};
+      await Promise.all(uniqueInvestors.map(async (hex) => {
+        if (investorNames[hex]) { newNames[hex] = investorNames[hex]; return; }
+        try {
+          const pRes = await fetch(`/api/user/${hex}/profile`);
+          const pData = await pRes.json();
+          const name = pData.displayName || pData.fullName || pData.profile?.display_name || pData.profile?.name || null;
+          if (name) newNames[hex] = name;
+        } catch {}
+      }));
+      if (Object.keys(newNames).length > 0) setInvestorNames(prev => ({ ...prev, ...newNames }));
     } catch {
       toast.error('Failed to load incoming payments');
     } finally {
@@ -335,6 +351,7 @@ const AdminIncomingPayments = () => {
       allPaid: true,
       recipientWallet: first.recipientWallet,
       shopName: first.shopName,
+      investorHex: first.investorHex,
       localBatch: lb,
     };
   }).sort((a, b) => b.totalFiat - a.totalFiat);
@@ -579,16 +596,14 @@ const AdminIncomingPayments = () => {
                           <PaymentTypeIcon type={batch.orders[0]?.paymentType} />
                         </div>
 
-                        {batch.shopName && <p className="text-sm">{batch.shopName}</p>}
-
-                        {batch.recipientWallet && (
-                          <p className="text-xs text-muted-foreground font-mono">
-                            LANA → <span className="text-foreground font-medium">{shortenWallet(batch.recipientWallet)}</span>
-                          </p>
-                        )}
+                        {/* Investor name (who paid FIAT) */}
+                        <p className="text-sm font-medium">
+                          {investorNames[batch.investorHex] || `${batch.investorHex.slice(0, 8)}...${batch.investorHex.slice(-6)}`}
+                        </p>
 
                         <p className="text-xs text-muted-foreground mt-0.5">
                           {batch.orders.length} payment{batch.orders.length !== 1 ? 's' : ''}
+                          {batch.shopName && <span> · {[...new Set(batch.orders.map(o => o.shopName).filter(Boolean))].join(', ')}</span>}
                         </p>
                       </div>
 
@@ -636,27 +651,34 @@ const AdminIncomingPayments = () => {
                         const pc = purposeConfig[o.orderType || ''] || { label: o.orderType || '?', cls: 'bg-muted text-muted-foreground' };
                         const lanaAmount = exchangeRate > 0 ? parseFloat((o.amountFiat / exchangeRate).toFixed(3)) : 0;
                         return (
-                          <div key={o.id} className="px-4 py-2 text-xs flex items-center justify-between">
-                            <div className="flex items-center gap-4 min-w-0">
-                              <span className="text-muted-foreground w-8">#{o.ppId || '—'}</span>
-                              <div className="w-28 whitespace-nowrap">
-                                <span>{formatDate(o.createdAt)}</span>
-                                <span className="text-muted-foreground ml-1">{formatTime(o.createdAt)}</span>
+                          <div key={o.id} className="px-4 py-2 text-xs">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-4 min-w-0">
+                                <span className="text-muted-foreground w-8">#{o.ppId || '—'}</span>
+                                <div className="w-28 whitespace-nowrap">
+                                  <span>{formatDate(o.createdAt)}</span>
+                                  <span className="text-muted-foreground ml-1">{formatTime(o.createdAt)}</span>
+                                </div>
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold w-24 text-center ${pc.cls}`}>{pc.label}</span>
+                                <PaymentTypeIcon type={o.paymentType} />
+                                {o.recipientWallet && (
+                                  <span className="font-mono text-muted-foreground truncate max-w-[140px]" title={o.recipientWallet}>
+                                    {shortenWallet(o.recipientWallet)}
+                                  </span>
+                                )}
                               </div>
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold w-24 text-center ${pc.cls}`}>{pc.label}</span>
-                              <PaymentTypeIcon type={o.paymentType} />
-                              {o.recipientWallet && (
-                                <span className="font-mono text-muted-foreground truncate max-w-[140px]" title={o.recipientWallet}>
-                                  {shortenWallet(o.recipientWallet)}
+                              <div className="flex items-center gap-4 shrink-0">
+                                <span className="font-medium tabular-nums w-20 text-right">{formatFiat(o.amountFiat, o.currency)}</span>
+                                <span className="text-muted-foreground tabular-nums w-20 text-right">
+                                  {lanaAmount > 0 ? lanaAmount.toLocaleString() : '—'}
                                 </span>
-                              )}
+                              </div>
                             </div>
-                            <div className="flex items-center gap-4 shrink-0">
-                              <span className="font-medium tabular-nums w-20 text-right">{formatFiat(o.amountFiat, o.currency)}</span>
-                              <span className="text-muted-foreground tabular-nums w-20 text-right">
-                                {lanaAmount > 0 ? lanaAmount.toLocaleString() : '—'}
-                              </span>
-                            </div>
+                            {o.shopName && (
+                              <div className="ml-12 mt-0.5 text-[10px] text-muted-foreground">
+                                {o.shopName}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
