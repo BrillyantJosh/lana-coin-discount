@@ -421,15 +421,31 @@ async function autoSendPendingLana(): Promise<void> {
       }
     }
 
-    // Fallback for batches without batch_ref linked orders: if no pending orders globally, move remaining
-    const stillPendingGlobal = (db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE status = 'pending'").get() as any).c;
-    if (stillPendingGlobal === 0) {
-      const updated = db.prepare(`
-        UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
-        WHERE status = 'lana_bought'
-      `).run(txHash);
-      if (updated.changes > 0) {
-        console.log(`[lana-discount] Fallback: moved ${updated.changes} remaining batches → lana_sent`);
+    // For batches with no matched brain_lana_orders by batch_ref (batch_ref mismatch),
+    // check if they have zero pending orders — if so, mark as lana_sent
+    for (const batch of boughtBatches) {
+      if (batch.status !== 'lana_bought') continue; // already moved above
+      const totalForBatch2 = (db.prepare(
+        "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ?"
+      ).get(batch.batch_ref) as any).c;
+      if (totalForBatch2 === 0) {
+        // No orders linked by batch_ref — check if batch is old enough (>10 min since lana_bought)
+        // to avoid moving batches before Brain has created the orders
+        const boughtAge = batch.lana_bought_at
+          ? (Date.now() - new Date(batch.lana_bought_at + 'Z').getTime()) / 60000
+          : 0;
+        if (boughtAge > 10) {
+          // Find any sent tx_hash from recent orders as reference
+          const recentSent = db.prepare(
+            "SELECT tx_hash FROM brain_lana_orders WHERE status = 'sent' AND tx_hash IS NOT NULL ORDER BY completed_at DESC LIMIT 1"
+          ).get() as any;
+          const fallbackHash = recentSent?.tx_hash || txHash;
+          db.prepare(`
+            UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
+            WHERE id = ? AND status = 'lana_bought'
+          `).run(fallbackHash, batch.id);
+          console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (no linked orders after ${Math.round(boughtAge)}min, assumed sent via other batch_ref)`);
+        }
       }
     }
   } catch (err: any) {
