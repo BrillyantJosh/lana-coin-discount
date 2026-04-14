@@ -14,7 +14,7 @@ const HeroSection = () => {
             We Handle the <span className="text-gold">Rest</span>.
           </h1>
           <p className="text-lg md:text-xl text-muted-foreground max-w-xl mx-auto lg:mx-0 leading-relaxed">
-            Instead of selling your coins piece by piece, we sell them into consumer spending for you.
+            Instead of selling your coins piece by piece, we sell them to consumers for you.
             You get up to 80% of the value paid out automatically as revenue flows in — no coordination, no hassle.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
