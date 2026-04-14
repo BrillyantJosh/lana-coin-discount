@@ -9,13 +9,15 @@ const HeroSection = () => {
             LanaCoin Buyback Program
           </div>
           <h1 className="text-4xl md:text-6xl font-bold tracking-tight text-foreground leading-tight">
-            Sell Your <span className="text-primary">LanaCoins</span>,
+            Sell now, get paid <span className="text-primary">tomorrow</span>,
             <br />
-            We Handle the <span className="text-gold">Rest</span>.
+            support the <span className="text-gold">flow</span>.
           </h1>
           <p className="text-lg md:text-xl text-muted-foreground max-w-xl mx-auto lg:mx-0 leading-relaxed">
-            Instead of selling your coins piece by piece, we sell them to consumers for you.
-            You get up to 80% of the value paid out automatically as revenue flows in — no coordination, no hassle.
+            Receive up to 80% next day, while 20–30% fuels shopper rewards and keeps the Lana economy moving.
+          </p>
+          <p className="text-sm md:text-base text-muted-foreground max-w-xl mx-auto lg:mx-0 leading-relaxed">
+            The retained portion is not a fee — it directly powers shopper incentives and keeps value circulating through the Lana economy.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
             <a
