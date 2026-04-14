@@ -363,7 +363,7 @@ const AdminPayouts = () => {
               const displayName = resolveDisplayName(user);
 
               return (
-                <div key={user.hexId} className={`rounded-2xl border-2 border-border bg-card overflow-hidden ${userRemaining <= 0 ? 'opacity-60' : ''}`}>
+                <div key={user.hexId} className={`rounded-2xl border-2 border-border bg-card overflow-hidden ${userRemaining <= 0 ? 'opacity-70' : ''}`}>
                   {/* User header */}
                   <button
                     onClick={() => setExpandedUser(isUserExpanded ? null : user.hexId)}
@@ -445,7 +445,7 @@ const AdminPayouts = () => {
                         const isExternal = sale.source === 'external';
 
                         return (
-                          <div key={sale.id} className={`border-b border-border/50 last:border-b-0 ${isFullyPaid ? 'opacity-60' : ''}`}>
+                          <div key={sale.id} className={`border-b border-border/50 last:border-b-0 ${isFullyPaid ? 'opacity-70' : ''}`}>
                             {/* Sale row */}
                             <button
                               onClick={() => setExpandedSale(isSaleExpanded ? null : sale.id)}
