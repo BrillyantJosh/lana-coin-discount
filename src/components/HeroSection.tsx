@@ -6,16 +6,16 @@ const HeroSection = () => {
       <div className="container mx-auto px-6 flex flex-col lg:flex-row items-center gap-12">
         <div className="flex-1 space-y-8 text-center lg:text-left">
           <div className="inline-block rounded-full bg-accent px-4 py-1.5 text-sm font-medium text-accent-foreground">
-            Instant LanaCoin Buyback
+            LanaCoin Buyback Program
           </div>
           <h1 className="text-4xl md:text-6xl font-bold tracking-tight text-foreground leading-tight">
-            Sell Your <span className="text-primary">LanaCoins</span> Instantly.
+            Sell Your <span className="text-primary">LanaCoins</span>,
             <br />
-            Get <span className="text-gold">Up to 79% Cash</span> Today.
+            We Handle the <span className="text-gold">Rest</span>.
           </h1>
           <p className="text-lg md:text-xl text-muted-foreground max-w-xl mx-auto lg:mx-0 leading-relaxed">
-            Stop selling your coins piece by piece. We buy any amount in one go — 
-            you get paid immediately. No hassle, no waiting.
+            Instead of selling your coins piece by piece, we sell them into consumer spending for you.
+            You get up to 80% of the value paid out automatically as revenue flows in — no coordination, no hassle.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
             <a

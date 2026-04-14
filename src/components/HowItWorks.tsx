@@ -3,26 +3,26 @@ import { Wallet, ArrowRightLeft, MessageCircle, Banknote } from "lucide-react";
 const steps = [
   {
     icon: Wallet,
-    title: "Register Your Wallet",
-    description: "Add your wallet address to our list. You only need to do this once.",
+    title: "Sign In & Select",
+    description: "Sign in with your LanaCoin wallet and choose how many coins you want to sell.",
     step: "01",
   },
   {
     icon: ArrowRightLeft,
     title: "Transfer Your LanaCoins",
-    description: "After each Split, transfer the LanaCoins you want to sell to our designated wallet.",
+    description: "Send your LanaCoins to our buyback wallet. The transaction is verified on the blockchain automatically.",
     step: "02",
   },
   {
     icon: MessageCircle,
-    title: "Confirm via Chat",
-    description: "You'll receive a chat notification to confirm the transfer of your coins.",
+    title: "We Sell Into Spending",
+    description: "We channel your coins into real consumer purchases through the LanaPays network — no effort on your part.",
     step: "03",
   },
   {
     icon: Banknote,
-    title: "Get Paid Instantly",
-    description: "We pay out up to 79% of the determined value directly to your bank account. Done.",
+    title: "Get Paid as Revenue Flows",
+    description: "You receive up to 80% of the value paid out to your bank account as spending generates revenue. 20% goes to grow the consumer network.",
     step: "04",
   },
 ];
@@ -36,7 +36,7 @@ const HowItWorks = () => {
             How It Works
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Four simple steps to convert your LanaCoins into cash — fast and hassle-free.
+            Four simple steps — sell once, get paid as the network grows.
           </p>
         </div>
 

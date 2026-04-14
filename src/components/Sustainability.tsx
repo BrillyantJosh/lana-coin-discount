@@ -9,12 +9,10 @@ const Sustainability = () => {
             <Leaf className="w-10 h-10 text-primary" />
           </div>
           <h2 className="text-3xl md:text-5xl font-bold text-foreground mb-6">
-            Your Discount Powers <span className="text-primary">Sustainable Commerce</span>
+            Your Coins Fuel <span className="text-primary">Real Commerce</span>
           </h2>
           <p className="text-lg text-muted-foreground leading-relaxed mb-10">
-            By selling through Lana.Discount, your 30% discount directly supports sustainable 
-            shopping and eco-conscious merchants. Every coin you sell helps build a greener 
-            economy — perhaps making a bigger impact than you realize.
+            When you sell through Lana.Discount, 20% of the value goes directly to consumers as cashback incentives — helping grow the merchant network and driving real spending. A bigger network means faster payouts for everyone. Your coins don't just get sold — they power a growing economy that benefits you too.
           </p>
 
           <div className="flex flex-wrap justify-center gap-6">
