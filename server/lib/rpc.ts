@@ -16,24 +16,38 @@ interface RpcResponse {
 /**
  * Make a JSON-RPC 1.0 call to the LanaCoin daemon
  */
-export async function rpcCall(method: string, params: any[] = []): Promise<any> {
+export async function rpcCall(method: string, params: any[] = [], timeoutMs = 10000): Promise<any> {
   if (!RPC_USER || !RPC_PASS) {
     throw new Error('RPC credentials not configured (RPC_USER, RPC_PASS)');
   }
 
-  const res = await fetch(RPC_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/plain',
-      'Authorization': 'Basic ' + Buffer.from(`${RPC_USER}:${RPC_PASS}`).toString('base64'),
-    },
-    body: JSON.stringify({
-      jsonrpc: '1.0',
-      id: `lana-discount-${Date.now()}`,
-      method,
-      params,
-    }),
-  });
+  // AbortController + timeout — prevent fetch from hanging forever on a stalled RPC daemon
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        'Authorization': 'Basic ' + Buffer.from(`${RPC_USER}:${RPC_PASS}`).toString('base64'),
+      },
+      body: JSON.stringify({
+        jsonrpc: '1.0',
+        id: `lana-discount-${Date.now()}`,
+        method,
+        params,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') throw new Error(`RPC timeout after ${timeoutMs}ms`);
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   // LanaCoin RPC returns HTTP 500 for RPC-level errors (e.g. TX not found)
   // Always try to parse JSON response body
