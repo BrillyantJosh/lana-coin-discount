@@ -320,16 +320,20 @@ const AdminIncomingPayments = () => {
 
   if (authLoading || !session || !isAdmin) return null;
 
-  // Orders not yet paid by investor (pending on direct.lana.fund)
-  const pendingDirectOrders = orders.filter(o => !o.ppConfirmed || !o.batchRef || o.batchStatus !== 'paid');
+  // An order is "pending direct" only if the investor hasn't paid yet (ppConfirmed=false).
+  // Once the investor has paid (bank wire batch OR LANA tx verified on chain), it becomes a "paid" order.
+  const pendingDirectOrders = orders.filter(o => !o.ppConfirmed);
 
-  // Orders paid by investor (batched and confirmed)
-  const paidOrders = orders.filter(o => o.ppConfirmed && o.batchRef && o.batchStatus === 'paid');
+  // Orders paid by investor — either via a Direct Fund batch (bank wires), or via a confirmed LANA tx (auto-confirmed by RPC verify).
+  const paidOrders = orders.filter(o => o.ppConfirmed);
 
-  // Build batch groups from paid orders
+  // Build batch groups from paid orders.
+  // For bank-wire orders we use the Direct Fund batchRef; for LANA-paid orders (no batch) we
+  // fall back to transactionRef so all orders of the same Brain transaction group together.
   const batchMap = new Map<string, FiatOrder[]>();
   for (const o of paidOrders) {
-    const key = o.batchRef!;
+    const key = o.batchRef || o.transactionRef;
+    if (!key) continue;
     const group = batchMap.get(key) || [];
     group.push(o);
     batchMap.set(key, group);
@@ -342,11 +346,15 @@ const AdminIncomingPayments = () => {
     const first = ords[0];
     const totalFiat = ords.reduce((s, o) => s + o.amountFiat, 0);
     const lb = localBatchMap.get(ref) || null;
+    // For virtual batches (LANA-paid, no Direct Fund batch), default status is 'incoming'
+    // until Lana.Discount creates a real batch (on Confirm Received / Brain authorize-send callback).
+    const isVirtualBatch = !first.batchRef;
+    const discountStatus = lb?.status || first.discountStatus || (isVirtualBatch ? 'incoming' : 'incoming');
     return {
       batchRef: ref,
       batchId: first.batchId,
       batchStatus: first.batchStatus,
-      discountStatus: lb?.status || first.discountStatus || 'incoming',
+      discountStatus,
       currency: first.currency,
       orders: ords.sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
       totalFiat,
