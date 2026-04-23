@@ -132,11 +132,15 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
       return;
     }
 
+    // Verify any transaction with a tx_hash that isn't yet RPC-verified.
+    // Include 'paid' — admin may approve a tx before RPC catches up; without 'paid' in the list
+    // such transactions would stay rpc_verified=0 forever.
+    // Exclude 'failed' and 'cancelled' (nothing to verify).
     const unverified = db.prepare(`
       SELECT id, tx_hash, status FROM buyback_transactions
       WHERE tx_hash IS NOT NULL AND tx_hash != ''
         AND rpc_verified = 0
-        AND status IN ('broadcast', 'completed', 'pending_verification')
+        AND status IN ('broadcast', 'completed', 'pending_verification', 'paid')
     `).all() as any[];
 
     if (unverified.length === 0) return;
