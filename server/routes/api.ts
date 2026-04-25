@@ -1815,12 +1815,71 @@ router.post('/brain/send-customer-lana', async (req: Request, res: Response) => 
   if (!auth) return;
 
   try {
-    const { from_wif, recipients, tx_ref } = req.body;
+    const { from_wif, recipients, tx_ref, signed_tx_hex } = req.body;
 
+    // ── Client-side signed path ─────────────────────────────
+    // If mobile (or other caller) already signed the tx locally, just broadcast.
+    // The WIF never reaches this server — much safer.
+    if (signed_tx_hex) {
+      if (typeof signed_tx_hex !== 'string' || !/^[a-fA-F0-9]+$/.test(signed_tx_hex) || signed_tx_hex.length < 200) {
+        return res.status(400).json({ status: 'failed', error: 'signed_tx_hex must be a hex string (≥100 bytes)' });
+      }
+
+      console.log(`[lana-discount] Brain customer TX (PRE-SIGNED): ${signed_tx_hex.length / 2} bytes, tx_ref=${tx_ref || 'none'}`);
+
+      const electrumServers = getElectrumServersFromDb();
+      const { electrumCall } = await import('../lib/electrum.js');
+
+      try {
+        const broadcastResult = await electrumCall(
+          'blockchain.transaction.broadcast',
+          [signed_tx_hex],
+          electrumServers,
+          45000
+        );
+
+        if (!broadcastResult) {
+          return res.json({ status: 'failed', error: 'Transaction broadcast failed - no result' });
+        }
+
+        const resultStr = typeof broadcastResult === 'string' ? broadcastResult : String(broadcastResult);
+
+        if (resultStr.includes('TX rejected') || resultStr.includes('error') || resultStr.length < 60) {
+          console.error(`[lana-discount] Pre-signed TX broadcast rejected: ${resultStr}`);
+          return res.json({ status: 'failed', error: `Broadcast rejected: ${resultStr}` });
+        }
+
+        if (!/^[a-fA-F0-9]{64}$/.test(resultStr.trim())) {
+          return res.json({ status: 'failed', error: `Invalid tx hash returned: ${resultStr}` });
+        }
+
+        console.log(`[lana-discount] Pre-signed TX broadcast success: ${resultStr}`);
+
+        // Compute total from recipients (best-effort, for response only)
+        const totalLanoshis = Array.isArray(recipients)
+          ? recipients.reduce((sum: number, r: any) => sum + (r.amount_lanoshis || 0), 0)
+          : 0;
+
+        return res.json({
+          status: 'broadcast',
+          tx_hash: resultStr.trim(),
+          from_address: 'pre-signed', // unknown — not derived from WIF
+          total_lanoshis: totalLanoshis,
+          fee: 0, // unknown — embedded in signed tx
+          recipients: Array.isArray(recipients) ? recipients.length : 0,
+          source: 'client_signed',
+        });
+      } catch (err: any) {
+        console.error('[lana-discount] Pre-signed TX broadcast error:', err.message);
+        return res.json({ status: 'failed', error: `Broadcast error: ${err.message}` });
+      }
+    }
+
+    // ── Legacy server-side WIF path (fallback) ──────────────
     if (!from_wif || !recipients || !Array.isArray(recipients) || recipients.length === 0 || recipients.length > 50) {
       return res.status(400).json({
         status: 'failed',
-        error: recipients?.length > 50 ? 'Maximum 50 recipients per transaction' : 'Missing required fields',
+        error: recipients?.length > 50 ? 'Maximum 50 recipients per transaction' : 'Missing required fields (signed_tx_hex or from_wif + recipients)',
       });
     }
 
@@ -1963,6 +2022,7 @@ router.post('/brain/send-customer-lana', async (req: Request, res: Response) => 
       total_lanoshis: totalLanoshis,
       fee,
       recipients: txRecipients.length,
+      source: 'server_signed',
     });
   } catch (error: any) {
     console.error('[lana-discount] Brain customer TX error:', error);
