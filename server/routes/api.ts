@@ -1817,217 +1817,81 @@ router.post('/brain/send-customer-lana', async (req: Request, res: Response) => 
   try {
     const { from_wif, recipients, tx_ref, signed_tx_hex } = req.body;
 
-    // ── Client-side signed path ─────────────────────────────
-    // If mobile (or other caller) already signed the tx locally, just broadcast.
-    // The WIF never reaches this server — much safer.
-    if (signed_tx_hex) {
-      if (typeof signed_tx_hex !== 'string' || !/^[a-fA-F0-9]+$/.test(signed_tx_hex) || signed_tx_hex.length < 200) {
-        return res.status(400).json({ status: 'failed', error: 'signed_tx_hex must be a hex string (≥100 bytes)' });
-      }
-
-      console.log(`[lana-discount] Brain customer TX (PRE-SIGNED): ${signed_tx_hex.length / 2} bytes, tx_ref=${tx_ref || 'none'}`);
-
-      const electrumServers = getElectrumServersFromDb();
-      const { electrumCall } = await import('../lib/electrum.js');
-
-      try {
-        const broadcastResult = await electrumCall(
-          'blockchain.transaction.broadcast',
-          [signed_tx_hex],
-          electrumServers,
-          45000
-        );
-
-        if (!broadcastResult) {
-          return res.json({ status: 'failed', error: 'Transaction broadcast failed - no result' });
-        }
-
-        const resultStr = typeof broadcastResult === 'string' ? broadcastResult : String(broadcastResult);
-
-        if (resultStr.includes('TX rejected') || resultStr.includes('error') || resultStr.length < 60) {
-          console.error(`[lana-discount] Pre-signed TX broadcast rejected: ${resultStr}`);
-          return res.json({ status: 'failed', error: `Broadcast rejected: ${resultStr}` });
-        }
-
-        if (!/^[a-fA-F0-9]{64}$/.test(resultStr.trim())) {
-          return res.json({ status: 'failed', error: `Invalid tx hash returned: ${resultStr}` });
-        }
-
-        console.log(`[lana-discount] Pre-signed TX broadcast success: ${resultStr}`);
-
-        // Compute total from recipients (best-effort, for response only)
-        const totalLanoshis = Array.isArray(recipients)
-          ? recipients.reduce((sum: number, r: any) => sum + (r.amount_lanoshis || 0), 0)
-          : 0;
-
-        return res.json({
-          status: 'broadcast',
-          tx_hash: resultStr.trim(),
-          from_address: 'pre-signed', // unknown — not derived from WIF
-          total_lanoshis: totalLanoshis,
-          fee: 0, // unknown — embedded in signed tx
-          recipients: Array.isArray(recipients) ? recipients.length : 0,
-          source: 'client_signed',
-        });
-      } catch (err: any) {
-        console.error('[lana-discount] Pre-signed TX broadcast error:', err.message);
-        return res.json({ status: 'failed', error: `Broadcast error: ${err.message}` });
-      }
-    }
-
-    // ── Legacy server-side WIF path (fallback) ──────────────
-    if (!from_wif || !recipients || !Array.isArray(recipients) || recipients.length === 0 || recipients.length > 50) {
+    // SECURITY: WIF must NEVER be sent over the wire. The customer's WIF must
+    // stay on their device. Reject the request if from_wif is present —
+    // legitimate clients sign locally and send signed_tx_hex.
+    if (from_wif) {
+      const ip = (req.headers['x-forwarded-for'] || req.ip || 'unknown').toString().split(',')[0].trim();
+      console.warn(`[lana-discount] SECURITY REJECT: from_wif received from ${ip}, tx_ref=${tx_ref || 'none'} (WIF-on-wire is forbidden — sign locally and send signed_tx_hex)`);
       return res.status(400).json({
         status: 'failed',
-        error: recipients?.length > 50 ? 'Maximum 50 recipients per transaction' : 'Missing required fields (signed_tx_hex or from_wif + recipients)',
+        error: 'from_wif is no longer accepted. Sign the transaction locally on the customer device and send signed_tx_hex instead. The WIF must never leave the device.',
       });
     }
 
-    // Validate all recipient addresses and amounts
-    for (const r of recipients) {
-      if (!r.address || !r.amount_lanoshis || r.amount_lanoshis <= 0) {
-        return res.status(400).json({
-          status: 'failed',
-          error: `Invalid recipient: ${JSON.stringify(r)}. Each must have address and amount_lanoshis > 0`
-        });
-      }
-    }
-
-    // Derive sender address from WIF
-    const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress } = await import('../lib/transaction.js');
-
-    const normalizedKey = normalizeWif(from_wif);
-    const privateKeyBytes = base58CheckDecode(normalizedKey);
-    const uint8ArrayToHex = (arr: Uint8Array) => Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-    const privateKeyHex = uint8ArrayToHex(privateKeyBytes.slice(1, 33));
-
-    const uncompressedPubKey = privateKeyToUncompressedPublicKey(privateKeyHex);
-    const uncompressedAddress = publicKeyToAddress(uncompressedPubKey);
-    const compressedPubKey = privateKeyToPublicKey(privateKeyHex);
-    const compressedAddress = publicKeyToAddress(compressedPubKey);
-
-    const senderAddress = uncompressedAddress; // Try uncompressed first
-
-    // Total amount to send
-    const totalLanoshis = recipients.reduce((sum: number, r: any) => sum + r.amount_lanoshis, 0);
-    const totalLana = totalLanoshis / 100_000_000;
-
-    console.log(`[lana-discount] Brain customer TX: ${totalLana} LANA from ${senderAddress} to ${recipients.length} recipient(s), tx_ref=${tx_ref || 'none'}`);
-
-    // Get Electrum servers
-    const electrumServers = getElectrumServersFromDb();
-
-    // Build recipients array for sendLanaTransaction
-    // We need to use the lower-level buildSignedTx for multi-output
-    const { electrumCall } = await import('../lib/electrum.js');
-    const { buildSignedTx } = await import('../lib/transaction.js');
-
-    // Try uncompressed first, then compressed
-    let useAddress = uncompressedAddress;
-    let useCompressed = false;
-
-    // Check which address has UTXOs
-    let utxos = await electrumCall('blockchain.address.listunspent', [uncompressedAddress], electrumServers);
-    if (!utxos || utxos.length === 0) {
-      utxos = await electrumCall('blockchain.address.listunspent', [compressedAddress], electrumServers);
-      if (utxos && utxos.length > 0) {
-        useAddress = compressedAddress;
-        useCompressed = true;
-      }
-    }
-
-    if (!utxos || utxos.length === 0) {
-      return res.json({ status: 'failed', error: 'No UTXOs available for customer wallet' });
-    }
-
-    console.log(`[lana-discount] Customer wallet ${useAddress} has ${utxos.length} UTXOs (compressed=${useCompressed})`);
-
-    // Build recipient list
-    const txRecipients = recipients.map((r: any) => ({
-      address: normalizeAddress(r.address),
-      amount: r.amount_lanoshis,
-    }));
-
-    // UTXO selection with iterative fee calculation
-    const MAX_INPUTS = 100;
-    const actualOutputCount = txRecipients.length + 1; // +1 for change
-
-    // Sort UTXOs by value descending for optimal selection
-    const sortedUtxos = [...utxos].sort((a: any, b: any) => b.value - a.value);
-
-    let selectedUTXOs: any[] = [];
-    let totalSelected = 0;
-    let fee = 0;
-
-    // Greedy selection
-    for (const utxo of sortedUtxos) {
-      if (selectedUTXOs.length >= MAX_INPUTS) break;
-      selectedUTXOs.push(utxo);
-      totalSelected += utxo.value;
-
-      const baseFee = (selectedUTXOs.length * 180 + actualOutputCount * 34 + 10) * 100;
-      fee = Math.floor(baseFee * 1.5);
-
-      if (totalSelected >= totalLanoshis + fee) break;
-    }
-
-    if (totalSelected < totalLanoshis + fee) {
-      const totalBalance = utxos.reduce((sum: number, utxo: any) => sum + utxo.value, 0);
-      return res.json({
+    // signed_tx_hex is now mandatory
+    if (!signed_tx_hex) {
+      return res.status(400).json({
         status: 'failed',
-        error: `Insufficient funds: need ${totalLanoshis + fee} lanoshis, have ${totalBalance}`
+        error: 'signed_tx_hex is required. Server-side WIF signing has been removed.',
       });
     }
 
-    console.log(`[lana-discount] TX: ${selectedUTXOs.length} UTXOs, total=${totalSelected}, amount=${totalLanoshis}, fee=${fee}`);
-
-    // Build and sign
-    const { txHex } = await buildSignedTx(
-      selectedUTXOs,
-      from_wif,
-      txRecipients,
-      fee,
-      useAddress,
-      electrumServers,
-      useCompressed
-    );
-
-    console.log('[lana-discount] Customer TX signed, broadcasting...');
-
-    // Broadcast
-    const broadcastResult = await electrumCall(
-      'blockchain.transaction.broadcast',
-      [txHex],
-      electrumServers,
-      45000
-    );
-
-    if (!broadcastResult) {
-      return res.json({ status: 'failed', error: 'Transaction broadcast failed - no result' });
+    if (typeof signed_tx_hex !== 'string' || !/^[a-fA-F0-9]+$/.test(signed_tx_hex) || signed_tx_hex.length < 200) {
+      return res.status(400).json({ status: 'failed', error: 'signed_tx_hex must be a hex string (≥100 bytes)' });
     }
 
-    const resultStr = typeof broadcastResult === 'string' ? broadcastResult : String(broadcastResult);
+    console.log(`[lana-discount] Brain customer TX (CLIENT-SIGNED): ${signed_tx_hex.length / 2} bytes, tx_ref=${tx_ref || 'none'}`);
 
-    if (resultStr.includes('TX rejected') || resultStr.includes('error') || resultStr.length < 60) {
-      console.error(`[lana-discount] Customer TX broadcast rejected: ${resultStr}`);
-      return res.json({ status: 'failed', error: `Broadcast rejected: ${resultStr}` });
+    const electrumServers = getElectrumServersFromDb();
+    const { electrumCall } = await import('../lib/electrum.js');
+
+    try {
+      const broadcastResult = await electrumCall(
+        'blockchain.transaction.broadcast',
+        [signed_tx_hex],
+        electrumServers,
+        45000
+      );
+
+      if (!broadcastResult) {
+        return res.json({ status: 'failed', error: 'Transaction broadcast failed - no result' });
+      }
+
+      const resultStr = typeof broadcastResult === 'string' ? broadcastResult : String(broadcastResult);
+
+      if (resultStr.includes('TX rejected') || resultStr.includes('error') || resultStr.length < 60) {
+        console.error(`[lana-discount] Pre-signed TX broadcast rejected: ${resultStr}`);
+        return res.json({ status: 'failed', error: `Broadcast rejected: ${resultStr}` });
+      }
+
+      if (!/^[a-fA-F0-9]{64}$/.test(resultStr.trim())) {
+        return res.json({ status: 'failed', error: `Invalid tx hash returned: ${resultStr}` });
+      }
+
+      console.log(`[lana-discount] Client-signed TX broadcast success: ${resultStr}`);
+
+      // Compute total from recipients (best-effort, for response only)
+      const totalLanoshis = Array.isArray(recipients)
+        ? recipients.reduce((sum: number, r: any) => sum + (r.amount_lanoshis || 0), 0)
+        : 0;
+
+      return res.json({
+        status: 'broadcast',
+        tx_hash: resultStr.trim(),
+        from_address: 'client-signed', // unknown — WIF never reached this server
+        total_lanoshis: totalLanoshis,
+        fee: 0, // unknown — embedded in signed tx
+        recipients: Array.isArray(recipients) ? recipients.length : 0,
+        source: 'client_signed',
+      });
+    } catch (err: any) {
+      console.error('[lana-discount] Pre-signed TX broadcast error:', err.message);
+      return res.json({ status: 'failed', error: `Broadcast error: ${err.message}` });
     }
-
-    console.log(`[lana-discount] Customer TX broadcast success: ${resultStr}`);
-
-    return res.json({
-      status: 'broadcast',
-      tx_hash: resultStr,
-      from_address: useAddress,
-      total_lanoshis: totalLanoshis,
-      fee,
-      recipients: txRecipients.length,
-      source: 'server_signed',
-    });
   } catch (error: any) {
     console.error('[lana-discount] Brain customer TX error:', error);
-    const safe = ['Insufficient balance', 'No UTXOs', 'Invalid WIF', 'broadcast failed'].find(m => error.message?.includes(m));
-    return res.status(500).json({ status: 'failed', error: safe || 'Transaction failed' });
+    return res.status(500).json({ status: 'failed', error: 'Transaction failed' });
   }
 });
 
