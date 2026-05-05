@@ -155,6 +155,9 @@ const AdminIncomingPayments = () => {
   const [exchangeRate, setExchangeRate] = useState(0);
   const [updating, setUpdating] = useState<string | null>(null);
   const [investorNames, setInvestorNames] = useState<Record<string, string>>({});
+  // Sort mode: "latest" = most recent Lana Discount activity first (default);
+  //            "batchRef" = batch number descending (newest batch first).
+  const [sortMode, setSortMode] = useState<'latest' | 'batchRef'>('latest');
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -365,7 +368,32 @@ const AdminIncomingPayments = () => {
       investorHex: first.investorHex,
       localBatch: lb,
     };
-  }).sort((a, b) => b.totalFiat - a.totalFiat);
+  });
+
+  // ── Sort the batches based on the selected mode ──
+  // "Latest activity timestamp" walks the lifecycle backwards: prefer the most
+  // recent state transition Lana Discount has recorded. Falls back to first
+  // order's createdAt for batches that never reached any LD-side state.
+  const lastActivityAt = (b: BatchGroup): string => {
+    const lb = b.localBatch;
+    return (
+      lb?.lanaSentAt ||
+      lb?.lanaBoughtAt ||
+      lb?.receivedAt ||
+      lb?.createdAt ||
+      b.orders[b.orders.length - 1]?.createdAt ||
+      b.orders[0]?.createdAt ||
+      ''
+    );
+  };
+  allBatches.sort((a, b) => {
+    if (sortMode === 'batchRef') {
+      // Numeric-aware desc sort so "2026000056" beats "2026000009" correctly.
+      return b.batchRef.localeCompare(a.batchRef, undefined, { numeric: true });
+    }
+    // 'latest' (default) — most recent activity first
+    return lastActivityAt(b).localeCompare(lastActivityAt(a));
+  });
 
   // Filter by active tab
   const filteredBatches = allBatches.filter(b => {
@@ -583,6 +611,34 @@ const AdminIncomingPayments = () => {
           </div>
         ) : (
           <div className="space-y-3">
+            {/* Sort toggle — defaults to "latest" so newest activity is on top */}
+            <div className="flex items-center justify-end gap-2">
+              <span className="text-[11px] text-muted-foreground uppercase tracking-wider">Sort:</span>
+              <div className="inline-flex rounded-lg bg-muted p-0.5 text-[11px] font-medium">
+                <button
+                  onClick={() => setSortMode('latest')}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${
+                    sortMode === 'latest'
+                      ? 'bg-card shadow-sm text-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                  title="Most recent Lana Discount activity first (sent → bought → received → created)"
+                >
+                  Latest activity
+                </button>
+                <button
+                  onClick={() => setSortMode('batchRef')}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${
+                    sortMode === 'batchRef'
+                      ? 'bg-card shadow-sm text-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                  title="Sort by batch number (newest batch first)"
+                >
+                  Batch #
+                </button>
+              </div>
+            </div>
             {filteredBatches.map(batch => {
               const isExpanded = expandedKey === batch.batchRef;
               const action = nextAction[activeTab];
