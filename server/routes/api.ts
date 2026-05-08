@@ -1368,8 +1368,10 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
       discountBatchId: o.batchRef ? (localBatchMap.get(o.batchRef)?.id || null) : null,
     }));
 
-    // Include brain_lana_orders for LANA recipient breakdown
-    const lanaOrders = db.prepare('SELECT * FROM brain_lana_orders ORDER BY created_at DESC').all() as any[];
+    // Include brain_lana_orders for LANA recipient breakdown.
+    // Cancelled orders are excluded — they were revoked at brain side
+    // before any LANA was bought back, so they're noise in this view.
+    const lanaOrders = db.prepare(`SELECT * FROM brain_lana_orders WHERE status != 'cancelled' ORDER BY created_at DESC`).all() as any[];
 
     // Buyback wallet balance for overview (cached to avoid Electrum spam)
     let buybackBalance = {
