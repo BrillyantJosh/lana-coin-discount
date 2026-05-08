@@ -1716,6 +1716,7 @@ db.exec(`
 try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN batch_ref TEXT"); } catch {}
 try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN brain_authorized INTEGER DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN brain_authorized_at TEXT"); } catch {}
+try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN cancel_reason TEXT"); } catch {}
 
 /**
  * POST /api/brain/authorize-send
@@ -1917,6 +1918,73 @@ router.get('/brain/lana-order/:id', (req: Request, res: Response) => {
     created_at: order.created_at,
     completed_at: order.completed_at,
   });
+});
+
+/**
+ * POST /api/brain/lana-order/:id/cancel
+ * Cancel a queued LANA buyback order. Brain calls this when a cash
+ * transaction is cancelled in the safe window so the LANA buyback never
+ * executes. Allowed only while the order is still queued (not yet sent
+ * to blockchain).
+ *
+ * Body: { reason?: string }
+ *
+ * Responses:
+ *   200 { ok: true,  status: 'cancelled' }      — order removed from queue
+ *   200 { ok: true,  status: 'already_cancelled' } — idempotent
+ *   409 { ok: false, status: <current>, error } — already broadcast / unrecoverable
+ *   404 { ok: false, error: 'not_found' }
+ */
+router.post('/brain/lana-order/:id/cancel', (req: Request, res: Response) => {
+  const auth = requireApiKey(req, res);
+  if (!auth) return;
+
+  const order = db.prepare('SELECT * FROM brain_lana_orders WHERE id = ?').get(req.params.id) as any;
+  if (!order) {
+    return res.status(404).json({ ok: false, error: 'not_found' });
+  }
+
+  if (order.status === 'cancelled') {
+    return res.json({ ok: true, status: 'already_cancelled' });
+  }
+
+  // Anything past 'sent_to_discount' (i.e. 'sent' or 'confirmed') means
+  // LANA already on the blockchain → not cancellable.
+  const SAFE_TO_CANCEL = new Set(['pending', 'queued', 'received', 'sent_to_discount']);
+  if (!SAFE_TO_CANCEL.has(order.status)) {
+    return res.status(409).json({
+      ok: false,
+      status: order.status,
+      error: 'too_late',
+      message: `LANA order is ${order.status} — cannot cancel`,
+    });
+  }
+
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 500) : '';
+
+  // Atomic guard: only flip to cancelled if the status is still safe at
+  // the moment of writing. Otherwise the auto-send loop may have just
+  // picked it up.
+  const result = db.prepare(`
+    UPDATE brain_lana_orders SET
+      status = 'cancelled',
+      completed_at = datetime('now'),
+      cancel_reason = COALESCE(?, '')
+    WHERE id = ? AND status IN ('pending', 'queued', 'received', 'sent_to_discount')
+  `).run(reason, req.params.id);
+
+  if (result.changes !== 1) {
+    const fresh = db.prepare('SELECT status FROM brain_lana_orders WHERE id = ?').get(req.params.id) as any;
+    return res.status(409).json({
+      ok: false,
+      status: fresh?.status || 'unknown',
+      error: 'race',
+      message: 'LANA order state changed during cancel',
+    });
+  }
+
+  console.log(`[brain-api] LANA order ${req.params.id} cancelled (reason: ${reason || '<none>'})`);
+  return res.json({ ok: true, status: 'cancelled' });
 });
 
 /**
