@@ -25,6 +25,12 @@ const sections = [
     ],
   },
   {
+    label: 'Analytics',
+    items: [
+      { to: '/admin/analytics', label: 'Analytics', desc: 'FIAT in · LANA out · reconciliation' },
+    ],
+  },
+  {
     label: 'Admin Settings',
     items: [
       { to: '/admin/settings', label: 'Settings', desc: 'Wallet & currencies' },

@@ -413,6 +413,214 @@ router.get('/admin/stats', async (_req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/admin/analytics
+ *
+ * Comprehensive money-flow snapshot for the admin Analytics page.
+ *
+ * Three dimensions:
+ *
+ *   1. FIAT IN  — Money received on Lana.Discount's bank account.
+ *      Source: incoming_batches (from Direct Fund investors).
+ *
+ *   2. LANA OUT — LANA distributed via the brain orchestrator.
+ *      Source: brain_lana_orders, grouped by order_type:
+ *        - investor_lana       (LANA bought back to investor wallets)
+ *        - customer_cashback   (LANA sent to customers as cashback discount)
+ *        - merchant_commission (LANA paid to merchant if they chose LANA payout)
+ *        - caretaker_commission (LANA paid to caretaker)
+ *      Excludes status='cancelled' and 'pending' (anything not yet broadcast).
+ *      Each row reports: count, total_lana, fiat_value_at_time (sum of
+ *      lana × order's exchange_rate), and current_eur_value (lana × current
+ *      EUR rate from KIND 38888).
+ *
+ *   3. EUR OUT — Money paid out from Lana.Discount's bank to LANA sellers.
+ *      Source: buyback_transactions (gross, commission, net) + sale_payouts
+ *      (actually paid). Computes outstanding = net - paid.
+ *
+ * All values are bucketed per-currency (EUR, GBP, etc.) and rolled up.
+ *
+ * Optional ?since=YYYY-MM-DD limits to a time window; default = all time.
+ * The `currentRates` block lets the frontend re-evaluate "what is the
+ * stale lana worth now" if the user toggles a "current rate" view.
+ */
+router.get('/admin/analytics', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const since = (req.query.since as string) || '';
+    const sinceClause = since && /^\d{4}-\d{2}-\d{2}$/.test(since)
+      ? `AND created_at >= '${since}'`
+      : '';
+
+    // Current LANA rates (for "value now" projections).
+    const exchangeRates = getExchangeRatesFromDb();
+
+    // ── FIAT IN: investor batches ───────────────────────────
+    const incomingByCurrency = db.prepare(`
+      SELECT currency,
+             COUNT(*) as batch_count,
+             COALESCE(SUM(total_amount), 0) as total_amount,
+             COALESCE(SUM(payment_count), 0) as payment_count
+      FROM incoming_batches
+      WHERE 1=1 ${sinceClause}
+      GROUP BY currency
+      ORDER BY currency
+    `).all() as any[];
+    const incomingByStatus = db.prepare(`
+      SELECT status, currency,
+             COUNT(*) as batch_count,
+             COALESCE(SUM(total_amount), 0) as total_amount
+      FROM incoming_batches
+      WHERE 1=1 ${sinceClause}
+      GROUP BY status, currency
+    `).all() as any[];
+
+    // ── LANA OUT: brain orchestrator orders ─────────────────
+    // lana_amount is in lanoshis (1 LANA = 100,000,000 lanoshis).
+    // Filter out cancelled and pending (not yet broadcast).
+    const lanaOutByType = db.prepare(`
+      SELECT order_type,
+             COUNT(*) as order_count,
+             COALESCE(SUM(lana_amount), 0) as total_lanoshis,
+             COALESCE(SUM(fiat_value), 0) as total_fiat_at_time,
+             currency
+      FROM brain_lana_orders
+      WHERE status NOT IN ('cancelled', 'pending') ${sinceClause}
+      GROUP BY order_type, currency
+      ORDER BY order_type, currency
+    `).all() as any[];
+
+    // Aggregate to per-type totals (LANA + EUR equivalents).
+    const lanaOutAgg: Record<string, {
+      orderCount: number;
+      totalLana: number;
+      fiatValueAtTime: Record<string, number>;
+      currentEurValue: number;
+    }> = {};
+    for (const row of lanaOutByType) {
+      const type = row.order_type as string;
+      if (!lanaOutAgg[type]) {
+        lanaOutAgg[type] = { orderCount: 0, totalLana: 0, fiatValueAtTime: {}, currentEurValue: 0 };
+      }
+      const lanaWhole = (row.total_lanoshis || 0) / 100_000_000;
+      lanaOutAgg[type].orderCount += row.order_count;
+      lanaOutAgg[type].totalLana += lanaWhole;
+      lanaOutAgg[type].fiatValueAtTime[row.currency] =
+        (lanaOutAgg[type].fiatValueAtTime[row.currency] || 0) + (row.total_fiat_at_time || 0);
+      lanaOutAgg[type].currentEurValue += lanaWhole * (exchangeRates.EUR || 0);
+    }
+
+    // ── EUR OUT: buyback payouts ────────────────────────────
+    const buybackByCurrency = db.prepare(`
+      SELECT currency,
+             COUNT(*) as tx_count,
+             COALESCE(SUM(lana_amount_display), 0) as total_lana,
+             COALESCE(SUM(gross_fiat), 0) as gross_fiat,
+             COALESCE(SUM(commission_fiat), 0) as commission_fiat,
+             COALESCE(SUM(net_fiat), 0) as net_fiat
+      FROM buyback_transactions
+      WHERE status IN ('broadcast', 'pending_verification', 'completed', 'paid') ${sinceClause}
+      GROUP BY currency
+      ORDER BY currency
+    `).all() as any[];
+
+    // Sum of actual payouts (sale_payouts.amount) per currency
+    const payoutsByCurrency = db.prepare(`
+      SELECT currency,
+             COUNT(*) as payout_count,
+             COALESCE(SUM(amount), 0) as total_paid
+      FROM sale_payouts
+      WHERE 1=1 ${sinceClause.replace('created_at', 'paid_at')}
+      GROUP BY currency
+    `).all() as any[];
+    const paidByCurrency: Record<string, { count: number; total: number }> = {};
+    for (const p of payoutsByCurrency) {
+      paidByCurrency[p.currency] = { count: p.payout_count, total: p.total_paid };
+    }
+
+    // Merge buyback + payouts per currency
+    const buybackPerCurrency = buybackByCurrency.map((b: any) => {
+      const paid = paidByCurrency[b.currency] || { count: 0, total: 0 };
+      const outstanding = Math.max(0, (b.net_fiat || 0) - paid.total);
+      const commissionPct = b.gross_fiat > 0 ? ((b.commission_fiat / b.gross_fiat) * 100) : 0;
+      return {
+        currency: b.currency,
+        txCount: b.tx_count,
+        totalLana: b.total_lana,
+        grossFiat: b.gross_fiat,
+        commissionFiat: b.commission_fiat,
+        commissionPct: Math.round(commissionPct * 10) / 10,
+        netFiat: b.net_fiat,
+        paidOut: paid.total,
+        paidCount: paid.count,
+        outstanding,
+      };
+    });
+
+    // ── Reconciliation ──────────────────────────────────────
+    // For each currency: FIAT in (from investors) - actually paid to sellers
+    // - "value of LANA outflow valued at order rates" gives a coarse net.
+    const incomingMap = new Map<string, number>();
+    for (const r of incomingByCurrency) incomingMap.set(r.currency, r.total_amount);
+
+    const lanaOutValueByCurrency: Record<string, number> = {};
+    for (const r of lanaOutByType) {
+      lanaOutValueByCurrency[r.currency] = (lanaOutValueByCurrency[r.currency] || 0) + (r.total_fiat_at_time || 0);
+    }
+
+    const reconciliation = Array.from(new Set([
+      ...incomingByCurrency.map((b: any) => b.currency),
+      ...buybackPerCurrency.map((b) => b.currency),
+      ...Object.keys(lanaOutValueByCurrency),
+    ])).map((cur) => ({
+      currency: cur,
+      incomingFiat: incomingMap.get(cur) || 0,
+      lanaOutFiatAtTime: lanaOutValueByCurrency[cur] || 0,
+      buybackPaidOut: paidByCurrency[cur]?.total || 0,
+      buybackOutstanding: buybackPerCurrency.find((b) => b.currency === cur)?.outstanding || 0,
+      commissionEarned: buybackPerCurrency.find((b) => b.currency === cur)?.commissionFiat || 0,
+    }));
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      since: since || null,
+      currentRates: exchangeRates,
+      fiatIn: {
+        perCurrency: incomingByCurrency.map((r: any) => ({
+          currency: r.currency,
+          batchCount: r.batch_count,
+          paymentCount: r.payment_count,
+          totalAmount: r.total_amount,
+        })),
+        byStatus: incomingByStatus.map((r: any) => ({
+          status: r.status,
+          currency: r.currency,
+          batchCount: r.batch_count,
+          totalAmount: r.total_amount,
+        })),
+      },
+      lanaOut: {
+        byType: Object.entries(lanaOutAgg).map(([type, v]) => ({
+          orderType: type,
+          orderCount: v.orderCount,
+          totalLana: v.totalLana,
+          fiatValueAtTime: v.fiatValueAtTime,
+          currentEurValue: Math.round(v.currentEurValue * 100) / 100,
+        })),
+      },
+      buyback: {
+        perCurrency: buybackPerCurrency,
+      },
+      reconciliation,
+    });
+  } catch (err: any) {
+    console.error('[admin/analytics] error:', err.message || err);
+    res.status(500).json({ error: 'Failed to load analytics' });
+  }
+});
+
+/**
  * GET /api/admin/users
  * List all admin users.
  */
