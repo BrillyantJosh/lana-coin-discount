@@ -621,6 +621,175 @@ router.get('/admin/analytics', (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/admin/overview
+ *
+ * Compact "rough feel" page. Three blocks of single-number answers:
+ *
+ *   A. LANA buybacks
+ *      - LANA bought (lana_amount_display)
+ *      - Worth at time (gross_fiat — what they would have been worth in
+ *        EUR/GBP at the rate when the user sold them)
+ *      - Net owed (after our commission)
+ *      - Actually paid (sale_payouts.amount sum)
+ *      - Outstanding (net - paid)
+ *      - Difference vs worth-at-time = commission earned + outstanding
+ *
+ *   B. Money flow / current state
+ *      - Money received from investors (incoming_batches)
+ *      - LANA on the buyback wallet (live Electrum)
+ *      - LANA worth in EUR at current KIND 38888 rate
+ *
+ *   C. Fee earned
+ *      - Total commission_fiat
+ *      - Effective % vs gross + vs paid out
+ */
+router.get('/admin/overview', async (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  try {
+    const exchangeRates = getExchangeRatesFromDb();
+    const eurRate = exchangeRates.EUR || 0;
+    const gbpRate = exchangeRates.GBP || 0;
+
+    // Convert any-currency amount to EUR equivalent via the LANA pivot
+    // (1 LANA = X EUR = Y GBP, so EUR = currency_amount / currency_rate * EUR_rate).
+    const toEur = (amount: number, currency: string): number => {
+      if (currency === 'EUR') return amount;
+      const rate = exchangeRates[currency];
+      if (!rate || !eurRate) return 0;
+      return (amount / rate) * eurRate;
+    };
+
+    // ── A. LANA buybacks per currency ───────────────────────
+    const buybackByCurrency = db.prepare(`
+      SELECT currency,
+             COUNT(*) as tx_count,
+             COALESCE(SUM(lana_amount_display), 0) as total_lana,
+             COALESCE(SUM(gross_fiat), 0) as gross_fiat,
+             COALESCE(SUM(commission_fiat), 0) as commission_fiat,
+             COALESCE(SUM(net_fiat), 0) as net_fiat
+      FROM buyback_transactions
+      WHERE status IN ('broadcast', 'pending_verification', 'completed', 'paid')
+      GROUP BY currency
+      ORDER BY currency
+    `).all() as any[];
+
+    const payoutsByCurrency = db.prepare(`
+      SELECT currency, COALESCE(SUM(amount), 0) as total_paid
+      FROM sale_payouts
+      GROUP BY currency
+    `).all() as any[];
+    const paidMap: Record<string, number> = {};
+    for (const p of payoutsByCurrency) paidMap[p.currency] = p.total_paid;
+
+    let totalLanaBought = 0;
+    let totalWorthAtTimeEur = 0;
+    let totalCommissionEur = 0;
+    let totalNetOwedEur = 0;
+    let totalPaidEur = 0;
+
+    const buybacksPerCurrency = buybackByCurrency.map((r: any) => {
+      const paidOut = paidMap[r.currency] || 0;
+      const outstanding = Math.max(0, r.net_fiat - paidOut);
+      totalLanaBought += r.total_lana;
+      totalWorthAtTimeEur += toEur(r.gross_fiat, r.currency);
+      totalCommissionEur += toEur(r.commission_fiat, r.currency);
+      totalNetOwedEur += toEur(r.net_fiat, r.currency);
+      totalPaidEur += toEur(paidOut, r.currency);
+      return {
+        currency: r.currency,
+        txCount: r.tx_count,
+        totalLana: r.total_lana,
+        worthAtTime: r.gross_fiat,
+        commission: r.commission_fiat,
+        netOwed: r.net_fiat,
+        paidOut,
+        outstanding,
+      };
+    });
+    const totalOutstandingEur = Math.max(0, totalNetOwedEur - totalPaidEur);
+    // "Difference vs worth at time" = worth at time minus actually paid.
+    // Decomposes into commission earned + still outstanding.
+    const totalDifferenceEur = totalWorthAtTimeEur - totalPaidEur;
+
+    // ── B. Money in / current LANA holdings ─────────────────
+    const incomingByCurrency = db.prepare(`
+      SELECT currency,
+             COUNT(*) as batch_count,
+             COALESCE(SUM(total_amount), 0) as total_amount
+      FROM incoming_batches
+      GROUP BY currency
+      ORDER BY currency
+    `).all() as any[];
+
+    let totalReceivedEur = 0;
+    const receivedPerCurrency = incomingByCurrency.map((r: any) => {
+      totalReceivedEur += toEur(r.total_amount, r.currency);
+      return { currency: r.currency, batchCount: r.batch_count, totalAmount: r.total_amount };
+    });
+
+    // Live LANA balance on the buyback wallet (Electrum).
+    let buybackBalance: number | null = null;
+    let buybackWalletId = getAppSetting('buyback_wallet_id') || '';
+    if (buybackWalletId) {
+      try {
+        const electrumServers = getElectrumServersFromDb();
+        const balances = await fetchBatchBalances(electrumServers, [buybackWalletId]);
+        const bal = balances[0];
+        if (bal && !bal.error) {
+          buybackBalance = bal.balance; // already in whole LANA
+        }
+      } catch (err: any) {
+        console.warn('[admin/overview] balance fetch failed:', err.message);
+      }
+    }
+    const buybackBalanceEur = buybackBalance !== null ? buybackBalance * eurRate : null;
+
+    // ── C. Fee earned summary ───────────────────────────────
+    // Effective fee % vs gross. Effective fee % vs actually-paid.
+    const feeOverGrossPct = totalWorthAtTimeEur > 0
+      ? (totalCommissionEur / totalWorthAtTimeEur) * 100
+      : 0;
+    const feeOverPaidPct = totalPaidEur > 0
+      ? (totalCommissionEur / totalPaidEur) * 100
+      : 0;
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      currentRates: { EUR: eurRate, GBP: gbpRate },
+      buybacks: {
+        totalLanaBought,
+        worthAtTimeEur: Math.round(totalWorthAtTimeEur * 100) / 100,
+        netOwedEur: Math.round(totalNetOwedEur * 100) / 100,
+        paidEur: Math.round(totalPaidEur * 100) / 100,
+        outstandingEur: Math.round(totalOutstandingEur * 100) / 100,
+        differenceEur: Math.round(totalDifferenceEur * 100) / 100, // worth at time - actually paid
+        commissionEur: Math.round(totalCommissionEur * 100) / 100,
+        perCurrency: buybacksPerCurrency,
+      },
+      moneyIn: {
+        totalReceivedEur: Math.round(totalReceivedEur * 100) / 100,
+        perCurrency: receivedPerCurrency,
+      },
+      buybackWallet: {
+        walletId: buybackWalletId,
+        balanceLana: buybackBalance,
+        balanceEur: buybackBalanceEur !== null ? Math.round(buybackBalanceEur * 100) / 100 : null,
+      },
+      feeEarned: {
+        totalCommissionEur: Math.round(totalCommissionEur * 100) / 100,
+        feeOverGrossPct: Math.round(feeOverGrossPct * 10) / 10,
+        feeOverPaidPct: Math.round(feeOverPaidPct * 10) / 10,
+      },
+    });
+  } catch (err: any) {
+    console.error('[admin/overview] error:', err.message || err);
+    res.status(500).json({ error: 'Failed to load overview' });
+  }
+});
+
+/**
  * GET /api/admin/users
  * List all admin users.
  */

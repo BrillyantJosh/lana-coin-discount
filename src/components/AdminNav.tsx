@@ -27,6 +27,7 @@ const sections = [
   {
     label: 'Analytics',
     items: [
+      { to: '/admin/overview', label: 'Overview', desc: 'Rough feel: bought · paid · earned' },
       { to: '/admin/analytics', label: 'Analytics', desc: 'FIAT in · LANA out · reconciliation' },
     ],
   },
