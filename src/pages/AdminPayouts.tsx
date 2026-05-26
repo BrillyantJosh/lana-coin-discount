@@ -98,6 +98,8 @@ const AdminPayouts = () => {
   const [nextPayoutId, setNextPayoutId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [copiedText, setCopiedText] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [sortMode, setSortMode] = useState<'remaining' | 'latest_payment'>('remaining');
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -300,29 +302,52 @@ const AdminPayouts = () => {
 
   if (authLoading || !session || !isAdmin) return null;
 
-  // Show all sales including pending_verification (external API sales)
-  // Sort sales within each user: unpaid/partial first, then fully paid
-  // Sort users: those with remaining > 0 first, fully paid last
-  const sortedUsers = users.filter(user => user.sales.length > 0).map(user => {
-    const totalOwed = user.sales.reduce((s, sale) => s + sale.netFiat, 0);
-    const totalPaid = user.sales.reduce((s, sale) => s + sale.totalPaid, 0);
-    const remaining = Math.round((totalOwed - totalPaid) * 100) / 100;
-    return {
-      ...user,
-      _remaining: remaining,
-      sales: [...user.sales].sort((a, b) => {
-        if (a.status === 'paid' && b.status !== 'paid') return 1;
-        if (a.status !== 'paid' && b.status === 'paid') return -1;
-        return b.remaining - a.remaining;
-      }),
-    };
-  }).sort((a, b) => {
-    // Users with remaining > 0 first
-    if (a._remaining > 0 && b._remaining <= 0) return -1;
-    if (a._remaining <= 0 && b._remaining > 0) return 1;
-    // Among same group, highest remaining first
-    return b._remaining - a._remaining;
-  });
+  const q = search.trim().toLowerCase();
+
+  const sortedUsers = users
+    .filter(user => user.sales.length > 0)
+    .filter(user => {
+      if (!q) return true;
+      const name = resolveDisplayName(user).toLowerCase();
+      const full = (getFullName(user) || '').toLowerCase();
+      const hex = user.hexId.toLowerCase();
+      return name.includes(q) || full.includes(q) || hex.includes(q);
+    })
+    .map(user => {
+      const totalOwed = user.sales.reduce((s, sale) => s + sale.netFiat, 0);
+      const totalPaid = user.sales.reduce((s, sale) => s + sale.totalPaid, 0);
+      const remaining = Math.round((totalOwed - totalPaid) * 100) / 100;
+      // Latest payout date across all sales
+      const latestPayout = user.sales
+        .flatMap(s => s.payouts)
+        .map(p => p.paidAt)
+        .filter(Boolean)
+        .sort()
+        .at(-1) ?? '';
+      return {
+        ...user,
+        _remaining: remaining,
+        _latestPayout: latestPayout,
+        sales: [...user.sales].sort((a, b) => {
+          if (a.status === 'paid' && b.status !== 'paid') return 1;
+          if (a.status !== 'paid' && b.status === 'paid') return -1;
+          return b.remaining - a.remaining;
+        }),
+      };
+    })
+    .sort((a, b) => {
+      if (sortMode === 'latest_payment') {
+        // Most recently paid first; users with no payouts go last
+        if (!a._latestPayout && !b._latestPayout) return 0;
+        if (!a._latestPayout) return 1;
+        if (!b._latestPayout) return -1;
+        return b._latestPayout.localeCompare(a._latestPayout);
+      }
+      // Default: unpaid first, then highest remaining
+      if (a._remaining > 0 && b._remaining <= 0) return -1;
+      if (a._remaining <= 0 && b._remaining > 0) return 1;
+      return b._remaining - a._remaining;
+    });
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -337,6 +362,41 @@ const AdminPayouts = () => {
           </p>
         </div>
 
+        {/* Search + Sort bar */}
+        {!loading && (
+          <div className="mb-4 flex flex-col sm:flex-row gap-2">
+            <div className="relative flex-1">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+              </svg>
+              <input
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Iskanje po imenu ali hex ID..."
+                className="w-full rounded-xl border border-border bg-card pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+              {search && (
+                <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs">✕</button>
+              )}
+            </div>
+            <div className="flex rounded-xl border border-border bg-card overflow-hidden flex-shrink-0">
+              <button
+                onClick={() => setSortMode('remaining')}
+                className={`px-4 py-2.5 text-sm font-medium transition-colors ${sortMode === 'remaining' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Neplačano prvo
+              </button>
+              <button
+                onClick={() => setSortMode('latest_payment')}
+                className={`px-4 py-2.5 text-sm font-medium transition-colors ${sortMode === 'latest_payment' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Zadnja plačila
+              </button>
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="flex flex-col items-center gap-4">
@@ -346,10 +406,19 @@ const AdminPayouts = () => {
           </div>
         ) : sortedUsers.length === 0 ? (
           <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
-            <p className="text-lg text-muted-foreground">No completed transactions yet.</p>
-            <p className="text-sm text-muted-foreground/70 mt-1">
-              Transactions will appear here once users start selling LANA.
-            </p>
+            {q ? (
+              <>
+                <p className="text-lg text-muted-foreground">Ni rezultatov za „{search}".</p>
+                <button onClick={() => setSearch('')} className="mt-2 text-sm text-primary hover:underline">Počisti iskanje</button>
+              </>
+            ) : (
+              <>
+                <p className="text-lg text-muted-foreground">No completed transactions yet.</p>
+                <p className="text-sm text-muted-foreground/70 mt-1">
+                  Transactions will appear here once users start selling LANA.
+                </p>
+              </>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
