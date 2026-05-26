@@ -30,3 +30,6 @@ dist-ssr
 
 # Database
 data/
+
+# TypeScript incremental build cache (regenerated on every `tsc`)
+*.tsbuildinfo
