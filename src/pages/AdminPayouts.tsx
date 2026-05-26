@@ -523,9 +523,22 @@ const AdminPayouts = () => {
 
                                 {/* RPC verification info */}
                                 {sale.rpcVerified && sale.rpcBlockHeight && (
-                                  <span className="text-[9px] font-mono text-green-600 flex-shrink-0">
-                                    #{sale.rpcBlockHeight.toLocaleString()}
-                                  </span>
+                                  sale.txHash ? (
+                                    <a
+                                      href={`https://chainz.cryptoid.info/lana/tx.dws?${sale.txHash}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-[9px] font-mono text-green-600 flex-shrink-0 hover:text-green-400 underline underline-offset-2"
+                                      title={sale.txHash}
+                                    >
+                                      #{sale.rpcBlockHeight.toLocaleString()}
+                                    </a>
+                                  ) : (
+                                    <span className="text-[9px] font-mono text-green-600 flex-shrink-0">
+                                      #{sale.rpcBlockHeight.toLocaleString()}
+                                    </span>
+                                  )
                                 )}
 
                                 {/* Quick Pay button — only for RPC-verified, unpaid transactions */}
@@ -636,6 +649,28 @@ const AdminPayouts = () => {
                                     </div>
                                   );
                                 })()}
+
+                                {/* TX Hash link */}
+                                {sale.txHash && (
+                                  <div className="flex items-center gap-2 text-xs">
+                                    <span className="text-muted-foreground flex-shrink-0">TX:</span>
+                                    <a
+                                      href={`https://chainz.cryptoid.info/lana/tx.dws?${sale.txHash}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="font-mono text-primary hover:text-primary/70 underline underline-offset-2 break-all"
+                                    >
+                                      {sale.txHash}
+                                    </a>
+                                    <button
+                                      onClick={() => copyToClipboard(sale.txHash!)}
+                                      className="text-muted-foreground hover:text-foreground flex-shrink-0"
+                                      title="Copy TX hash"
+                                    >
+                                      {copiedText === sale.txHash ? '✓' : '📋'}
+                                    </button>
+                                  </div>
+                                )}
 
                                 {/* Existing payouts */}
                                 {sale.payouts.length > 0 && (
