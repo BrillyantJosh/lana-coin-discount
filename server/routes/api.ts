@@ -1351,15 +1351,15 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid LANA amount' });
     }
 
-    // Validate payment rating (must be >= 9)
+    // Validate payment rating (must be 10 — no open obligations)
     try {
       const relays = getRelaysFromDb();
       const ratingResult = await fetchPaymentScore(hexId, relays);
       if (!ratingResult || !ratingResult.qualifies) {
         const score = ratingResult?.score ?? 'none';
-        console.log(`[lana-discount] Sell blocked: user ${hexId.slice(0, 12)}... rating ${score} < 9`);
+        console.log(`[lana-discount] Sell blocked: user ${hexId.slice(0, 12)}... rating ${score} (open obligations)`);
         return res.status(403).json({
-          error: 'Selling is only available to users with a payment rating of 9 or above.',
+          error: 'Selling is only available to users with no open obligations.',
           rating: score,
         });
       }

@@ -436,7 +436,7 @@ const SellLana = () => {
         ) : (
           <>
             {/* Rating status — always shown at top */}
-            {ratingChecked && (userRating !== null && userRating >= 9) ? (
+            {ratingChecked && (userRating !== null && userRating === 10) ? (
               <div className="flex items-center gap-3 rounded-xl border border-green-300 dark:border-green-800 bg-green-50 dark:bg-green-950/30 px-4 py-3 mb-4">
                 <svg className="h-5 w-5 text-green-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
                 <span className="text-sm text-green-700 dark:text-green-400">
@@ -450,7 +450,7 @@ const SellLana = () => {
                 </div>
                 <h2 className="text-xl font-bold text-red-700 dark:text-red-400">Selling Not Available</h2>
                 <p className="text-sm text-red-600 dark:text-red-400 max-w-md mx-auto leading-relaxed">
-                  Selling registered LanaCoins is only available to users who have fully paid their subscriptions and achieved a rating of 9 or above. Please settle any outstanding payments to unlock this feature.
+                  Selling registered LanaCoins is only available to users who have no open obligations. Please settle any outstanding payments to unlock this feature.
                 </p>
                 {userRating !== null ? (
                   <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-100 dark:bg-red-900/40">
@@ -465,7 +465,7 @@ const SellLana = () => {
             ) : null}
 
             {/* Steps only shown when rating is OK */}
-            {(!ratingChecked || (userRating !== null && userRating >= 9)) && (
+            {(!ratingChecked || (userRating !== null && userRating === 10)) && (
             <>
             {/* ============ STEP 1: Select Wallet ============ */}
             {step === 1 && (

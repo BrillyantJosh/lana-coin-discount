@@ -389,7 +389,7 @@ export async function fetchPaymentScore(hexId: string, relays: string[]): Promis
     const scoreTag = newest.tags.find((t: string[]) => t[0] === 'score');
     const score = scoreTag ? parseFloat(scoreTag[1]) : 0;
 
-    return { score, qualifies: score >= 9 };
+    return { score, qualifies: score === 10 };
   } catch (error: any) {
     console.error(`[lana-discount] Failed to fetch payment score for ${hexId}:`, error.message);
     return null;
