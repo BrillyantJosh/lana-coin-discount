@@ -373,7 +373,7 @@ const AdminPayouts = () => {
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Iskanje po imenu ali hex ID..."
+                placeholder="Search by name or hex ID..."
                 className="w-full rounded-xl border border-border bg-card pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
               />
               {search && (
@@ -385,13 +385,13 @@ const AdminPayouts = () => {
                 onClick={() => setSortMode('remaining')}
                 className={`px-4 py-2.5 text-sm font-medium transition-colors ${sortMode === 'remaining' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
               >
-                Neplačano prvo
+                Unpaid first
               </button>
               <button
                 onClick={() => setSortMode('latest_payment')}
                 className={`px-4 py-2.5 text-sm font-medium transition-colors ${sortMode === 'latest_payment' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
               >
-                Zadnja plačila
+                Latest payments
               </button>
             </div>
           </div>
@@ -408,8 +408,8 @@ const AdminPayouts = () => {
           <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
             {q ? (
               <>
-                <p className="text-lg text-muted-foreground">Ni rezultatov za „{search}".</p>
-                <button onClick={() => setSearch('')} className="mt-2 text-sm text-primary hover:underline">Počisti iskanje</button>
+                <p className="text-lg text-muted-foreground">No results for "{search}".</p>
+                <button onClick={() => setSearch('')} className="mt-2 text-sm text-primary hover:underline">Clear search</button>
               </>
             ) : (
               <>
