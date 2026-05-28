@@ -2141,6 +2141,22 @@ router.post('/brain/lana-order', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing required fields', required: ['order_id', 'order_type', 'to_wallet', 'to_hex', 'lana_amount'] });
     }
 
+    // Base58check guard on to_wallet — rejects malformed addresses at the
+    // brain→discount boundary so send-batch-lana can't crash on a stale row
+    // later (the `…JHU27ooo` incident on 2026-05-28 reached this point because
+    // there was no such guard; admin had to fix-wallet retroactively).
+    const { isValidLanaAddress } = await import('../lib/walletValidation.js');
+    if (!isValidLanaAddress(to_wallet)) {
+      console.warn(`[lana-discount] /brain/lana-order rejected: invalid to_wallet ${JSON.stringify(to_wallet)} (order_id=${order_id})`);
+      return res.status(422).json({
+        error: 'INVALID_WALLET',
+        code: 'INVALID_WALLET',
+        field: 'to_wallet',
+        value: to_wallet,
+        message: `to_wallet failed base58check: ${JSON.stringify(to_wallet)}`,
+      });
+    }
+
     // Store the order
     try {
       db.prepare(`
