@@ -2550,8 +2550,16 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
       })),
     });
   } catch (error: any) {
+    // Surface the actual message + a short stack so admin UI can show what
+    // went wrong without us needing to SSH for logs. Stack is truncated to
+    // avoid leaking the full file tree to the browser.
+    const msg = error?.message || String(error) || 'Unknown error';
+    const stackHead = error?.stack ? String(error.stack).split('\n').slice(0, 3).join(' | ') : null;
     console.error('[lana-discount] send-batch-lana error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({
+      error: `send-batch-lana failed: ${msg}`,
+      detail: stackHead,
+    });
   }
 });
 
