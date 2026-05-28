@@ -2563,4 +2563,64 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/admin/fix-wallet
+ *
+ * Surgical repair for a single corrupted wallet field on brain_lana_orders.
+ * Needed because brain_lana_orders.to_wallet is a snapshot received from
+ * brain at POST /api/brain/lana-order time — a corrected KIND 30902 doesn't
+ * retroactively rewrite already-stored rows, so send-batch-lana keeps
+ * crashing on the stale bad address.
+ *
+ * Hard guards:
+ *  - requireAdmin (x-admin-hex-id ∈ admin_users)
+ *  - Allowlisted (table, field) pairs only
+ *  - new_value must pass base58check (isValidLanaAddress)
+ *
+ * Body: { table: 'brain_lana_orders', id, field: 'to_wallet'|'from_wallet', new_value }
+ */
+router.post('/admin/fix-wallet', async (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  // Lazy import to keep the validator dependency-local and out of the
+  // top-of-file import storm.
+  const { isValidLanaAddress } = await import('../lib/walletValidation.js');
+
+  const ALLOWED: Record<string, { idColumn: string; fields: Set<string> }> = {
+    brain_lana_orders: { idColumn: 'id', fields: new Set(['to_wallet','from_wallet']) },
+    brain_fiat_orders: { idColumn: 'id', fields: new Set(['recipient_wallet']) },
+  };
+
+  const { table, id, field, new_value } = (req.body || {}) as { table?: string; id?: string|number; field?: string; new_value?: string };
+  if (typeof table !== 'string' || !ALLOWED[table]) {
+    return res.status(400).json({ error: 'Invalid table', allowed: Object.keys(ALLOWED) });
+  }
+  const conf = ALLOWED[table];
+  if (typeof field !== 'string' || !conf.fields.has(field)) {
+    return res.status(400).json({ error: 'Invalid field for table', allowed: [...conf.fields] });
+  }
+  if (typeof id !== 'string' && typeof id !== 'number') {
+    return res.status(400).json({ error: 'id must be string or number' });
+  }
+  if (!isValidLanaAddress(new_value)) {
+    return res.status(400).json({ error: 'new_value is not a valid LANA address (base58check failed)' });
+  }
+
+  const before = db.prepare(`SELECT ${field} AS v FROM ${table} WHERE ${conf.idColumn} = ?`).get(id) as { v: string } | undefined;
+  if (!before) {
+    return res.status(404).json({ error: 'Row not found', table, idColumn: conf.idColumn, id });
+  }
+  const result = db.prepare(`UPDATE ${table} SET ${field} = ? WHERE ${conf.idColumn} = ?`).run(new_value, id);
+  console.log(`[lana-discount] fix-wallet by ${adminHex.slice(0,8)}…: ${table}.${field} on ${conf.idColumn}=${id}: "${before.v}" → "${new_value}" (changes=${result.changes})`);
+
+  return res.json({
+    ok: true,
+    table, id, field,
+    before: before.v,
+    after: new_value,
+    changes: result.changes,
+  });
+});
+
 export default router;
