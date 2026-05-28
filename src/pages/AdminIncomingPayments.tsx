@@ -325,10 +325,17 @@ const AdminIncomingPayments = () => {
 
   // An order is "pending direct" only if the investor hasn't paid yet (ppConfirmed=false).
   // Once the investor has paid (bank wire batch OR LANA tx verified on chain), it becomes a "paid" order.
-  const pendingDirectOrders = orders.filter(o => !o.ppConfirmed);
+  //
+  // Defensive `o.status !== 'cancelled'` filter: Direct Fund's /api/admin/fiat-orders
+  // already excludes cancelled by default, but a future opt-in (?include_cancelled=1)
+  // or any other code path that returns cancelled rows would otherwise let them
+  // pollute "Awaiting Payment" — the label logic below only checks ppConfirmed,
+  // so a cancelled row (ppConfirmed=false because pending_payments was dropped)
+  // would render identically to a real pending row. Filter here protects regardless.
+  const pendingDirectOrders = orders.filter(o => !o.ppConfirmed && o.status !== 'cancelled');
 
   // Orders paid by investor — either via a Direct Fund batch (bank wires), or via a confirmed LANA tx (auto-confirmed by RPC verify).
-  const paidOrders = orders.filter(o => o.ppConfirmed);
+  const paidOrders = orders.filter(o => o.ppConfirmed && o.status !== 'cancelled');
 
   // Build batch groups from paid orders.
   // For bank-wire orders we use the Direct Fund batchRef; for LANA-paid orders (no batch) we
