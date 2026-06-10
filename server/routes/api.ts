@@ -2383,6 +2383,81 @@ router.post('/brain/lana-order/:id/cancel', (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/brain/lana-order/:id/redirect
+ * Re-point a queued LANA buyback order to a DIFFERENT recipient wallet.
+ * Brain calls this during a CASH transaction re-allocation (investor A → B):
+ * the buyback LANA must go to the NEW investor, but send-batch-lana builds its
+ * recipients purely from brain_lana_orders.to_wallet, so we update it here
+ * BEFORE broadcast. Allowed only while the order is still queued (not yet sent
+ * on-chain) — once 'sent'/'confirmed' the LANA already moved to the old wallet.
+ *
+ * Bearer-authed (brain↔discount), status-guarded. Idempotent-friendly: setting
+ * to_wallet to the same value again is harmless.
+ *
+ * Body: { to_wallet: string (required), to_hex?: string }
+ *
+ * Responses:
+ *   200 { ok: true, before, after }
+ *   400 invalid/missing to_wallet
+ *   409 { ok: false, status } — already broadcast / race
+ *   404 not_found
+ */
+router.post('/brain/lana-order/:id/redirect', async (req: Request, res: Response) => {
+  const auth = requireApiKey(req, res);
+  if (!auth) return;
+
+  const { isValidLanaAddress } = await import('../lib/walletValidation.js');
+
+  const toWallet = typeof req.body?.to_wallet === 'string' ? req.body.to_wallet.trim() : '';
+  const toHex = typeof req.body?.to_hex === 'string' ? req.body.to_hex.trim() : '';
+  if (!isValidLanaAddress(toWallet)) {
+    return res.status(400).json({ ok: false, error: 'invalid_wallet', message: 'to_wallet is not a valid LANA address (base58check failed)' });
+  }
+
+  const order = db.prepare('SELECT * FROM brain_lana_orders WHERE id = ?').get(req.params.id) as any;
+  if (!order) {
+    return res.status(404).json({ ok: false, error: 'not_found' });
+  }
+
+  // Only re-point while NOT yet broadcast. 'sent'/'confirmed' = LANA already
+  // on-chain to the old recipient → too late, refuse.
+  const SAFE_TO_REDIRECT = new Set(['pending', 'queued', 'received', 'sent_to_discount']);
+  if (!SAFE_TO_REDIRECT.has(order.status)) {
+    return res.status(409).json({
+      ok: false,
+      status: order.status,
+      error: 'too_late',
+      message: `LANA order is ${order.status} — cannot redirect`,
+    });
+  }
+
+  const before = order.to_wallet;
+
+  // Atomic guard: only re-point if the status is still safe at write time
+  // (the auto-send loop may have just picked it up). to_hex is optional and
+  // only updated when a non-empty value is provided.
+  const result = db.prepare(`
+    UPDATE brain_lana_orders SET
+      to_wallet = ?,
+      to_hex = COALESCE(NULLIF(?, ''), to_hex)
+    WHERE id = ? AND status IN ('pending', 'queued', 'received', 'sent_to_discount')
+  `).run(toWallet, toHex, req.params.id);
+
+  if (result.changes !== 1) {
+    const fresh = db.prepare('SELECT status FROM brain_lana_orders WHERE id = ?').get(req.params.id) as any;
+    return res.status(409).json({
+      ok: false,
+      status: fresh?.status || 'unknown',
+      error: 'race',
+      message: 'LANA order state changed during redirect',
+    });
+  }
+
+  console.log(`[brain-api] LANA order ${req.params.id} redirected: to_wallet "${before}" → "${toWallet}"${toHex ? `, to_hex → ${toHex.slice(0, 12)}…` : ''}`);
+  return res.json({ ok: true, before, after: toWallet });
+});
+
+/**
  * GET /api/brain/buyback-balance
  * Return current buyback wallet LANA balance
  */
