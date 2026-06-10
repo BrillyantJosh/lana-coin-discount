@@ -2476,13 +2476,14 @@ router.get('/brain/buyback-balance', async (req: Request, res: Response) => {
       return res.json({ balance: 0, wallet: buybackWalletId, error: 'No electrum servers available' });
     }
 
-    const balances = await fetchBatchBalances([buybackWalletId], electrumServers);
-    const walletBalance = balances[buybackWalletId];
+    const balances = await fetchBatchBalances(electrumServers, [buybackWalletId]);
+    // fetchBatchBalances returns WalletBalance[] — get the first (and only) entry
+    const walletBalance = balances[0];
 
     return res.json({
       wallet: buybackWalletId,
-      balance: walletBalance?.confirmed || 0,
-      unconfirmed: walletBalance?.unconfirmed || 0,
+      balance: walletBalance?.confirmedBalance || 0,
+      unconfirmed: walletBalance?.unconfirmedBalance || 0,
     });
   } catch (error: any) {
     return res.json({ balance: 0, error: error.message });
