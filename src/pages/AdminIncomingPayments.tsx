@@ -172,13 +172,33 @@ const AdminIncomingPayments = () => {
     if (!authLoading && session && !isAdmin) navigate('/dashboard');
   }, [session, authLoading, isAdmin, navigate]);
 
+  // Guards so overlapping refreshes don't stack, and so a transient failure on a
+  // *background* refresh doesn't pop a scary toast when data is already on screen.
+  const inFlightRef = useRef(false);
+  const hasLoadedRef = useRef(false);
+
   const fetchData = useCallback(async () => {
     if (!session || !isAdmin) return;
+    // Skip if a previous fetch is still running (prevents request pile-up on the
+    // 1.5 MB+ payload when the 30s poll, 5-min countdown, and post-confirm reload overlap).
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
-      const res = await fetch('/api/admin/incoming-payments', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
-      const data = await res.json();
+      // Abort the main fetch if it hangs (e.g. proxy/gateway stall) instead of
+      // leaving the request open until the browser eventually rejects it.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30000);
+      let data: any;
+      try {
+        const res = await fetch('/api/admin/incoming-payments', {
+          headers: { 'x-admin-hex-id': session.nostrHexId },
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        data = await res.json();
+      } finally {
+        clearTimeout(timer);
+      }
       // Only show orders destined for lana_discount
       const ldOrders = (data.orders || []).filter((o: FiatOrder) => o.destinationType === 'lana_discount');
       setOrders(ldOrders);
@@ -186,6 +206,7 @@ const AdminIncomingPayments = () => {
       setBuybackBalance(data.buybackBalance || { wallet: '', balanceLana: 0 });
       setLanaObligations(data.lanaObligations || { pendingLanoshis: 0, sentLanoshis: 0 });
       setLocalBatches(data.localBatches || []);
+      hasLoadedRef.current = true;
       try {
         const spRes = await fetch('/api/system-params');
         const spData = await spRes.json();
@@ -193,8 +214,9 @@ const AdminIncomingPayments = () => {
         if (rates?.EUR) setExchangeRate(rates.EUR);
       } catch {}
 
-      // Resolve investor names from KIND 0 profiles
-      const uniqueInvestors = [...new Set(ldOrders.map((o: FiatOrder) => o.investorHex).filter(Boolean))];
+      // Resolve investor names from KIND 0 profiles (server is DB-cache-first now,
+      // so these are instant for known investors). Only fetch names we don't have yet.
+      const uniqueInvestors = [...new Set(ldOrders.map((o: FiatOrder) => o.investorHex).filter(Boolean))] as string[];
       const newNames: Record<string, string> = {};
       await Promise.all(uniqueInvestors.map(async (hex) => {
         if (investorNames[hex]) { newNames[hex] = investorNames[hex]; return; }
@@ -207,8 +229,11 @@ const AdminIncomingPayments = () => {
       }));
       if (Object.keys(newNames).length > 0) setInvestorNames(prev => ({ ...prev, ...newNames }));
     } catch {
-      toast.error('Failed to load incoming payments');
+      // Suppress the toast on background refreshes — the page already shows data,
+      // and the next poll usually recovers. Only alert on the very first load.
+      if (!hasLoadedRef.current) toast.error('Failed to load incoming payments');
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
   }, [session, isAdmin]);
@@ -291,6 +316,35 @@ const AdminIncomingPayments = () => {
       });
       if (!res.ok) throw new Error('Failed to update');
       toast.success(`Batch ${batch.batchRef} → ${newStatus.replace('_', ' ')}`);
+      // Optimistically move the batch to its new tab immediately so the admin
+      // sees the change even if the background refresh is mid-flight (the in-flight
+      // guard may skip the reload below; the 30s poll reconciles regardless).
+      const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      setLocalBatches(prev => {
+        const existing = prev.find(b => b.batchRef === batch.batchRef);
+        const patch: Partial<LocalBatch> = { status: newStatus };
+        if (newStatus === 'received') patch.receivedAt = ts;
+        if (newStatus === 'lana_bought') patch.lanaBoughtAt = ts;
+        if (newStatus === 'lana_sent') patch.lanaSentAt = ts;
+        if (existing) {
+          return prev.map(b => b.batchRef === batch.batchRef ? { ...b, ...patch } : b);
+        }
+        return [...prev, {
+          id: batch.batchId ?? -1,
+          batchRef: batch.batchRef,
+          investorHex: batch.investorHex,
+          totalAmount: batch.totalFiat,
+          currency: batch.currency,
+          paymentCount: batch.orders.length,
+          status: newStatus,
+          receivedAt: patch.receivedAt ?? null,
+          lanaBoughtAt: patch.lanaBoughtAt ?? null,
+          lanaSentAt: patch.lanaSentAt ?? null,
+          lanaTxHash: null,
+          notes: null,
+          createdAt: ts,
+        }];
+      });
       await fetchData();
     } catch {
       toast.error('Failed to update batch status');

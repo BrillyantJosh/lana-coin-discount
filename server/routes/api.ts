@@ -1181,37 +1181,88 @@ router.get('/system-params', (_req: Request, res: Response) => {
  * Fetches LIVE from Nostr relays to ensure fresh data (payment methods may have been
  * added after the user logged in, so the cached raw_kind0 in DB can be stale).
  */
+/** Persist a fetched KIND 0 event into the users table (upsert). */
+function upsertKind0(hexId: string, content: any): void {
+  const displayName = content.display_name || content.displayName || null;
+  const fullName = content.name || null;
+  db.prepare(`
+    INSERT INTO users (nostr_hex_id, display_name, full_name, raw_kind0)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(nostr_hex_id) DO UPDATE SET
+      display_name = COALESCE(excluded.display_name, display_name),
+      full_name = COALESCE(excluded.full_name, full_name),
+      raw_kind0 = excluded.raw_kind0,
+      updated_at = datetime('now')
+  `).run(hexId, displayName, fullName, JSON.stringify(content));
+}
+
+// In-flight guard so overlapping background refreshes for the same pubkey
+// don't open duplicate relay connections (the payouts/incoming-payments pages
+// resolve many investor names at once on every poll).
+const profileRefreshing = new Set<string>();
+
+/** Fire-and-forget relay refresh of a KIND 0 profile; updates DB for next time. */
+function refreshKind0InBackground(hexId: string): void {
+  if (profileRefreshing.has(hexId)) return;
+  profileRefreshing.add(hexId);
+  const relays = getRelaysFromDb();
+  fetchKind0(hexId, relays)
+    .then(ev => { if (ev) { try { upsertKind0(hexId, JSON.parse(ev.content)); } catch {} } })
+    .catch(() => {})
+    .finally(() => profileRefreshing.delete(hexId));
+}
+
 router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
   const hexId = req.params.hexId;
+  // STALE-WHILE-REVALIDATE: serve the cached DB copy instantly (names rarely
+  // change), and only hit the relays — in the background — when the cache is
+  // missing or older than 1 hour. This keeps the admin pages snappy: previously
+  // every name lookup did a blocking 10s-capped relay query, so resolving ~50
+  // investors on page load could hang for many seconds and hammer the relays.
+  // Pass ?fresh=1 to force a blocking live fetch (used when fresh bank details matter).
+  const forceFresh = req.query.fresh === '1';
   try {
+    const user = db.prepare(
+      'SELECT raw_kind0, display_name, full_name, updated_at FROM users WHERE nostr_hex_id = ?'
+    ).get(hexId) as any;
+
+    // updated_at is stored as "YYYY-MM-DD HH:MM:SS" (UTC). Normalise to ISO so
+    // Date parsing is reliable across engines; treat unparseable as infinitely old.
+    const updatedMs = user?.updated_at ? new Date(user.updated_at.replace(' ', 'T') + 'Z').getTime() : NaN;
+    const cacheAgeMs = Number.isFinite(updatedMs) ? Date.now() - updatedMs : Infinity;
+    const cacheFresh = user?.raw_kind0 && cacheAgeMs < 3_600_000; // 1 hour
+
+    if (!forceFresh && user?.raw_kind0) {
+      const profile = JSON.parse(user.raw_kind0);
+      // Serve cached instantly. If it's older than 1h, kick off a background
+      // relay refresh so the next request is up to date — but never block here.
+      if (!cacheFresh) refreshKind0InBackground(hexId);
+      return res.json({
+        profile,
+        displayName: user.display_name || profile.display_name || profile.displayName || null,
+        fullName: user.full_name || profile.name || null,
+        cached: true,
+      });
+    }
+
+    // No cache at all (first time we see this pubkey) or fresh forced: query relays.
     const relays = getRelaysFromDb();
     const kind0Event = await fetchKind0(hexId, relays);
 
     if (kind0Event) {
       const content = JSON.parse(kind0Event.content);
-      const displayName = content.display_name || content.displayName || null;
-      const fullName = content.name || null;
-
-      // Upsert user row with KIND 0 data (creates if missing, e.g. external API users)
-      const rawJson = JSON.stringify(content);
-      db.prepare(`
-        INSERT INTO users (nostr_hex_id, display_name, full_name, raw_kind0)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(nostr_hex_id) DO UPDATE SET
-          display_name = COALESCE(excluded.display_name, display_name),
-          full_name = COALESCE(excluded.full_name, full_name),
-          raw_kind0 = excluded.raw_kind0,
-          updated_at = datetime('now')
-      `).run(hexId, displayName, fullName, rawJson);
-
-      return res.json({ profile: content, displayName: displayName || fullName, fullName });
+      upsertKind0(hexId, content);
+      return res.json({
+        profile: content,
+        displayName: content.display_name || content.displayName || content.name || null,
+        fullName: content.name || null,
+      });
     }
 
-    // Fallback to cached DB data if relay fetch fails
-    const user = db.prepare('SELECT raw_kind0, display_name, full_name FROM users WHERE nostr_hex_id = ?').get(hexId) as any;
+    // Relay miss — fall back to whatever we have cached (even if stale).
     if (user?.raw_kind0) {
       const profile = JSON.parse(user.raw_kind0);
-      return res.json({ profile, displayName: user.display_name || profile.display_name || profile.displayName || null, fullName: user.full_name || profile.name || null });
+      return res.json({ profile, displayName: user.display_name || profile.display_name || profile.displayName || null, fullName: user.full_name || profile.name || null, cached: true });
     }
 
     return res.json({ profile: null, displayName: null, fullName: null });
@@ -1222,7 +1273,9 @@ router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
       const user = db.prepare('SELECT raw_kind0, display_name, full_name FROM users WHERE nostr_hex_id = ?').get(hexId) as any;
       if (user?.raw_kind0) {
         const profile = JSON.parse(user.raw_kind0);
-        return res.json({ profile, displayName: user.display_name || profile.display_name || null, fullName: user.full_name || profile.name || null });
+        // Best-effort background refresh so the stale copy gets renewed.
+        refreshKind0InBackground(hexId);
+        return res.json({ profile, displayName: user.display_name || profile.display_name || null, fullName: user.full_name || profile.name || null, cached: true });
       }
     } catch {}
     return res.json({ profile: null, displayName: null, fullName: null });
