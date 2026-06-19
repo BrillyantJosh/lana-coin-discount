@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
+import { AdminPagination } from '@/components/AdminPagination';
 
 interface FiatOrder {
   id: string;
@@ -155,9 +156,16 @@ const AdminIncomingPayments = () => {
   const [exchangeRate, setExchangeRate] = useState(0);
   const [updating, setUpdating] = useState<string | null>(null);
   const [investorNames, setInvestorNames] = useState<Record<string, string>>({});
-  // Sort mode: "latest" = most recent Lana Discount activity first (default);
-  //            "batchRef" = batch number descending (newest batch first).
-  const [sortMode, setSortMode] = useState<'latest' | 'batchRef'>('latest');
+  // Sort mode: "latest"  = most recent Lana Discount activity first (default);
+  //            "batchRef" = batch number descending (newest batch first);
+  //            "amount"   = total FIAT amount descending (largest first).
+  const [sortMode, setSortMode] = useState<'latest' | 'batchRef' | 'amount'>('latest');
+  // Pagination — show 100 batches per page by default.
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+
+  // Reset to first page whenever the tab, sort mode, or page size changes.
+  useEffect(() => { setPage(1); }, [activeTab, sortMode, pageSize]);
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -398,6 +406,11 @@ const AdminIncomingPayments = () => {
       // Numeric-aware desc sort so "2026000056" beats "2026000009" correctly.
       return b.batchRef.localeCompare(a.batchRef, undefined, { numeric: true });
     }
+    if (sortMode === 'amount') {
+      // Largest total FIAT first; tie-break on most recent activity.
+      if (b.totalFiat !== a.totalFiat) return b.totalFiat - a.totalFiat;
+      return lastActivityAt(b).localeCompare(lastActivityAt(a));
+    }
     // 'latest' (default) — most recent activity first
     return lastActivityAt(b).localeCompare(lastActivityAt(a));
   });
@@ -407,6 +420,12 @@ const AdminIncomingPayments = () => {
     const ds = b.discountStatus || 'incoming';
     return ds === activeTab;
   });
+
+  // Paginate the filtered batches (default 100 per page).
+  const totalBatches = filteredBatches.length;
+  const totalPages = Math.max(1, Math.ceil(totalBatches / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const paginatedBatches = filteredBatches.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   // Summary per tab
   const tabCounts: Record<TabId, number> = { pending_direct: 0, incoming: 0, received: 0, lana_bought: 0, lana_sent: 0 };
@@ -644,9 +663,20 @@ const AdminIncomingPayments = () => {
                 >
                   Batch #
                 </button>
+                <button
+                  onClick={() => setSortMode('amount')}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${
+                    sortMode === 'amount'
+                      ? 'bg-card shadow-sm text-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                  title="Sort by total FIAT amount (largest first)"
+                >
+                  Amount
+                </button>
               </div>
             </div>
-            {filteredBatches.map(batch => {
+            {paginatedBatches.map(batch => {
               const isExpanded = expandedKey === batch.batchRef;
               const action = nextAction[activeTab];
               const types = [...new Set(batch.orders.map(o => o.orderType || 'unknown'))];
@@ -841,6 +871,17 @@ const AdminIncomingPayments = () => {
                 </div>
               );
             })}
+
+            {/* Pagination — 100 batches per page by default */}
+            <AdminPagination
+              page={safePage}
+              totalPages={totalPages}
+              total={totalBatches}
+              limit={pageSize}
+              onPageChange={setPage}
+              onLimitChange={setPageSize}
+              limitOptions={[25, 50, 100, 200]}
+            />
           </div>
         )}
       </div>
