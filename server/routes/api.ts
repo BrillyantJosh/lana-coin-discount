@@ -2622,6 +2622,15 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No UTXOs available in buyback wallet' });
     }
 
+    // Only spend CONFIRMED UTXOs (height > 0). Spending the unconfirmed change of a
+    // recent send makes the node reject the TX with code -22 ("TX rejected") until
+    // the parent confirms. See the auto-send path in server/index.ts for details.
+    const confirmedUtxos = utxos.filter((u: any) => (u.height || 0) > 0);
+    if (confirmedUtxos.length === 0) {
+      return res.status(409).json({ error: 'Buyback wallet UTXOs are still unconfirmed (recent send not yet mined). Try again in a few minutes.' });
+    }
+    utxos = confirmedUtxos;
+
     // Build recipient list
     const txRecipients = recipients.map((r: any) => ({
       address: normalizeAddress(r.address),

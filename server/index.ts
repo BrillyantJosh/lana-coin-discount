@@ -358,7 +358,22 @@ async function autoSendPendingLana(): Promise<void> {
       return;
     }
 
-    // Update known balance from UTXOs
+    // Only spend CONFIRMED UTXOs. listunspent also returns the unconfirmed change
+    // (height <= 0) created by a just-broadcast send; because selection sorts by
+    // value desc, that large unconfirmed change gets picked first and the node
+    // rejects the new TX with code -22 ("TX rejected") until the parent confirms.
+    // The auto-send then retries the same doomed TX every heartbeat for ~30 min
+    // (exactly the pattern seen in the logs). Filtering to height > 0 avoids it;
+    // there's normally ample confirmed balance, and if not we just wait one cycle.
+    const confirmedUtxos = utxos.filter((u: any) => (u.height || 0) > 0);
+    if (confirmedUtxos.length === 0) {
+      console.warn('[lana-discount] Auto-send: all UTXOs still unconfirmed (change not yet mined) — cooldown 3min');
+      autoSendSkipUntil = Date.now() + 3 * 60 * 1000;
+      return;
+    }
+    utxos = confirmedUtxos;
+
+    // Update known balance from UTXOs (confirmed only)
     lastKnownBalance = utxos.reduce((s: number, u: any) => s + u.value, 0) / 100_000_000;
 
     // Build recipients
