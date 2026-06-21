@@ -128,6 +128,14 @@ let nextAutoSendIn = AUTO_SEND_CYCLE - AUTO_SEND_OFFSET; // initial countdown
 let autoSendSkipUntil = 0; // timestamp — skip auto-send until this time (insufficient balance cooldown)
 let autoSendRunning = false; // prevent concurrent auto-send runs
 let lastKnownBalance = 0; // LANA balance from last Electrum fetch (for quick pre-check)
+// UTXOs that produced a -22 "TX rejected" broadcast. The buyback wallet is SHARED
+// with other services, and electrum1 has no mempool tracking — so listunspent can
+// report a UTXO as unspent when another service's mempool tx already spends it.
+// Spending such a UTXO is rejected as a double-spend; since selection always picks
+// the largest UTXO, the same one loops every cycle. We blacklist failed UTXOs for a
+// while so the next attempt selects different inputs instead of retrying the doomed one.
+const failedUtxos = new Map<string, number>(); // "txid:vout" -> expiry timestamp
+const FAILED_UTXO_TTL = 20 * 60 * 1000; // 20 min
 
 async function verifyUnconfirmedTransactions(): Promise<void> {
   try {
@@ -332,13 +340,25 @@ async function autoSendPendingLana(): Promise<void> {
     // The auto-send then retries the same doomed TX every heartbeat for ~30 min
     // (exactly the pattern seen in the logs). Filtering to height > 0 avoids it;
     // there's normally ample confirmed balance, and if not we just wait one cycle.
+    const nowMs = Date.now();
+    // Drop expired blacklist entries so good UTXOs become spendable again.
+    for (const [k, exp] of failedUtxos) { if (exp <= nowMs) failedUtxos.delete(k); }
+
     const confirmedUtxos = utxos.filter((u: any) => (u.height || 0) > 0);
     if (confirmedUtxos.length === 0) {
       console.warn('[lana-discount] Auto-send: all UTXOs still unconfirmed (change not yet mined) — cooldown 3min');
-      autoSendSkipUntil = Date.now() + 3 * 60 * 1000;
+      autoSendSkipUntil = nowMs + 3 * 60 * 1000;
       return;
     }
-    utxos = confirmedUtxos;
+    // Exclude UTXOs that recently produced a -22 rejection (likely already spent by
+    // a co-tenant service's mempool tx that electrum1 hasn't reflected yet).
+    const spendableUtxos = confirmedUtxos.filter((u: any) => !failedUtxos.has(`${u.tx_hash}:${u.tx_pos}`));
+    if (spendableUtxos.length === 0) {
+      console.warn(`[lana-discount] Auto-send: all ${confirmedUtxos.length} confirmed UTXOs are blacklisted from recent -22 rejections — cooldown 5min`);
+      autoSendSkipUntil = nowMs + 5 * 60 * 1000;
+      return;
+    }
+    utxos = spendableUtxos;
 
     // Update known balance from UTXOs (confirmed only)
     lastKnownBalance = utxos.reduce((s: number, u: any) => s + u.value, 0) / 100_000_000;
@@ -430,6 +450,15 @@ async function autoSendPendingLana(): Promise<void> {
 
     if (!txHash || typeof txHash !== 'string' || txHash.length !== 64) {
       console.error('[lana-discount] Auto-send broadcast failed:', txHash);
+      // Blacklist the inputs we just tried — a -22 here almost always means one of
+      // these UTXOs is already (mempool-)spent by a co-tenant of the shared buyback
+      // wallet, but electrum1 still lists it as unspent. Excluding them lets the next
+      // attempt pick different inputs instead of looping on the same doomed TX every
+      // 5 min. Short cooldown so we don't immediately rebuild the identical failure.
+      const exp = Date.now() + FAILED_UTXO_TTL;
+      for (const u of selected) failedUtxos.set(`${u.tx_hash}:${u.tx_pos}`, exp);
+      autoSendSkipUntil = Date.now() + 2 * 60 * 1000;
+      console.warn(`[lana-discount] Blacklisted ${selected.length} UTXO(s) for ${FAILED_UTXO_TTL / 60000}min after -22; cooldown 2min`);
       return;
     }
 
