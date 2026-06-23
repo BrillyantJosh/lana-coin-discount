@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { createHash, randomBytes } from 'crypto';
-import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
+import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, getSplitApproachingFromDb, getFreezeLanaRetailAccountAboveFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore } from '../lib/nostr.js';
 import { fetchBatchBalances, electrumCall } from '../lib/electrum.js';
@@ -191,14 +191,15 @@ router.post('/sync-kind-38888', async (_req: Request, res: Response) => {
         INSERT INTO kind_38888 (
           id, event_id, pubkey, created_at, relays, electrum_servers,
           exchange_rates, split, version, valid_from, split_started_at,
-          split_target_lana, trusted_signers, raw_event
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          split_target_lana, split_approaching, freeze_lana_retail_account_above, trusted_signers, raw_event
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         'live_' + data.event_id, data.event_id, data.pubkey, data.created_at,
         JSON.stringify(data.relays), JSON.stringify(data.electrum_servers),
         JSON.stringify(data.exchange_rates), data.split || null,
         data.version || null, data.valid_from || null,
         data.split_started_at || null, data.split_target_lana || null,
+        data.split_approaching ? 1 : 0, data.freeze_lana_retail_account_above || 0,
         JSON.stringify(data.trusted_signers), data.raw_event
       );
     }
@@ -1172,6 +1173,8 @@ router.get('/system-params', (_req: Request, res: Response) => {
     activeCurrencies,
     buybackWalletId,
     commissionPercent: 30,
+    splitApproaching: getSplitApproachingFromDb(),
+    freezeLanaRetailAccountAbove: getFreezeLanaRetailAccountAboveFromDb(),
   });
 });
 

@@ -47,6 +47,8 @@ db.exec(`
     valid_from INTEGER,
     split_started_at INTEGER,
     split_target_lana INTEGER,
+    split_approaching INTEGER DEFAULT 0,
+    freeze_lana_retail_account_above INTEGER DEFAULT 0,
     trusted_signers TEXT,
     raw_event TEXT NOT NULL
   );
@@ -179,6 +181,10 @@ for (const sql of migrationColumns) {
   try { db.exec(sql); } catch {}
 }
 
+// --- Safe migration: KIND 38888 v3 fields (split_approaching + retail wallet freeze threshold) ---
+try { db.exec(`ALTER TABLE kind_38888 ADD COLUMN split_approaching INTEGER DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE kind_38888 ADD COLUMN freeze_lana_retail_account_above INTEGER DEFAULT 0`); } catch {}
+
 // --- Seed kind_38888 with bootstrap fallback data ---
 const kind38888Count = (db.prepare('SELECT COUNT(*) as count FROM kind_38888').get() as any).count;
 if (kind38888Count === 0) {
@@ -212,8 +218,8 @@ if (kind38888Count === 0) {
     INSERT INTO kind_38888 (
       id, event_id, pubkey, created_at, relays, electrum_servers,
       exchange_rates, split, version, valid_from, split_started_at,
-      split_target_lana, trusted_signers, raw_event
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      split_target_lana, split_approaching, freeze_lana_retail_account_above, trusted_signers, raw_event
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     'seed_kind_38888',
     'local_seed_event_' + Date.now(),
@@ -225,6 +231,8 @@ if (kind38888Count === 0) {
     '',
     '1.0.0',
     Math.floor(Date.now() / 1000),
+    0,
+    0,
     0,
     0,
     JSON.stringify(defaultTrustedSigners),
@@ -347,6 +355,17 @@ export function getExchangeRatesFromDb(): Record<string, number> {
 export function getSplitFromDb(): string | null {
   const row = db.prepare('SELECT split FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
   return row?.split ?? null;
+}
+
+/** KIND 38888 v3 fields: a Split round is near + retail wallet freeze threshold. */
+export function getSplitApproachingFromDb(): boolean {
+  const row = db.prepare('SELECT split_approaching FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
+  return row?.split_approaching === 1;
+}
+
+export function getFreezeLanaRetailAccountAboveFromDb(): number {
+  const row = db.prepare('SELECT freeze_lana_retail_account_above FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
+  return row?.freeze_lana_retail_account_above ?? 0;
 }
 
 export interface BuybackTransactionData {

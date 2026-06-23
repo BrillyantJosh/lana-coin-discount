@@ -65,8 +65,8 @@ async function syncKind38888ToDb(): Promise<boolean> {
       INSERT INTO kind_38888 (
         id, event_id, pubkey, created_at, relays, electrum_servers,
         exchange_rates, split, version, valid_from, split_started_at,
-        split_target_lana, trusted_signers, raw_event
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        split_target_lana, split_approaching, freeze_lana_retail_account_above, trusted_signers, raw_event
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       'live_' + data.event_id,
       data.event_id,
@@ -80,6 +80,8 @@ async function syncKind38888ToDb(): Promise<boolean> {
       data.valid_from || null,
       data.split_started_at || null,
       data.split_target_lana || null,
+      data.split_approaching ? 1 : 0,
+      data.freeze_lana_retail_account_above || 0,
       JSON.stringify(data.trusted_signers),
       data.raw_event
     );
