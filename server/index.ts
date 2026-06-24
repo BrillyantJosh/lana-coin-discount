@@ -28,13 +28,19 @@ app.use(cors({
   },
 }));
 app.use(express.json({ limit: '50kb' }));
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false }));
 
 // ─── Request logging + 24h retention ──────────────────────
 // Breadcrumb trail of every request path, to debug stuck flows. Stores
 // method/path/status/duration/ip ONLY — never bodies (may hold WIF/secrets).
 // Skips static assets; auto-purges rows older than 24h; viewable by root admin.
+// Registered BEFORE the rate limiter so 429 (Too Many Requests) responses ARE logged.
 installRequestLogging(app, db);
+
+// Rate limit per IP. The admin/buyback page polls incoming-payments + heartbeat-status +
+// profile (and re-fetches on every send-batch action), which under the old 300/15min cap
+// could exhaust the budget → 429 on the polls AND on send-batch-lana, so the operator
+// couldn't process payouts. 1500/15min (≈100/min) gives ample headroom while capping abuse.
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1500, standardHeaders: true, legacyHeaders: false }));
 
 // API routes
 app.use('/api', apiRouter);
