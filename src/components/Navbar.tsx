@@ -7,8 +7,9 @@ const Navbar = () => {
           <span>Lana<span className="text-gold">.Discount</span></span>
         </a>
         <div className="hidden md:flex items-center gap-8 text-sm font-medium text-muted-foreground">
-          <a href="#how-it-works" className="hover:text-foreground transition-colors">How It Works</a>
-          <a href="#sustainability" className="hover:text-foreground transition-colors">Sustainability</a>
+          <a href="/#how-it-works" className="hover:text-foreground transition-colors">How It Works</a>
+          <a href="/#sustainability" className="hover:text-foreground transition-colors">Sustainability</a>
+          <a href="/obligations" className="hover:text-foreground transition-colors">Payout Queue</a>
           <a href="/docs/api" className="hover:text-foreground transition-colors">API</a>
         </div>
         <a

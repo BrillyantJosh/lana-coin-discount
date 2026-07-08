@@ -2013,6 +2013,82 @@ router.get('/admin/financing-order', async (req: Request, res: Response) => {
   });
 });
 
+/**
+ * Public payout queue — all UNPAID obligations to LANA sellers, in payout order,
+ * grouped per currency (financiers first by FIFO rank, then the rest). Transparency
+ * only: display name + amount owed + queue position + payable/waiting. No payment
+ * details, no full hex, no per-sale breakdown.
+ */
+async function buildObligations(): Promise<{ currencies: Record<string, any>; total_currencies: number }> {
+  const users = getAllSalesWithPayouts();
+
+  const nameOf = new Map<string, string>();
+  const perCur = new Map<string, Map<string, { outstanding: number; earliestAt: string }>>();
+  for (const u of users) {
+    nameOf.set(u.hexId, u.displayName || 'Anonymous');
+    for (const sale of u.sales || []) {
+      if (sale.status !== 'completed' && sale.status !== 'paid') continue;
+      const rem = sale.remaining || 0;
+      if (rem <= 0) continue;
+      const cur = sale.currency;
+      if (!perCur.has(cur)) perCur.set(cur, new Map());
+      const m = perCur.get(cur)!;
+      const e = m.get(u.hexId) || { outstanding: 0, earliestAt: sale.createdAt };
+      e.outstanding += rem;
+      if (sale.createdAt && sale.createdAt < e.earliestAt) e.earliestAt = sale.createdAt;
+      m.set(u.hexId, e);
+    }
+  }
+
+  const currencies: Record<string, any> = {};
+  for (const [currency, hexMap] of perCur) {
+    const { rankByHex, nameByHex } = await getFinancingRankMap(currency);
+    const sellers: QueueSeller[] = [...hexMap.entries()].map(([hex, v]) => ({
+      hex, remaining: v.outstanding, priority: priorityFor(hex, rankByHex),
+    }));
+    // Payout order: financiers by rank; then non-financiers by arrival (earliest first).
+    const ordered = [...hexMap.entries()].map(([hex, v]) => ({ hex, ...v, financeRank: rankByHex.get(hex) ?? null }));
+    ordered.sort((a, b) => {
+      const af = a.financeRank != null, bf = b.financeRank != null;
+      if (af && bf) return (a.financeRank as number) - (b.financeRank as number);
+      if (af) return -1;
+      if (bf) return 1;
+      return a.earliestAt < b.earliestAt ? -1 : a.earliestAt > b.earliestAt ? 1 : 0;
+    });
+    const queue = ordered.map((e, i) => {
+      const { blocked } = computeBlocker(sellers, e.hex);
+      const name = (e.financeRank != null ? (nameByHex.get(e.hex) || nameOf.get(e.hex)) : nameOf.get(e.hex)) || 'Anonymous';
+      return {
+        position: i + 1,
+        name,
+        hex_short: e.hex.slice(0, 8),
+        is_financier: e.financeRank != null,
+        finance_rank: e.financeRank,
+        outstanding: Math.round(e.outstanding * 100) / 100,
+        payable: !blocked, // true = next in line / payable now; false = waiting behind a higher-priority recipient
+      };
+    });
+    currencies[currency] = {
+      total_outstanding: Math.round([...hexMap.values()].reduce((s, v) => s + v.outstanding, 0) * 100) / 100,
+      count: queue.length,
+      financier_count: queue.filter((q: any) => q.is_financier).length,
+      queue,
+    };
+  }
+  return { currencies, total_currencies: Object.keys(currencies).length };
+}
+
+// GET /api/obligations — PUBLIC (no auth), CORS same-origin. Transparency board.
+router.get('/obligations', async (_req: Request, res: Response) => {
+  try {
+    const data = await buildObligations();
+    res.json({ ...data, updated_at: new Date().toISOString() });
+  } catch (err: any) {
+    console.error('[lana-discount] obligations error:', err.message);
+    res.json({ currencies: {}, total_currencies: 0, updated_at: new Date().toISOString() });
+  }
+});
+
 // Update incoming batch status (received → lana_bought → lana_sent)
 router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Response) => {
   const adminHex = requireAdmin(req, res);
