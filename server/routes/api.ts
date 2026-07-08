@@ -2126,12 +2126,12 @@ router.get('/payouts-daily', (_req: Request, res: Response) => {
     const rows = db.prepare(`
       SELECT date(sp.paid_at) AS day, sp.currency AS currency, bt.user_hex_id AS hex,
              u.display_name, u.full_name,
-             SUM(sp.amount) AS amount, COUNT(*) AS payouts
+             SUM(sp.amount) AS total_amount, COUNT(*) AS payouts
       FROM sale_payouts sp
       JOIN buyback_transactions bt ON bt.id = sp.transaction_id
       LEFT JOIN users u ON u.nostr_hex_id = bt.user_hex_id
-      GROUP BY day, currency, hex
-      ORDER BY day ASC, amount DESC
+      GROUP BY date(sp.paid_at), sp.currency, bt.user_hex_id
+      ORDER BY date(sp.paid_at) ASC, total_amount DESC
     `).all() as any[];
 
     interface DayCur { total: number; count: number; payouts: number; people: { name: string; hex_short: string | null; amount: number }[] }
@@ -2141,7 +2141,7 @@ router.get('/payouts-daily', (_req: Request, res: Response) => {
     const currencies = new Set<string>();
     for (const r of rows) {
       currencies.add(r.currency);
-      const amt = Math.round((r.amount || 0) * 100) / 100;
+      const amt = Math.round((r.total_amount || 0) * 100) / 100;
       if (!dayMap.has(r.day)) dayMap.set(r.day, {});
       const dc = dayMap.get(r.day)!;
       if (!dc[r.currency]) dc[r.currency] = { total: 0, count: 0, payouts: 0, people: [] };
