@@ -5,6 +5,7 @@ import PayoutOrderExplainer from "@/components/PayoutOrderExplainer";
 import Requirements from "@/components/Requirements";
 import ObligationsBoard from "@/components/ObligationsBoard";
 import RecentPayouts from "@/components/RecentPayouts";
+import PayoutStats from "@/components/PayoutStats";
 import Footer from "@/components/Footer";
 
 const Index = () => {
@@ -46,6 +47,19 @@ const Index = () => {
             </a>
           </div>
           <RecentPayouts limit={12} />
+        </div>
+      </section>
+
+      {/* Daily payout stats */}
+      <section id="stats" className="py-16 md:py-20 bg-muted/50">
+        <div className="container mx-auto px-6 max-w-4xl">
+          <div className="mb-8">
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground">Paid out per day</h2>
+            <p className="mt-2 text-muted-foreground max-w-xl">
+              Total FIAT paid out from Lana.Discount to LANA sellers, by day.
+            </p>
+          </div>
+          <PayoutStats />
         </div>
       </section>
 

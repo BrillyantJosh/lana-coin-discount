@@ -2118,6 +2118,45 @@ router.get('/payouts-history', (_req: Request, res: Response) => {
   }
 });
 
+// GET /api/payouts-daily — PUBLIC. Total FIAT paid out per day, per currency
+// (for the landing stats chart). No recipient info — pure aggregates.
+router.get('/payouts-daily', (_req: Request, res: Response) => {
+  try {
+    const rows = db.prepare(`
+      SELECT date(paid_at) AS day, currency, SUM(amount) AS total, COUNT(*) AS cnt
+      FROM sale_payouts
+      GROUP BY day, currency
+      ORDER BY day ASC
+    `).all() as any[];
+
+    const dayMap = new Map<string, Record<string, number>>();
+    const totalsByCurrency: Record<string, number> = {};
+    const countByCurrency: Record<string, number> = {};
+    const currencies = new Set<string>();
+    for (const r of rows) {
+      currencies.add(r.currency);
+      const amt = Math.round((r.total || 0) * 100) / 100;
+      if (!dayMap.has(r.day)) dayMap.set(r.day, {});
+      dayMap.get(r.day)![r.currency] = amt;
+      totalsByCurrency[r.currency] = Math.round(((totalsByCurrency[r.currency] || 0) + amt) * 100) / 100;
+      countByCurrency[r.currency] = (countByCurrency[r.currency] || 0) + (r.cnt || 0);
+    }
+    const days = [...dayMap.entries()].map(([day, totals]) => ({ day, totals }));
+    res.json({
+      currencies: [...currencies],
+      totals_by_currency: totalsByCurrency,
+      count_by_currency: countByCurrency,
+      days,
+      first_day: days[0]?.day || null,
+      last_day: days.length ? days[days.length - 1].day : null,
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    console.error('[lana-discount] payouts-daily error:', err.message);
+    res.json({ currencies: [], totals_by_currency: {}, count_by_currency: {}, days: [], first_day: null, last_day: null, updated_at: new Date().toISOString() });
+  }
+});
+
 // Update incoming batch status (received → lana_bought → lana_sent)
 router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Response) => {
   const adminHex = requireAdmin(req, res);
