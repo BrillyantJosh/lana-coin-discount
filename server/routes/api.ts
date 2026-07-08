@@ -2118,12 +2118,14 @@ router.get('/payouts-history', (_req: Request, res: Response) => {
   }
 });
 
-// GET /api/payouts-daily — PUBLIC. Total FIAT paid out per day, per currency, with
-// the per-day recipient breakdown (name + amount) for the chart hover tooltip.
+// GET /api/payouts-daily — PUBLIC. Per day, per currency: FIAT paid out (to LANA
+// sellers, with the recipient breakdown for the tooltip) AND FIAT received (from
+// investor incoming batches). Powers the landing chart's two bars per day.
 router.get('/payouts-daily', (_req: Request, res: Response) => {
+  const r2 = (n: number) => Math.round((n || 0) * 100) / 100;
   try {
-    // One row per (day, currency, recipient) — a person may have several payouts a day.
-    const rows = db.prepare(`
+    // Paid out: one row per (day, currency, recipient).
+    const paidRows = db.prepare(`
       SELECT date(sp.paid_at) AS day, sp.currency AS currency, bt.user_hex_id AS hex,
              u.display_name, u.full_name,
              SUM(sp.amount) AS total_amount, COUNT(*) AS payouts
@@ -2134,28 +2136,54 @@ router.get('/payouts-daily', (_req: Request, res: Response) => {
       ORDER BY date(sp.paid_at) ASC, total_amount DESC
     `).all() as any[];
 
-    interface DayCur { total: number; count: number; payouts: number; people: { name: string; hex_short: string | null; amount: number }[] }
+    // Received (FIAT in): investor incoming batches, per (day, currency).
+    const receivedRows = db.prepare(`
+      SELECT date(created_at) AS day, currency,
+             SUM(total_amount) AS received, COUNT(*) AS cnt
+      FROM incoming_batches
+      GROUP BY date(created_at), currency
+    `).all() as any[];
+
+    interface DayCur { total: number; count: number; payouts: number; people: { name: string; hex_short: string | null; amount: number }[]; received: number; receivedCount: number }
     const dayMap = new Map<string, Record<string, DayCur>>();
+    const ensure = (day: string, cur: string): DayCur => {
+      if (!dayMap.has(day)) dayMap.set(day, {});
+      const dc = dayMap.get(day)!;
+      if (!dc[cur]) dc[cur] = { total: 0, count: 0, payouts: 0, people: [], received: 0, receivedCount: 0 };
+      return dc[cur];
+    };
     const totalsByCurrency: Record<string, number> = {};
+    const receivedByCurrency: Record<string, number> = {};
     const countByCurrency: Record<string, number> = {};
     const currencies = new Set<string>();
-    for (const r of rows) {
+
+    for (const r of paidRows) {
       currencies.add(r.currency);
-      const amt = Math.round((r.total_amount || 0) * 100) / 100;
-      if (!dayMap.has(r.day)) dayMap.set(r.day, {});
-      const dc = dayMap.get(r.day)!;
-      if (!dc[r.currency]) dc[r.currency] = { total: 0, count: 0, payouts: 0, people: [] };
-      dc[r.currency].total = Math.round((dc[r.currency].total + amt) * 100) / 100;
-      dc[r.currency].count += 1; // distinct people that day
-      dc[r.currency].payouts += (r.payouts || 0);
-      dc[r.currency].people.push({ name: r.display_name || r.full_name || 'Anonymous', hex_short: r.hex ? r.hex.slice(0, 8) : null, amount: amt });
-      totalsByCurrency[r.currency] = Math.round(((totalsByCurrency[r.currency] || 0) + amt) * 100) / 100;
+      const amt = r2(r.total_amount);
+      const dc = ensure(r.day, r.currency);
+      dc.total = r2(dc.total + amt);
+      dc.count += 1; // distinct people that day
+      dc.payouts += (r.payouts || 0);
+      dc.people.push({ name: r.display_name || r.full_name || 'Anonymous', hex_short: r.hex ? r.hex.slice(0, 8) : null, amount: amt });
+      totalsByCurrency[r.currency] = r2((totalsByCurrency[r.currency] || 0) + amt);
       countByCurrency[r.currency] = (countByCurrency[r.currency] || 0) + (r.payouts || 0);
     }
-    const days = [...dayMap.entries()].map(([day, byCur]) => ({ day, byCur }));
+    for (const r of receivedRows) {
+      currencies.add(r.currency);
+      const amt = r2(r.received);
+      const dc = ensure(r.day, r.currency);
+      dc.received = r2(dc.received + amt);
+      dc.receivedCount += (r.cnt || 0);
+      receivedByCurrency[r.currency] = r2((receivedByCurrency[r.currency] || 0) + amt);
+    }
+
+    const days = [...dayMap.entries()]
+      .map(([day, byCur]) => ({ day, byCur }))
+      .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
     res.json({
       currencies: [...currencies],
       totals_by_currency: totalsByCurrency,
+      received_by_currency: receivedByCurrency,
       count_by_currency: countByCurrency,
       days,
       first_day: days[0]?.day || null,
@@ -2164,7 +2192,7 @@ router.get('/payouts-daily', (_req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('[lana-discount] payouts-daily error:', err.message);
-    res.json({ currencies: [], totals_by_currency: {}, count_by_currency: {}, days: [], first_day: null, last_day: null, updated_at: new Date().toISOString() });
+    res.json({ currencies: [], totals_by_currency: {}, received_by_currency: {}, count_by_currency: {}, days: [], first_day: null, last_day: null, updated_at: new Date().toISOString() });
   }
 });
 

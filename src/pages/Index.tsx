@@ -56,9 +56,9 @@ const Index = () => {
       <section id="stats" className="py-16 md:py-20 bg-muted/50">
         <div className="container mx-auto px-6 max-w-4xl">
           <div className="mb-8">
-            <h2 className="text-3xl md:text-4xl font-bold text-foreground">Paid out per day</h2>
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground">Daily FIAT flows</h2>
             <p className="mt-2 text-muted-foreground max-w-xl">
-              Total FIAT paid out from Lana.Discount to LANA sellers, by day.
+              FIAT paid out to LANA sellers and received from investors, by day.
             </p>
           </div>
           <PayoutStats />
