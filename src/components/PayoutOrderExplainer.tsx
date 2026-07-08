@@ -1,10 +1,10 @@
-import { ListOrdered, Coins, Layers, Eye } from "lucide-react";
+import { ListOrdered, Coins, Layers, Percent } from "lucide-react";
 
 const points = [
   {
     icon: ListOrdered,
     title: "A fair, public queue",
-    body: "When you sell, you join the payout queue. There is no fixed “next day” — you are paid as real spending generates revenue, strictly in queue order.",
+    body: "When you sell, you join the payout queue. There is no fixed “next day” — you are paid as real spending generates revenue, strictly in queue order. You can see exactly where you stand and everything already paid, right here.",
   },
   {
     icon: Coins,
@@ -17,9 +17,9 @@ const points = [
     body: "EUR, GBP and every other currency have their own independent queue. An unpaid recipient in one currency never delays a payout in another.",
   },
   {
-    icon: Eye,
-    title: "Fully transparent",
-    body: "See exactly where you stand in the Payout Queue and every payout already made in the History. Around 20–30% of each sale fuels shopper cashback that grows the network — a bigger network means faster payouts for everyone.",
+    icon: Percent,
+    title: "Two clear rates",
+    body: "Selling LANA from your investment keeps 79% (a 21% fee); other LANA keeps 70% (a 30% fee). The retained portion powers shopper cashback that grows the network — a bigger network means faster payouts for everyone.",
   },
 ];
 

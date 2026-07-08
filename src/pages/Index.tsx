@@ -12,10 +12,8 @@ const Index = () => {
     <div className="min-h-screen bg-background">
       <Navbar />
       <HeroSection />
-      <HowItWorks />
-      <PayoutOrderExplainer />
 
-      {/* Live payout queue — every unpaid obligation, in order */}
+      {/* Live payout queue — every unpaid obligation, in order (right after the header) */}
       <section id="queue" className="py-16 md:py-20 bg-muted/50">
         <div className="container mx-auto px-6 max-w-4xl">
           <div className="flex items-end justify-between gap-4 mb-8 flex-wrap">
@@ -51,6 +49,9 @@ const Index = () => {
         </div>
       </section>
 
+      {/* Explanations come after the live data */}
+      <PayoutOrderExplainer />
+      <HowItWorks />
       <Requirements />
       <Footer />
     </div>
