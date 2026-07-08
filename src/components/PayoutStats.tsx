@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 
-/** Public payout stats: total FIAT paid out per day (per currency), as a small
- * bar chart. Reads the open /api/payouts-daily endpoint. */
-interface DayEntry { day: string; totals: Record<string, number>; }
+/** Public payout stats: total FIAT paid out per day (per currency), as a small bar
+ * chart. Hovering a bar shows who was paid and how much that day. Reads the open
+ * /api/payouts-daily endpoint. */
+interface Person { name: string; hex_short: string | null; amount: number; }
+interface DayCur { total: number; count: number; payouts: number; people: Person[]; }
+interface DayEntry { day: string; byCur: Record<string, DayCur>; }
 interface DailyData {
   currencies: string[];
   totals_by_currency: Record<string, number>;
@@ -36,15 +39,16 @@ function dateRange(start: string, end: string): string[] {
   }
   return out;
 }
-const fmtDay = (d: string) => {
-  const [, m, day] = d.split('-');
-  return `${day}.${m}.`;
-};
+const fmtDay = (d: string) => { const [, m, day] = d.split('-'); return `${day}.${m}.`; };
+const fmtDayFull = (d: string) => { const [y, m, day] = d.split('-'); return `${day}.${m}.${y}`; };
+
+interface SeriesPoint { day: string; value: number; count: number; people: Person[]; }
 
 const PayoutStats = () => {
   const [data, setData] = useState<DailyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [cur, setCur] = useState<string | null>(null);
+  const [hover, setHover] = useState<number | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -67,15 +71,18 @@ const PayoutStats = () => {
   }, []);
 
   // Continuous daily series (zero-filled) for the selected currency, capped to MAX_DAYS.
-  const series = useMemo(() => {
-    if (!data || !cur || !data.first_day) return [] as { day: string; value: number }[];
-    const byDay = new Map<string, number>();
-    for (const d of data.days) byDay.set(d.day, d.totals[cur] || 0);
+  const series = useMemo<SeriesPoint[]>(() => {
+    if (!data || !cur || !data.first_day) return [];
+    const byDay = new Map<string, DayCur>();
+    for (const d of data.days) if (d.byCur[cur]) byDay.set(d.day, d.byCur[cur]);
     const today = new Date().toISOString().slice(0, 10);
     const end = (data.last_day && data.last_day > today) ? data.last_day : today;
     let range = dateRange(data.first_day, end);
     if (range.length > MAX_DAYS) range = range.slice(range.length - MAX_DAYS);
-    return range.map((day) => ({ day, value: byDay.get(day) || 0 }));
+    return range.map((day) => {
+      const dc = byDay.get(day);
+      return { day, value: dc?.total || 0, count: dc?.count || 0, people: dc?.people || [] };
+    });
   }, [data, cur]);
 
   if (loading) return <div className="flex justify-center py-12"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" /></div>;
@@ -92,6 +99,8 @@ const PayoutStats = () => {
   const count = data.count_by_currency[cur] || 0;
   const activeDays = series.filter((s) => s.value > 0).length;
   const labelEvery = Math.max(1, Math.ceil(series.length / 8));
+  const active = hover !== null ? series[hover] : null;
+  const tooltipLeft = hover !== null ? Math.min(88, Math.max(12, ((hover + 0.5) / series.length) * 100)) : 50;
 
   return (
     <div className="rounded-2xl border-2 border-border bg-card p-4 sm:p-6">
@@ -120,16 +129,47 @@ const PayoutStats = () => {
         )}
       </div>
 
-      {/* Bar chart */}
-      <div className="flex items-end gap-[3px] h-44 sm:h-52">
-        {series.map((s) => (
-          <div key={s.day} className="flex-1 h-full flex items-end min-w-0" title={`${fmtDay(s.day)} — ${fmt(s.value, cur)}`}>
-            <div
-              className={`w-full rounded-t transition-all ${s.value > 0 ? 'bg-primary hover:bg-primary/80' : 'bg-transparent'}`}
-              style={{ height: s.value > 0 ? `${Math.max(2, (s.value / max) * 100)}%` : '0%' }}
-            />
+      {/* Bar chart + hover tooltip */}
+      <div className="relative">
+        {active && active.value > 0 && (
+          <div
+            className="pointer-events-none absolute bottom-full mb-2 -translate-x-1/2 z-10 w-56 max-w-[15rem] rounded-lg border border-border bg-card shadow-xl px-3 py-2 text-left"
+            style={{ left: `${tooltipLeft}%` }}
+          >
+            <div className="text-xs font-semibold text-foreground">{fmtDayFull(active.day)}</div>
+            <div className="text-xs text-muted-foreground mb-1.5">
+              {active.count} {active.count === 1 ? 'person' : 'people'} · <span className="font-semibold text-foreground">{fmt(active.value, cur)}</span>
+            </div>
+            <ul className="space-y-0.5">
+              {active.people.slice(0, 8).map((p, i) => (
+                <li key={i} className="flex justify-between gap-2 text-[11px]">
+                  <span className="truncate text-foreground">{p.name}</span>
+                  <span className="font-mono text-muted-foreground whitespace-nowrap">{fmt(p.amount, cur)}</span>
+                </li>
+              ))}
+              {active.people.length > 8 && (
+                <li className="text-[10px] text-muted-foreground">+{active.people.length - 8} more</li>
+              )}
+            </ul>
           </div>
-        ))}
+        )}
+
+        <div className="flex items-end gap-[3px] h-44 sm:h-52">
+          {series.map((s, i) => (
+            <div
+              key={s.day}
+              className="flex-1 h-full flex items-end min-w-0 cursor-default"
+              onMouseEnter={() => setHover(i)}
+              onMouseLeave={() => setHover((h) => (h === i ? null : h))}
+              title={s.value > 0 ? `${fmtDay(s.day)} — ${s.count} ${s.count === 1 ? 'person' : 'people'} · ${fmt(s.value, cur)}` : `${fmtDay(s.day)} — no payouts`}
+            >
+              <div
+                className={`w-full rounded-t transition-colors ${s.value > 0 ? (hover === i ? 'bg-primary/70' : 'bg-primary hover:bg-primary/80') : 'bg-transparent'}`}
+                style={{ height: s.value > 0 ? `${Math.max(2, (s.value / max) * 100)}%` : '0%' }}
+              />
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* X-axis date labels (sparse) */}
@@ -142,7 +182,7 @@ const PayoutStats = () => {
       </div>
 
       <p className="text-[10px] text-muted-foreground mt-3 text-right">
-        Peak day: {fmtShort(max, cur)} · last {series.length} days · updates every 60s
+        Hover a bar for the day's recipients · peak {fmtShort(max, cur)} · last {series.length} days · updates every 60s
       </p>
     </div>
   );

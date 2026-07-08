@@ -5,6 +5,7 @@ import PayoutOrderExplainer from "@/components/PayoutOrderExplainer";
 import Requirements from "@/components/Requirements";
 import ObligationsBoard from "@/components/ObligationsBoard";
 import RecentPayouts from "@/components/RecentPayouts";
+import PendingVerification from "@/components/PendingVerification";
 import PayoutStats from "@/components/PayoutStats";
 import Footer from "@/components/Footer";
 
@@ -46,6 +47,7 @@ const Index = () => {
               View all 100 →
             </a>
           </div>
+          <div className="mb-4"><PendingVerification limit={6} /></div>
           <RecentPayouts limit={12} />
         </div>
       </section>

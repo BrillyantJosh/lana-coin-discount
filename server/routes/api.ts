@@ -2118,30 +2118,41 @@ router.get('/payouts-history', (_req: Request, res: Response) => {
   }
 });
 
-// GET /api/payouts-daily — PUBLIC. Total FIAT paid out per day, per currency
-// (for the landing stats chart). No recipient info — pure aggregates.
+// GET /api/payouts-daily — PUBLIC. Total FIAT paid out per day, per currency, with
+// the per-day recipient breakdown (name + amount) for the chart hover tooltip.
 router.get('/payouts-daily', (_req: Request, res: Response) => {
   try {
+    // One row per (day, currency, recipient) — a person may have several payouts a day.
     const rows = db.prepare(`
-      SELECT date(paid_at) AS day, currency, SUM(amount) AS total, COUNT(*) AS cnt
-      FROM sale_payouts
-      GROUP BY day, currency
-      ORDER BY day ASC
+      SELECT date(sp.paid_at) AS day, sp.currency AS currency, bt.user_hex_id AS hex,
+             u.display_name, u.full_name,
+             SUM(sp.amount) AS amount, COUNT(*) AS payouts
+      FROM sale_payouts sp
+      JOIN buyback_transactions bt ON bt.id = sp.transaction_id
+      LEFT JOIN users u ON u.nostr_hex_id = bt.user_hex_id
+      GROUP BY day, currency, hex
+      ORDER BY day ASC, amount DESC
     `).all() as any[];
 
-    const dayMap = new Map<string, Record<string, number>>();
+    interface DayCur { total: number; count: number; payouts: number; people: { name: string; hex_short: string | null; amount: number }[] }
+    const dayMap = new Map<string, Record<string, DayCur>>();
     const totalsByCurrency: Record<string, number> = {};
     const countByCurrency: Record<string, number> = {};
     const currencies = new Set<string>();
     for (const r of rows) {
       currencies.add(r.currency);
-      const amt = Math.round((r.total || 0) * 100) / 100;
+      const amt = Math.round((r.amount || 0) * 100) / 100;
       if (!dayMap.has(r.day)) dayMap.set(r.day, {});
-      dayMap.get(r.day)![r.currency] = amt;
+      const dc = dayMap.get(r.day)!;
+      if (!dc[r.currency]) dc[r.currency] = { total: 0, count: 0, payouts: 0, people: [] };
+      dc[r.currency].total = Math.round((dc[r.currency].total + amt) * 100) / 100;
+      dc[r.currency].count += 1; // distinct people that day
+      dc[r.currency].payouts += (r.payouts || 0);
+      dc[r.currency].people.push({ name: r.display_name || r.full_name || 'Anonymous', hex_short: r.hex ? r.hex.slice(0, 8) : null, amount: amt });
       totalsByCurrency[r.currency] = Math.round(((totalsByCurrency[r.currency] || 0) + amt) * 100) / 100;
-      countByCurrency[r.currency] = (countByCurrency[r.currency] || 0) + (r.cnt || 0);
+      countByCurrency[r.currency] = (countByCurrency[r.currency] || 0) + (r.payouts || 0);
     }
-    const days = [...dayMap.entries()].map(([day, totals]) => ({ day, totals }));
+    const days = [...dayMap.entries()].map(([day, byCur]) => ({ day, byCur }));
     res.json({
       currencies: [...currencies],
       totals_by_currency: totalsByCurrency,
@@ -2154,6 +2165,36 @@ router.get('/payouts-daily', (_req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[lana-discount] payouts-daily error:', err.message);
     res.json({ currencies: [], totals_by_currency: {}, count_by_currency: {}, days: [], first_day: null, last_day: null, updated_at: new Date().toISOString() });
+  }
+});
+
+// GET /api/pending-verification — PUBLIC. Sales that are submitted but still
+// awaiting on-chain (RPC) verification before they enter the payout queue.
+// Transparency-safe: recipient name + expected amount + time + status only.
+router.get('/pending-verification', (_req: Request, res: Response) => {
+  try {
+    const rows = db.prepare(`
+      SELECT bt.id, bt.user_hex_id AS hex, u.display_name, u.full_name,
+             bt.net_fiat, bt.currency, bt.status, bt.created_at, bt.rpc_confirmations
+      FROM buyback_transactions bt
+      LEFT JOIN users u ON u.nostr_hex_id = bt.user_hex_id
+      WHERE bt.status IN ('broadcast', 'pending_verification')
+      ORDER BY bt.created_at DESC
+      LIMIT 100
+    `).all() as any[];
+    const items = rows.map(r => ({
+      name: r.display_name || r.full_name || 'Anonymous',
+      hex_short: r.hex ? r.hex.slice(0, 8) : null,
+      amount: Math.round((r.net_fiat || 0) * 100) / 100,   // expected payout once verified
+      currency: r.currency,
+      status: r.status,
+      rpc_confirmations: r.rpc_confirmations || 0,
+      created_at: r.created_at,
+    }));
+    res.json({ count: items.length, items, updated_at: new Date().toISOString() });
+  } catch (err: any) {
+    console.error('[lana-discount] pending-verification error:', err.message);
+    res.json({ count: 0, items: [], updated_at: new Date().toISOString() });
   }
 });
 

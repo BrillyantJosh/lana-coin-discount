@@ -1,8 +1,10 @@
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import RecentPayouts from '@/components/RecentPayouts';
+import PendingVerification from '@/components/PendingVerification';
 
-/** Public transparency history: the 100 most recent payouts to LANA sellers. */
+/** Public transparency history: the 100 most recent payouts to LANA sellers,
+ * plus any transactions still awaiting on-chain verification. */
 const PayoutHistory = () => (
   <div className="min-h-screen bg-background flex flex-col">
     <Navbar />
@@ -13,6 +15,8 @@ const PayoutHistory = () => (
           The 100 most recent payouts to LANA sellers — newest first. Full transparency of what has already been paid.
         </p>
       </div>
+      {/* Transactions still being verified on-chain (not yet payable) */}
+      <div className="mb-6"><PendingVerification /></div>
       <RecentPayouts />
       <p className="text-center text-xs text-muted-foreground mt-6">
         Last 100 payouts · newest first · updates every 30s
