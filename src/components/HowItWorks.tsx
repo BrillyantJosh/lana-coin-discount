@@ -21,8 +21,8 @@ const steps = [
   },
   {
     icon: Banknote,
-    title: "Get Paid as Revenue Flows",
-    description: "You receive up to 80% of the value paid out to your bank account as spending generates revenue. 20% goes to grow the consumer network.",
+    title: "Get Paid in Turn",
+    description: "You join a public payout queue and are paid to your bank account as revenue flows in — financiers first, then everyone else, per currency. Track your exact position anytime.",
     step: "04",
   },
 ];
@@ -36,7 +36,7 @@ const HowItWorks = () => {
             How It Works
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Four simple steps — sell once, get paid as the network grows.
+            Four simple steps — sell once, get paid transparently and in turn as the network grows.
           </p>
         </div>
 
