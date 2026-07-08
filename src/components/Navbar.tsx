@@ -10,6 +10,7 @@ const Navbar = () => {
           <a href="/#how-it-works" className="hover:text-foreground transition-colors">How It Works</a>
           <a href="/#sustainability" className="hover:text-foreground transition-colors">Sustainability</a>
           <a href="/obligations" className="hover:text-foreground transition-colors">Payout Queue</a>
+          <a href="/history" className="hover:text-foreground transition-colors">History</a>
           <a href="/docs/api" className="hover:text-foreground transition-colors">API</a>
         </div>
         <a

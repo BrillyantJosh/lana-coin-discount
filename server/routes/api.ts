@@ -2089,6 +2089,35 @@ router.get('/obligations', async (_req: Request, res: Response) => {
   }
 });
 
+// GET /api/payouts-history — PUBLIC. The 100 most recent recorded payouts, newest
+// first (transparency history). No payment details (account / note) — just the
+// recipient name, amount, currency and time.
+router.get('/payouts-history', (_req: Request, res: Response) => {
+  try {
+    const rows = db.prepare(`
+      SELECT sp.payout_id, sp.amount, sp.currency, sp.paid_at,
+             bt.user_hex_id AS hex, u.display_name, u.full_name
+      FROM sale_payouts sp
+      JOIN buyback_transactions bt ON bt.id = sp.transaction_id
+      LEFT JOIN users u ON u.nostr_hex_id = bt.user_hex_id
+      ORDER BY sp.paid_at DESC, sp.id DESC
+      LIMIT 100
+    `).all() as any[];
+    const payouts = rows.map(r => ({
+      payout_id: r.payout_id,
+      name: r.display_name || r.full_name || 'Anonymous',
+      hex_short: r.hex ? r.hex.slice(0, 8) : null,
+      amount: Math.round((r.amount || 0) * 100) / 100,
+      currency: r.currency,
+      paid_at: r.paid_at,
+    }));
+    res.json({ count: payouts.length, payouts, updated_at: new Date().toISOString() });
+  } catch (err: any) {
+    console.error('[lana-discount] payouts-history error:', err.message);
+    res.json({ count: 0, payouts: [], updated_at: new Date().toISOString() });
+  }
+});
+
 // Update incoming batch status (received → lana_bought → lana_sent)
 router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Response) => {
   const adminHex = requireAdmin(req, res);

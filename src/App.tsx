@@ -20,6 +20,7 @@ import AdminOverview from "./pages/AdminOverview";
 import SellLana from "./pages/SellLana";
 import ApiDocs from "./pages/ApiDocs";
 import Obligations from "./pages/Obligations";
+import PayoutHistory from "./pages/PayoutHistory";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -35,6 +36,7 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/obligations" element={<Obligations />} />
+            <Route path="/history" element={<PayoutHistory />} />
             <Route path="/login" element={<Login />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/sell" element={<SellLana />} />
