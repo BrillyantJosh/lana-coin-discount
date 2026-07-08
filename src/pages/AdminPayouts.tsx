@@ -89,6 +89,7 @@ interface FinancierRank {
   is_last_budget: boolean;
   privileged: boolean;
   added_at: string | null;
+  first_budget_at: string | null; // when the earliest budget was registered (FIFO order)
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -113,12 +114,13 @@ const AdminPayouts = () => {
   const [submitting, setSubmitting] = useState(false);
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [sortMode, setSortMode] = useState<'remaining' | 'latest_payment' | 'financing_priority'>('remaining');
+  // Default to financiers-first so the payout order is what you see on open.
+  const [sortMode, setSortMode] = useState<'remaining' | 'latest_payment' | 'financing_priority'>('financing_priority');
 
-  // Payout-priority (FIFO financing order) — display only.
+  // Payout-priority (FIFO financing order) — display only. Panel open by default.
   const [financing, setFinancing] = useState<FinancierRank[]>([]);
   const [financingStale, setFinancingStale] = useState(false);
-  const [showPayoutOrder, setShowPayoutOrder] = useState(false);
+  const [showPayoutOrder, setShowPayoutOrder] = useState(true);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -356,7 +358,7 @@ const AdminPayouts = () => {
     if (f && !f.is_last_budget) return {
       label: `Payout #${f.rank}`,
       cls: 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300',
-      title: `Financier${f.name ? ': ' + f.name : ''}${f.added_at ? ' · since ' + formatDate(f.added_at) : ''}`,
+      title: `Financier${f.name ? ': ' + f.name : ''}${(f.first_budget_at || f.added_at) ? ' · registered ' + formatDate(f.first_budget_at || f.added_at || '') : ''}`,
     };
     if (f && f.is_last_budget) return {
       label: 'Sweeper · last',
@@ -479,8 +481,10 @@ const AdminPayouts = () => {
                       <span className="ml-auto text-xs text-muted-foreground tabular-nums whitespace-nowrap">
                         {(CURRENCY_SYMBOLS[f.currency || ''] || (f.currency ? f.currency + ' ' : ''))}{(f.financed_amount || 0).toLocaleString()}
                       </span>
-                      {f.added_at && (
-                        <span className="text-[10px] text-muted-foreground/70 hidden sm:inline whitespace-nowrap">since {formatDate(f.added_at)}</span>
+                      {(f.first_budget_at || f.added_at) && (
+                        <span className="text-[11px] text-muted-foreground whitespace-nowrap" title="Budget registration date">
+                          📅 {formatDate(f.first_budget_at || f.added_at || '')}
+                        </span>
                       )}
                     </li>
                   ))}
