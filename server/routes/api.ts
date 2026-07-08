@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { createHash, randomBytes } from 'crypto';
 import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, getSplitApproachingFromDb, getFreezeLanaRetailAccountAboveFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
+import { computeBlocker, priorityFor, type QueueSeller } from '../lib/payoutOrder.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore } from '../lib/nostr.js';
 import { fetchBatchBalances, electrumCall } from '../lib/electrum.js';
 
@@ -890,7 +891,16 @@ router.get('/admin/payouts', async (req: Request, res: Response) => {
 
   try {
     const users = getAllSalesWithPayouts();
-    return res.json({ users });
+    // Annotate each sale with its payout-order block status (financiers first, per currency).
+    const blocks = await computeAllBlocks(users);
+    const annotated = users.map((u: any) => ({
+      ...u,
+      sales: (u.sales || []).map((sale: any) => {
+        const b = blocks.get(`${u.hexId}|${sale.currency}`);
+        return { ...sale, orderBlocked: b?.blocked || false, orderBlockedBy: b?.blockedByName || null };
+      }),
+    }));
+    return res.json({ users: annotated });
   } catch (err) {
     console.error('Admin payouts fetch error:', err);
     return res.status(500).json({ error: 'Failed to fetch payouts' });
@@ -901,12 +911,12 @@ router.get('/admin/payouts', async (req: Request, res: Response) => {
  * POST /api/admin/payouts
  * Record a new payout installment for a transaction.
  */
-router.post('/admin/payouts', (req: Request, res: Response) => {
+router.post('/admin/payouts', async (req: Request, res: Response) => {
   const adminHex = requireAdmin(req, res);
   if (!adminHex) return;
 
   try {
-    const { transactionId, amount, currency, paidToAccount, note } = req.body;
+    const { transactionId, amount, currency, paidToAccount, note, force } = req.body;
 
     if (!transactionId || typeof transactionId !== 'number') {
       return res.status(400).json({ error: 'Invalid transaction ID' });
@@ -935,6 +945,24 @@ router.post('/admin/payouts', (req: Request, res: Response) => {
     const remaining = Math.round((tx.net_fiat - totalPaid) * 100) / 100;
     if (amount > remaining + 0.01) { // small tolerance for rounding
       return res.status(400).json({ error: `Amount exceeds remaining (${remaining.toFixed(2)} ${currency})` });
+    }
+
+    // ── Payout-order enforcement: financiers first (strict FIFO rank), then the rest,
+    // evaluated independently per currency. Blocked unless the admin explicitly forces.
+    const orderBlocks = await computeAllBlocks(getAllSalesWithPayouts());
+    const orderBlock = orderBlocks.get(`${tx.user_hex_id}|${tx.currency}`);
+    if (orderBlock?.blocked) {
+      const aheadLabel = orderBlock.blockedByName || (orderBlock.blockedByHex ? orderBlock.blockedByHex.slice(0, 8) + '…' : 'a higher-priority recipient');
+      if (force !== true) {
+        return res.status(409).json({
+          error: `Payout order: ${aheadLabel} is ahead in the ${tx.currency} queue and still unpaid — pay them first or override.`,
+          code: 'PAYOUT_ORDER_BLOCKED',
+          blockedByName: orderBlock.blockedByName,
+          blockedByHex: orderBlock.blockedByHex,
+          currency: tx.currency,
+        });
+      }
+      console.log(`[lana-discount] PAYOUT ORDER OVERRIDE: admin ${adminHex.slice(0, 12)}… paid TX#${transactionId} (${tx.currency}) out of order — ahead: ${aheadLabel}`);
     }
 
     // Generate payout ID and insert
@@ -1885,44 +1913,103 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
   }
 });
 
-// Financing order (FIFO) from Direct Fund — DISPLAY ONLY, feeds the Payouts page
-// payout-priority view: those who finance first are shown first; recipients with no
-// current-split budget are non-financiers (ranked last). Cached ~30 min with a
-// stale-fallback so a Direct Fund hiccup never blanks the page.
-let cachedFinancingOrder: { order: any[]; split: number | null; fetchedAt: number } = { order: [], split: null, fetchedAt: 0 };
+// Financing order (FIFO) from Direct Fund. Powers BOTH the Payouts display panel
+// (all currencies) and per-currency payout-order ENFORCEMENT. Cached per currency
+// (~30 min) with a stale-fallback so a Direct Fund hiccup never blanks the page or
+// wrongly freezes payouts — enforcement FAILS OPEN (no blocks) on an outage.
 const FINANCING_ORDER_TTL = 1_800_000; // 30 minutes (registration order rarely changes)
-let financingOrderFetching = false;
+interface FinancingCacheEntry { order: any[]; split: number | null; fetchedAt: number }
+const financingCache = new Map<string, FinancingCacheEntry>(); // key '' = all currencies
+const financingFetching = new Set<string>();
+
+/** Fetch (cached) the FIFO financing order for a currency ('' = all). Never throws. */
+async function fetchFinancingOrder(currency: string): Promise<{ order: any[]; split: number | null; stale: boolean }> {
+  const key = currency || '';
+  const now = Date.now();
+  const cached = financingCache.get(key);
+  const fresh = cached && now - cached.fetchedAt < FINANCING_ORDER_TTL && cached.order.length > 0;
+  if (!fresh && !financingFetching.has(key)) {
+    financingFetching.add(key);
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 15000);
+      const qs = key ? `?currency=${encodeURIComponent(key)}` : '';
+      const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/financing-order${qs}`, { signal: controller.signal });
+      clearTimeout(t);
+      if (!resp.ok) throw new Error(`Direct Fund financing-order ${resp.status}`);
+      const data = await resp.json();
+      financingCache.set(key, { order: data.order || [], split: data.split ?? null, fetchedAt: now });
+    } catch (err: any) {
+      console.warn(`[lana-discount] financing-order(${key || 'all'}) fetch failed:`, err.message); // keep stale cache
+    } finally {
+      financingFetching.delete(key);
+    }
+  }
+  const entry = financingCache.get(key) || { order: [], split: null, fetchedAt: 0 };
+  return { order: entry.order, split: entry.split, stale: now - entry.fetchedAt >= FINANCING_ORDER_TTL };
+}
+
+/** hex → financier rank (+ display name) for one currency. Every listed investor is a
+ * financier; the is_last_budget sweeper is included and ranked last. */
+async function getFinancingRankMap(currency: string): Promise<{ rankByHex: Map<string, number>; nameByHex: Map<string, string> }> {
+  const { order } = await fetchFinancingOrder(currency);
+  const rankByHex = new Map<string, number>();
+  const nameByHex = new Map<string, string>();
+  for (const o of order) {
+    if (o.nostr_hex_id != null && o.rank != null) rankByHex.set(o.nostr_hex_id, o.rank);
+    if (o.nostr_hex_id != null && o.name) nameByHex.set(o.nostr_hex_id, o.name);
+  }
+  return { rankByHex, nameByHex };
+}
+
+/** Outstanding fiat per (currency → hex) over completed/paid sales (remaining > 0). */
+function outstandingByCurrency(users: any[]): Map<string, Map<string, number>> {
+  const out = new Map<string, Map<string, number>>();
+  for (const u of users) {
+    for (const sale of u.sales || []) {
+      if (sale.status !== 'completed' && sale.status !== 'paid') continue;
+      const rem = sale.remaining || 0;
+      if (rem <= 0) continue;
+      const cur = sale.currency;
+      if (!out.has(cur)) out.set(cur, new Map());
+      const m = out.get(cur)!;
+      m.set(u.hexId, (m.get(u.hexId) || 0) + rem);
+    }
+  }
+  return out;
+}
+
+interface PayoutBlock { blocked: boolean; blockedByHex: string | null; blockedByName: string | null }
+
+/** Per-(hex|currency) payout-order block status. Financiers first (strict FIFO rank),
+ * then non-financiers (unordered), independently per currency. Fails OPEN on outage. */
+async function computeAllBlocks(users: any[]): Promise<Map<string, PayoutBlock>> {
+  const oc = outstandingByCurrency(users);
+  const result = new Map<string, PayoutBlock>();
+  for (const [currency, hexRemaining] of oc) {
+    const { rankByHex, nameByHex } = await getFinancingRankMap(currency);
+    const sellers: QueueSeller[] = [...hexRemaining.entries()].map(([hex, remaining]) => ({
+      hex, remaining, priority: priorityFor(hex, rankByHex),
+    }));
+    for (const seller of sellers) {
+      const { blocked, blockedByHex } = computeBlocker(sellers, seller.hex);
+      result.set(`${seller.hex}|${currency}`, {
+        blocked, blockedByHex,
+        blockedByName: blockedByHex ? (nameByHex.get(blockedByHex) || null) : null,
+      });
+    }
+  }
+  return result;
+}
 
 router.get('/admin/financing-order', async (req: Request, res: Response) => {
   const adminHex = requireAdmin(req, res);
   if (!adminHex) return;
-
-  const now = Date.now();
-  const fresh = now - cachedFinancingOrder.fetchedAt < FINANCING_ORDER_TTL && cachedFinancingOrder.order.length > 0;
-  if (!fresh && !financingOrderFetching) {
-    financingOrderFetching = true;
-    try {
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 15000);
-      const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/financing-order`, { signal: controller.signal });
-      clearTimeout(t);
-      if (!resp.ok) throw new Error(`Direct Fund financing-order ${resp.status}`);
-      const data = await resp.json();
-      cachedFinancingOrder = { order: data.order || [], split: data.split ?? null, fetchedAt: now };
-    } catch (err: any) {
-      console.warn('[lana-discount] financing-order fetch failed:', err.message); // keep stale cache
-    } finally {
-      financingOrderFetching = false;
-    }
-  }
-
-  const stale = now - cachedFinancingOrder.fetchedAt >= FINANCING_ORDER_TTL;
+  const currency = (req.query.currency as string) || '';
+  const { order, split, stale } = await fetchFinancingOrder(currency);
   res.json({
-    split: cachedFinancingOrder.split,
-    order: cachedFinancingOrder.order,
-    count: cachedFinancingOrder.order.length,
-    stale,
-    fetchedAt: cachedFinancingOrder.fetchedAt || null,
+    split, order, count: order.length, stale,
+    fetchedAt: financingCache.get(currency || '')?.fetchedAt || null,
   });
 });
 

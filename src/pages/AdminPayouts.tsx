@@ -37,6 +37,8 @@ interface SaleEntry {
   totalPaid: number;
   remaining: number;
   payouts: PayoutEntry[];
+  orderBlocked?: boolean;         // a higher-priority recipient (same currency) is still unpaid
+  orderBlockedBy?: string | null; // that recipient's display name (or null → short hex)
 }
 
 interface PaymentMethod {
@@ -242,8 +244,7 @@ const AdminPayouts = () => {
       return;
     }
 
-    setSubmitting(true);
-    try {
+    const post = async (force: boolean) => {
       const res = await fetch('/api/admin/payouts', {
         method: 'POST',
         headers: {
@@ -256,10 +257,27 @@ const AdminPayouts = () => {
           currency: sale.currency,
           paidToAccount: payoutAccount || null,
           note: payoutNote || null,
+          ...(force ? { force: true } : {}),
         }),
       });
+      return { res, data: await res.json() };
+    };
 
-      const data = await res.json();
+    setSubmitting(true);
+    try {
+      let { res, data } = await post(false);
+
+      // Payout-order guard tripped → let the admin explicitly override (financiers first).
+      if (res.status === 409 && data.code === 'PAYOUT_ORDER_BLOCKED') {
+        const who = data.blockedByName || (data.blockedByHex ? data.blockedByHex.slice(0, 8) + '…' : 'a higher-priority recipient');
+        const ok = window.confirm(
+          `${who} is ahead in the ${data.currency || sale.currency} payout queue and still unpaid.\n\n` +
+          `Financiers must be paid first. Pay out of order anyway?`
+        );
+        if (!ok) return;
+        ({ res, data } = await post(true));
+      }
+
       if (data.error) throw new Error(data.error);
 
       toast.success(`Payout ${data.payout.payoutId} recorded successfully!`);
@@ -733,6 +751,16 @@ const AdminPayouts = () => {
                                   {isBroadcast ? 'Broadcast' : isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
                                 </span>
 
+                                {/* Payout-order block — a higher-priority recipient (same currency) is still unpaid */}
+                                {sale.orderBlocked && !isFullyPaid && !isBroadcast && (
+                                  <span
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex-shrink-0 bg-orange-100 text-orange-700"
+                                    title={`Financiers first — pay ${sale.orderBlockedBy || 'the higher-priority recipient'} (${sale.currency}) before this one`}
+                                  >
+                                    ⛔ Pay {sale.orderBlockedBy || 'higher-priority'} first
+                                  </span>
+                                )}
+
                                 {/* RPC verification info */}
                                 {sale.rpcVerified && sale.rpcBlockHeight && (
                                   sale.txHash ? (
@@ -924,6 +952,16 @@ const AdminPayouts = () => {
                                     <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent flex-shrink-0" />
                                     <p className="text-xs text-blue-700 font-medium">
                                       Transaction broadcast to network — awaiting RPC confirmation before payout can be recorded.
+                                    </p>
+                                  </div>
+                                )}
+
+                                {/* Payout-order warning — financiers first (override possible) */}
+                                {sale.orderBlocked && !isFullyPaid && !isBroadcast && (
+                                  <div className="flex items-start gap-2 rounded-lg border border-orange-200 bg-orange-50 px-4 py-2.5">
+                                    <span className="text-base leading-none">⛔</span>
+                                    <p className="text-xs text-orange-800 font-medium">
+                                      Financiers are paid first. <span className="font-bold">{sale.orderBlockedBy || 'A higher-priority recipient'}</span> is ahead in the {sale.currency} queue and still unpaid. Recording this payout will ask you to confirm an out-of-order override.
                                     </p>
                                   </div>
                                 )}
