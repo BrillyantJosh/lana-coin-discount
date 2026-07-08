@@ -77,6 +77,20 @@ interface UserWithSales {
   paymentMethods?: PaymentMethod[];
 }
 
+// One investor's place in the FIFO financing order (from Direct Fund). Used to
+// DISPLAY payout priority — financiers first (by earliest budget), sweeper last.
+interface FinancierRank {
+  rank: number;
+  nostr_hex_id: string;
+  name: string | null;
+  financed_amount: number;
+  invested_amount: number;
+  currency: string | null;
+  is_last_budget: boolean;
+  privileged: boolean;
+  added_at: string | null;
+}
+
 const CURRENCY_SYMBOLS: Record<string, string> = {
   EUR: '\u20ac', USD: '$', GBP: '\u00a3', CHF: 'CHF',
 };
@@ -99,7 +113,12 @@ const AdminPayouts = () => {
   const [submitting, setSubmitting] = useState(false);
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [sortMode, setSortMode] = useState<'remaining' | 'latest_payment'>('remaining');
+  const [sortMode, setSortMode] = useState<'remaining' | 'latest_payment' | 'financing_priority'>('remaining');
+
+  // Payout-priority (FIFO financing order) — display only.
+  const [financing, setFinancing] = useState<FinancierRank[]>([]);
+  const [financingStale, setFinancingStale] = useState(false);
+  const [showPayoutOrder, setShowPayoutOrder] = useState(false);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -116,6 +135,23 @@ const AdminPayouts = () => {
   useEffect(() => {
     if (!session || !isAdmin) return;
     fetchPayouts();
+  }, [session, isAdmin]);
+
+  // Load the FIFO financing order (display-only; failures degrade silently).
+  useEffect(() => {
+    if (!session || !isAdmin) return;
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/financing-order', {
+          headers: { 'x-admin-hex-id': session.nostrHexId },
+        });
+        const data = await res.json();
+        setFinancing(data.order || []);
+        setFinancingStale(!!data.stale);
+      } catch {
+        /* display-only — leave the list empty on error */
+      }
+    })();
   }, [session, isAdmin]);
 
   const fetchPayouts = async () => {
@@ -304,6 +340,36 @@ const AdminPayouts = () => {
 
   const q = search.trim().toLowerCase();
 
+  // Financier ranking (FIFO), keyed by full seller hex, for payout-priority display.
+  const financingMap = new Map<string, FinancierRank>();
+  for (const f of financing) financingMap.set(f.nostr_hex_id, f);
+  const NON_FINANCIER_RANK = 1e9, SWEEPER_RANK = 5e8;
+  // Effective payout order: real financiers first (their rank), sweeper next,
+  // recipients with no current-split budget last.
+  const payoutRankOf = (hex: string): number => {
+    const f = financingMap.get(hex);
+    if (!f) return NON_FINANCIER_RANK;
+    return f.is_last_budget ? SWEEPER_RANK : f.rank;
+  };
+  const priorityBadge = (hex: string): { label: string; cls: string; title: string } => {
+    const f = financingMap.get(hex);
+    if (f && !f.is_last_budget) return {
+      label: `Payout #${f.rank}`,
+      cls: 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300',
+      title: `Financier${f.name ? ': ' + f.name : ''}${f.added_at ? ' · since ' + formatDate(f.added_at) : ''}`,
+    };
+    if (f && f.is_last_budget) return {
+      label: 'Sweeper · last',
+      cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
+      title: 'Last-budget sweeper — paid last',
+    };
+    return {
+      label: 'Non-financier · last',
+      cls: 'bg-muted text-muted-foreground',
+      title: 'No current-split funding budget — paid last',
+    };
+  };
+
   const sortedUsers = users
     .filter(user => user.sales.length > 0)
     .filter(user => {
@@ -336,6 +402,15 @@ const AdminPayouts = () => {
       };
     })
     .sort((a, b) => {
+      if (sortMode === 'financing_priority') {
+        // Financiers first (FIFO by earliest budget), sweeper next, non-financiers last.
+        const ra = payoutRankOf(a.hexId), rb = payoutRankOf(b.hexId);
+        if (ra !== rb) return ra - rb;
+        // tie-break within the same priority: unpaid first, then highest remaining
+        if (a._remaining > 0 && b._remaining <= 0) return -1;
+        if (a._remaining <= 0 && b._remaining > 0) return 1;
+        return b._remaining - a._remaining;
+      }
       if (sortMode === 'latest_payment') {
         // Most recently paid first; users with no payouts go last
         if (!a._latestPayout && !b._latestPayout) return 0;
@@ -361,6 +436,59 @@ const AdminPayouts = () => {
             Record FIAT payout installments for verified transactions. Unpaid transactions appear first.
           </p>
         </div>
+
+        {/* Payout order (FIFO financing) — display only. Financiers first; sweeper + non-financiers last. */}
+        {!loading && financing.length > 0 && (
+          <div className="mb-4 rounded-2xl border-2 border-border bg-card overflow-hidden">
+            <button
+              onClick={() => setShowPayoutOrder(v => !v)}
+              className="w-full px-4 sm:px-6 py-3 flex items-center justify-between text-left hover:bg-muted/30 transition-colors"
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold text-foreground">Payout order — financiers first</span>
+                <span className="text-xs text-muted-foreground">
+                  FIFO · {financing.filter(f => !f.is_last_budget).length} financier{financing.filter(f => !f.is_last_budget).length !== 1 ? 's' : ''}
+                </span>
+                {financingStale && (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300" title="Cached — Direct Fund was briefly unreachable">cached</span>
+                )}
+              </div>
+              <svg className={`h-4 w-4 text-muted-foreground flex-shrink-0 transition-transform ${showPayoutOrder ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            {showPayoutOrder && (
+              <div className="border-t border-border px-4 sm:px-6 py-3">
+                <p className="text-xs text-muted-foreground mb-3">
+                  Those who finance first have payout priority (earliest-registered budget first). The last-budget sweeper and anyone with no current-split funding budget are paid last.
+                </p>
+                <ol className="space-y-1.5">
+                  {financing.map(f => (
+                    <li key={f.nostr_hex_id} className="flex items-center gap-2 text-sm">
+                      <span className={`inline-flex items-center justify-center min-w-[1.75rem] h-6 px-1.5 rounded font-mono text-xs font-bold ${f.is_last_budget ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' : 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300'}`}>
+                        {f.is_last_budget ? '↓' : f.rank}
+                      </span>
+                      <span className="font-medium text-foreground truncate">{f.name || 'Anonymous'}</span>
+                      <span className="text-xs text-muted-foreground font-mono">{f.nostr_hex_id.slice(0, 8)}…</span>
+                      {f.privileged && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300">VIP</span>
+                      )}
+                      {f.is_last_budget && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">Sweeper · last</span>
+                      )}
+                      <span className="ml-auto text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+                        {(CURRENCY_SYMBOLS[f.currency || ''] || (f.currency ? f.currency + ' ' : ''))}{(f.financed_amount || 0).toLocaleString()}
+                      </span>
+                      {f.added_at && (
+                        <span className="text-[10px] text-muted-foreground/70 hidden sm:inline whitespace-nowrap">since {formatDate(f.added_at)}</span>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Search + Sort bar */}
         {!loading && (
@@ -392,6 +520,13 @@ const AdminPayouts = () => {
                 className={`px-4 py-2.5 text-sm font-medium transition-colors ${sortMode === 'latest_payment' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
               >
                 Latest payments
+              </button>
+              <button
+                onClick={() => setSortMode('financing_priority')}
+                title="Order sellers by financing priority: those who finance first are paid first"
+                className={`px-4 py-2.5 text-sm font-medium transition-colors ${sortMode === 'financing_priority' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Financiers first
               </button>
             </div>
           </div>
@@ -455,6 +590,10 @@ const AdminPayouts = () => {
                           <span className="text-xs text-muted-foreground font-mono">
                             {user.hexId.slice(0, 8)}...{user.hexId.slice(-6)}
                           </span>
+                          {financing.length > 0 && (() => {
+                            const b = priorityBadge(user.hexId);
+                            return <span title={b.title} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${b.cls}`}>{b.label}</span>;
+                          })()}
                         </div>
                         {(() => {
                           const pm = getPaymentMethodForCurrency(user, mainCurrency);

@@ -1885,6 +1885,47 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
   }
 });
 
+// Financing order (FIFO) from Direct Fund — DISPLAY ONLY, feeds the Payouts page
+// payout-priority view: those who finance first are shown first; recipients with no
+// current-split budget are non-financiers (ranked last). Cached ~30 min with a
+// stale-fallback so a Direct Fund hiccup never blanks the page.
+let cachedFinancingOrder: { order: any[]; split: number | null; fetchedAt: number } = { order: [], split: null, fetchedAt: 0 };
+const FINANCING_ORDER_TTL = 1_800_000; // 30 minutes (registration order rarely changes)
+let financingOrderFetching = false;
+
+router.get('/admin/financing-order', async (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+
+  const now = Date.now();
+  const fresh = now - cachedFinancingOrder.fetchedAt < FINANCING_ORDER_TTL && cachedFinancingOrder.order.length > 0;
+  if (!fresh && !financingOrderFetching) {
+    financingOrderFetching = true;
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 15000);
+      const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/financing-order`, { signal: controller.signal });
+      clearTimeout(t);
+      if (!resp.ok) throw new Error(`Direct Fund financing-order ${resp.status}`);
+      const data = await resp.json();
+      cachedFinancingOrder = { order: data.order || [], split: data.split ?? null, fetchedAt: now };
+    } catch (err: any) {
+      console.warn('[lana-discount] financing-order fetch failed:', err.message); // keep stale cache
+    } finally {
+      financingOrderFetching = false;
+    }
+  }
+
+  const stale = now - cachedFinancingOrder.fetchedAt >= FINANCING_ORDER_TTL;
+  res.json({
+    split: cachedFinancingOrder.split,
+    order: cachedFinancingOrder.order,
+    count: cachedFinancingOrder.order.length,
+    stale,
+    fetchedAt: cachedFinancingOrder.fetchedAt || null,
+  });
+});
+
 // Update incoming batch status (received → lana_bought → lana_sent)
 router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Response) => {
   const adminHex = requireAdmin(req, res);
