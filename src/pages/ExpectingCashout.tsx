@@ -165,7 +165,7 @@ export default function ExpectingCashout() {
                 <div>
                   <p className="text-xs uppercase tracking-wider text-muted-foreground">Net expected ({cur})</p>
                   <p className="text-2xl sm:text-3xl font-bold text-muted-foreground tabular-nums">{fmt(gt?.netExpectedEur || 0, cur!)}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">on-chain LANA − {data?.commissionPct ?? '?'}% commission</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">on-chain LANA − {data?.commissionPct ?? '?'}% (LanaPays.Us investor rate)</p>
                 </div>
               </div>
               {currencyKeys.length > 1 && (
@@ -255,7 +255,7 @@ export default function ExpectingCashout() {
 
             {/* Footnote: the honest caveat */}
             <p className="mt-4 text-xs text-muted-foreground leading-relaxed">
-              <strong>Net expected</strong> = current on-chain LANA × rate − {data?.commissionPct ?? '?'}% commission (LANA still in the wallet).
+              <strong>Net expected</strong> = current on-chain LANA × rate − {data?.commissionPct ?? '?'}% commission (LanaPays.Us investor rate; LANA still in the wallet).
               <strong> Already paid</strong> = EUR already paid for LANA the investor <em>already sold</em> (a different tranche that has left the wallet).
               <strong> Still to pay</strong> = max(0, net expected − already paid); treat it as an optimistic lower bound and use the components to reconcile before paying.
               {data?.updated_at && <> · Updated {new Date(data.updated_at).toLocaleString('sl-SI')}.</>}

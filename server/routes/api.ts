@@ -2046,7 +2046,11 @@ router.get('/admin/expecting-cashout', async (req: Request, res: Response) => {
   }
 
   const rates = getExchangeRatesFromDb();
-  const commissionPct = parseFloat(getAppSetting('commission_other') || '21') || 21;
+  // Investors register their LanaPays.Us wallet in the fund, and the buyback
+  // charges LanaPays.Us wallets the commission_lanapays rate (live 21% — keep
+  // 79%), NOT commission_other (30%). Match the sell flow (api.ts sell/preview:
+  // walletType === 'LanaPays.Us' ? commission_lanapays : commission_other).
+  const commissionPct = parseFloat(getAppSetting('commission_lanapays') || '21') || 21;
 
   // Already-paid EUR per (hex, currency) across the cohort's buyback sales.
   const hexes = investors.map((i: any) => i.nostrHexId).filter(Boolean);
