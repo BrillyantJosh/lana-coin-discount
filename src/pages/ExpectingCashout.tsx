@@ -14,6 +14,7 @@ const SYM: Record<string, string> = { EUR: '€', USD: '$', GBP: '£', CHF: 'CHF
 const fmt = (n: number, cur: string) =>
   (SYM[cur] || cur + ' ') + (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtLana = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtSplitStart = (unixSec?: number | null) => unixSec ? new Date(unixSec * 1000).toLocaleDateString('sl-SI', { day: '2-digit', month: '2-digit', year: 'numeric' }) : null;
 
 interface CashoutInvestor {
   nostrHexId: string;
@@ -42,6 +43,8 @@ interface CashoutData {
   prevSplit: number;
   currentSplit: number;
   commissionPct?: number;
+  splitStartedAt?: number | null;
+  splitStartMissing?: boolean;
   currencies: Record<string, CurrencyBlock>;
   grandTotals: Record<string, { netExpectedEur: number; stillToPayEur: number; investorCount: number }>;
   stale?: boolean;
@@ -138,6 +141,11 @@ export default function ExpectingCashout() {
             Some on-chain balances could not be fetched (Electrum). Rows marked <em>balance unavailable</em> show 0 — refresh to retry.
           </div>
         )}
+        {data?.splitStartMissing && !data?.degraded && (
+          <div className="mb-4 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20 px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
+            KIND 38888 carries no split-start date — "already paid" falls back to the lifetime total (may over-subtract). Publish <code>split_started_at</code> to scope it to this cycle.
+          </div>
+        )}
         {block?.rateMissing && (
           <div className="mb-4 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20 px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
             No exchange rate for {cur} in the current KIND 38888 — EUR values shown as 0.
@@ -160,7 +168,7 @@ export default function ExpectingCashout() {
                 <div>
                   <p className="text-xs uppercase tracking-wider text-muted-foreground">Still to pay ({cur})</p>
                   <p className="text-2xl sm:text-3xl font-bold text-foreground tabular-nums">{fmt(gt?.stillToPayEur || 0, cur!)}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">{gt?.investorCount || 0} investor{(gt?.investorCount || 0) !== 1 ? 's' : ''} · net of already-paid</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{gt?.investorCount || 0} investor{(gt?.investorCount || 0) !== 1 ? 's' : ''} · net of paid since split start{fmtSplitStart(data?.splitStartedAt) ? ` (${fmtSplitStart(data?.splitStartedAt)})` : ''}</p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wider text-muted-foreground">Net expected ({cur})</p>
@@ -256,7 +264,7 @@ export default function ExpectingCashout() {
             {/* Footnote: the honest caveat */}
             <p className="mt-4 text-xs text-muted-foreground leading-relaxed">
               <strong>Net expected</strong> = current on-chain LANA × rate − {data?.commissionPct ?? '?'}% commission (LanaPays.Us investor rate; LANA still in the wallet).
-              <strong> Already paid</strong> = EUR already paid for LANA the investor <em>already sold</em> (a different tranche that has left the wallet).
+              <strong> Already paid</strong> = EUR paid to them <em>since the current split started</em>{fmtSplitStart(data?.splitStartedAt) ? ` (${fmtSplitStart(data?.splitStartedAt)})` : ''} — this cash-out cycle only, for LANA they already sold (a different tranche that has left the wallet).
               <strong> Still to pay</strong> = max(0, net expected − already paid); treat it as an optimistic lower bound and use the components to reconcile before paying.
               {data?.updated_at && <> · Updated {new Date(data.updated_at).toLocaleString('sl-SI')}.</>}
             </p>

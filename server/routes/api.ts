@@ -2052,18 +2052,24 @@ router.get('/admin/expecting-cashout', async (req: Request, res: Response) => {
   // walletType === 'LanaPays.Us' ? commission_lanapays : commission_other).
   const commissionPct = parseFloat(getAppSetting('commission_lanapays') || '21') || 21;
 
-  // Already-paid EUR per (hex, currency) across the cohort's buyback sales.
+  // Already-paid EUR per (hex, currency) — ONLY payouts made since the current
+  // split started (KIND 38888 split_started_at, Unix seconds). This is "paid THIS
+  // cash-out cycle", not the investor's lifetime total. paid_at is a UTC datetime
+  // string, so compare against datetime(split_started_at,'unixepoch').
+  const splitStartedAt = (db.prepare('SELECT split_started_at FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any)?.split_started_at || 0;
   const hexes = investors.map((i: any) => i.nostrHexId).filter(Boolean);
   const paidByHexCur = new Map<string, number>();
   if (hexes.length > 0) {
     const placeholders = hexes.map(() => '?').join(',');
+    const sinceClause = splitStartedAt > 0 ? "AND sp.paid_at >= datetime(?, 'unixepoch')" : '';
+    const params: any[] = splitStartedAt > 0 ? [...hexes, splitStartedAt] : [...hexes];
     const paidRows = db.prepare(`
       SELECT bt.user_hex_id AS hex, bt.currency AS currency, COALESCE(SUM(sp.amount),0) AS paid
       FROM sale_payouts sp
       JOIN buyback_transactions bt ON sp.transaction_id = bt.id
-      WHERE bt.user_hex_id IN (${placeholders})
+      WHERE bt.user_hex_id IN (${placeholders}) ${sinceClause}
       GROUP BY bt.user_hex_id, bt.currency
-    `).all(...hexes) as any[];
+    `).all(...params) as any[];
     for (const r of paidRows) paidByHexCur.set(`${r.hex}|${r.currency}`, r.paid || 0);
   }
 
@@ -2120,6 +2126,8 @@ router.get('/admin/expecting-cashout', async (req: Request, res: Response) => {
 
   res.json({
     prevSplit, currentSplit, commissionPct, rates,
+    splitStartedAt: splitStartedAt || null,
+    splitStartMissing: !(splitStartedAt > 0),
     currencies, grandTotals,
     stale: !!stale, balancesPartial,
     updated_at: new Date().toISOString(),
