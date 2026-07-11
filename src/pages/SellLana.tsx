@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import { convertWifToIds } from '@/lib/crypto';
+import { SellTermsGate } from '@/components/SellTermsGate';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
 
@@ -71,6 +72,9 @@ const SellLana = () => {
   const navigate = useNavigate();
 
   const [step, setStep] = useState(1);
+  // Payout-order notice + terms agreement, shown as the first step each time the
+  // seller starts the process (must be accepted before the wizard is reachable).
+  const [agreedTerms, setAgreedTerms] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // Rating check
@@ -409,6 +413,10 @@ const SellLana = () => {
           </div>
         </div>
 
+        {!agreedTerms ? (
+          <SellTermsGate onAccept={() => setAgreedTerms(true)} />
+        ) : (
+        <>
         {/* Step Indicator */}
         <div className="flex items-center gap-2 mb-8">
           {[1, 3, 4, 5].map(s => (
@@ -1092,6 +1100,8 @@ const SellLana = () => {
           </>
           )}
           </>
+        )}
+        </>
         )}
       </div>
 
