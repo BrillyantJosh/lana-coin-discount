@@ -33,3 +33,6 @@ data/
 
 # TypeScript incremental build cache (regenerated on every `tsc`)
 *.tsbuildinfo
+*.db
+*.db-wal
+*.db-shm
