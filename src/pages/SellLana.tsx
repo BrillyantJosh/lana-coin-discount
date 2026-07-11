@@ -75,6 +75,7 @@ const SellLana = () => {
   // Payout-order notice + terms agreement, shown as the first step each time the
   // seller starts the process (must be accepted before the wizard is reachable).
   const [agreedTerms, setAgreedTerms] = useState(false);
+  const [profileLang, setProfileLang] = useState(''); // KIND 0 `language` → notice default
   const [loading, setLoading] = useState(true);
 
   // Rating check
@@ -152,6 +153,8 @@ const SellLana = () => {
 
       // Parse payment methods from KIND 0 profile
       if (profileData.profile) {
+        // KIND 0 `language` drives the payout-notice default language.
+        if (profileData.profile.language) setProfileLang(String(profileData.profile.language));
         if (profileData.profile.payment_methods) {
           setPaymentMethods(profileData.profile.payment_methods);
         }
@@ -414,7 +417,7 @@ const SellLana = () => {
         </div>
 
         {!agreedTerms ? (
-          <SellTermsGate onAccept={() => setAgreedTerms(true)} />
+          <SellTermsGate defaultLang={/^sl/i.test(profileLang) ? 'sl' : 'en'} onAccept={() => setAgreedTerms(true)} />
         ) : (
         <>
         {/* Step Indicator */}

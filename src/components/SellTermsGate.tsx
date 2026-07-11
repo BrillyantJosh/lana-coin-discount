@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 /**
  * Payment-order notice + terms agreement shown as the first step of the sell
@@ -67,8 +67,12 @@ const CONTENT: Record<'sl' | 'en', NoticeContent> = {
   },
 };
 
-export function SellTermsGate({ onAccept }: { onAccept: () => void }) {
-  const [lang, setLang] = useState<'sl' | 'en'>('sl');
+export function SellTermsGate({ onAccept, defaultLang = 'en' }: { onAccept: () => void; defaultLang?: 'sl' | 'en' }) {
+  const [lang, setLang] = useState<'sl' | 'en'>(defaultLang);
+  // Adopt the profile-derived default when it arrives (the KIND 0 language may
+  // load a moment after mount) — but never override a manual toggle.
+  const touched = useRef(false);
+  useEffect(() => { if (!touched.current) setLang(defaultLang); }, [defaultLang]);
   const [checked, setChecked] = useState(false);
   const c = CONTENT[lang];
 
@@ -87,7 +91,7 @@ export function SellTermsGate({ onAccept }: { onAccept: () => void }) {
             <button
               key={l}
               type="button"
-              onClick={() => setLang(l)}
+              onClick={() => { touched.current = true; setLang(l); }}
               className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
                 lang === l ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
               }`}
