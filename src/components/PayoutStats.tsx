@@ -26,7 +26,7 @@ const fmtShort = (n: number, cur: string) => {
   return sym + Math.round(n).toLocaleString();
 };
 
-const MAX_DAYS = 60; // cap the visible window so the chart stays readable
+const MAX_DAYS = 40; // chart shows the last 40 days; the totals above are all-time
 
 /** Inclusive list of 'YYYY-MM-DD' from start to end (UTC). */
 function dateRange(start: string, end: string): string[] {
@@ -120,14 +120,14 @@ const PayoutStats = () => {
               <span className="inline-block h-2.5 w-2.5 rounded-sm bg-primary" /> Paid out ({cur})
             </p>
             <p className="text-2xl sm:text-3xl font-bold text-foreground tabular-nums">{fmt(totalPaid, cur)}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">{payoutCount} payout{payoutCount !== 1 ? 's' : ''}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{payoutCount} payout{payoutCount !== 1 ? 's' : ''} · all-time</p>
           </div>
           <div>
             <p className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
               <span className="inline-block h-2.5 w-2.5 rounded-sm bg-sky-500" /> Received ({cur})
             </p>
             <p className="text-2xl sm:text-3xl font-bold text-foreground tabular-nums">{fmt(totalReceived, cur)}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">from investors</p>
+            <p className="text-xs text-muted-foreground mt-0.5">from investors · all-time</p>
           </div>
         </div>
         {data.currencies.length > 1 && (
