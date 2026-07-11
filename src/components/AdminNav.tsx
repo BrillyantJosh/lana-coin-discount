@@ -22,6 +22,7 @@ const sections = [
     label: 'Lana Sales',
     items: [
       { to: '/admin/incoming-payments', label: 'Incoming Payments', desc: 'FIAT from investors' },
+      { to: '/admin/expecting-cashout', label: 'Expecting Cash Out', desc: 'EUR owed to prev-split investors' },
     ],
   },
   {

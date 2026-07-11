@@ -1962,6 +1962,166 @@ async function getFinancingRankMap(currency: string): Promise<{ rankByHex: Map<s
   return { rankByHex, nameByHex };
 }
 
+// ─── Expecting Cash Out: prev-split investor cohort → on-chain LANA → EUR owed ──
+const ROOT_ADMIN_HEX = '56e8670aa65491f8595dc3a71c94aa7445dcdca755ca5f77c07218498a362061';
+const COHORT_TTL = 60_000; // 60s — the cohort changes rarely, but this is a money tool
+interface CohortEntry { investors: any[]; fetchedAt: number }
+const cohortCache = new Map<number, CohortEntry>();
+const cohortFetching = new Set<number>();
+
+/** Fetch (cached) the Split-N investor cohort from Direct Fund. Never throws. */
+async function fetchInvestorsBySplit(split: number): Promise<{ investors: any[]; stale: boolean; failed: boolean }> {
+  const now = Date.now();
+  const cached = cohortCache.get(split);
+  const fresh = cached && now - cached.fetchedAt < COHORT_TTL;
+  let failed = false;
+  if (!fresh && !cohortFetching.has(split)) {
+    cohortFetching.add(split);
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 15000);
+      const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/investors-by-split?split=${split}`, {
+        headers: { 'x-admin-hex': ROOT_ADMIN_HEX },
+        signal: controller.signal,
+      });
+      clearTimeout(t);
+      if (!resp.ok) throw new Error(`investors-by-split ${resp.status}`);
+      const data = await resp.json();
+      cohortCache.set(split, { investors: data.investors || [], fetchedAt: now });
+    } catch (err: any) {
+      console.warn(`[lana-discount] investors-by-split(${split}) fetch failed:`, err.message); // keep stale cache
+      failed = true;
+    } finally {
+      cohortFetching.delete(split);
+    }
+  }
+  const entry = cohortCache.get(split);
+  if (!entry) return { investors: [], stale: false, failed: true };
+  return { investors: entry.investors, stale: now - entry.fetchedAt >= COHORT_TTL, failed };
+}
+
+/**
+ * GET /api/admin/expecting-cashout — admin report. For the PREVIOUS split's
+ * investors (direct-fund fund_settings.target_split = currentSplit−1), sum the
+ * CURRENT on-chain LANA in their wallets, value it in EUR minus the live
+ * Lana.discount buyback commission, and subtract already-paid → "still to pay".
+ * READ-ONLY: creates/pays nothing. Components are all returned so the operator
+ * sees on-chain-expected vs already-paid (different LANA tranches) transparently.
+ */
+router.get('/admin/expecting-cashout', async (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+  const r2 = (n: number) => Math.round((n || 0) * 100) / 100;
+
+  const currentSplit = parseInt(getSplitFromDb() || '0') || 0;
+  const prevSplit = currentSplit - 1;
+  if (prevSplit <= 0) {
+    return res.json({ prevSplit, currentSplit, note: 'No previous split', currencies: {}, grandTotals: {}, updated_at: new Date().toISOString() });
+  }
+
+  const { investors, stale, failed } = await fetchInvestorsBySplit(prevSplit);
+  if (failed && investors.length === 0) {
+    return res.json({ degraded: true, error: 'DIRECT_FUND_UNREACHABLE', prevSplit, currentSplit, currencies: {}, grandTotals: {}, updated_at: new Date().toISOString() });
+  }
+
+  // Distinct wallet addresses across the whole cohort.
+  const allWallets = [...new Set(investors.flatMap((i: any) => (i.walletIds as string[]) || []))];
+
+  // On-chain balances, chunked so one failed batch can't sink the whole report.
+  const balByWallet = new Map<string, number>();
+  const unavailable = new Set<string>();
+  let balancesPartial = false;
+  const electrumServers = getElectrumServersFromDb();
+  const CHUNK = 40;
+  for (let i = 0; i < allWallets.length; i += CHUNK) {
+    const chunk = allWallets.slice(i, i + CHUNK);
+    try {
+      const balances = await fetchBatchBalances(electrumServers, chunk);
+      for (const b of balances) balByWallet.set(b.wallet_id, b.balance || 0);
+    } catch (err: any) {
+      console.warn('[lana-discount] expecting-cashout balance chunk failed:', err.message);
+      for (const w of chunk) unavailable.add(w);
+      balancesPartial = true;
+    }
+  }
+
+  const rates = getExchangeRatesFromDb();
+  const commissionPct = parseFloat(getAppSetting('commission_other') || '21') || 21;
+
+  // Already-paid EUR per (hex, currency) across the cohort's buyback sales.
+  const hexes = investors.map((i: any) => i.nostrHexId).filter(Boolean);
+  const paidByHexCur = new Map<string, number>();
+  if (hexes.length > 0) {
+    const placeholders = hexes.map(() => '?').join(',');
+    const paidRows = db.prepare(`
+      SELECT bt.user_hex_id AS hex, bt.currency AS currency, COALESCE(SUM(sp.amount),0) AS paid
+      FROM sale_payouts sp
+      JOIN buyback_transactions bt ON sp.transaction_id = bt.id
+      WHERE bt.user_hex_id IN (${placeholders})
+      GROUP BY bt.user_hex_id, bt.currency
+    `).all(...hexes) as any[];
+    for (const r of paidRows) paidByHexCur.set(`${r.hex}|${r.currency}`, r.paid || 0);
+  }
+
+  // Group per currency (LANA valued once, in the investor's dominant currency).
+  const currencies: Record<string, any> = {};
+  for (const inv of investors) {
+    const cur = inv.currency || 'EUR';
+    if (!currencies[cur]) {
+      currencies[cur] = {
+        investors: [],
+        totals: { onchainLana: 0, grossEur: 0, commissionEur: 0, netExpectedEur: 0, alreadyPaidEur: 0, stillToPayEur: 0 },
+        rateMissing: !((rates as any)[cur] > 0),
+      };
+    }
+    const rate = (rates as any)[cur] || 0;
+    const walletIds: string[] = inv.walletIds || [];
+    const onchainLana = r2(walletIds.reduce((s: number, w: string) => s + (balByWallet.get(w) || 0), 0));
+    const grossEur = r2(onchainLana * rate);
+    const commissionEur = r2(grossEur * commissionPct / 100);
+    const netExpectedEur = r2(grossEur - commissionEur);
+    const alreadyPaidEur = r2(paidByHexCur.get(`${inv.nostrHexId}|${cur}`) || 0);
+    const stillToPayEur = Math.max(0, r2(netExpectedEur - alreadyPaidEur));
+    currencies[cur].investors.push({
+      nostrHexId: inv.nostrHexId,
+      name: inv.name || null,
+      walletIds,
+      walletCount: walletIds.length,
+      onchainLana, grossEur, commissionPct, commissionEur, netExpectedEur, alreadyPaidEur, stillToPayEur,
+      isLastBudget: !!inv.isLastBudget,
+      hasMultipleCurrencies: !!inv.hasMultipleCurrencies,
+      currencies: inv.currencies || [cur],
+      status: inv.status || null,
+      balanceUnavailable: walletIds.some((w: string) => unavailable.has(w)),
+    });
+    const t = currencies[cur].totals;
+    t.onchainLana = r2(t.onchainLana + onchainLana);
+    t.grossEur = r2(t.grossEur + grossEur);
+    t.commissionEur = r2(t.commissionEur + commissionEur);
+    t.netExpectedEur = r2(t.netExpectedEur + netExpectedEur);
+    t.alreadyPaidEur = r2(t.alreadyPaidEur + alreadyPaidEur);
+    t.stillToPayEur = r2(t.stillToPayEur + stillToPayEur);
+  }
+
+  const grandTotals: Record<string, any> = {};
+  for (const cur of Object.keys(currencies)) {
+    // Biggest still-owed first (operator worklist), then net expected.
+    currencies[cur].investors.sort((a: any, b: any) => (b.stillToPayEur - a.stillToPayEur) || (b.netExpectedEur - a.netExpectedEur));
+    grandTotals[cur] = {
+      netExpectedEur: currencies[cur].totals.netExpectedEur,
+      stillToPayEur: currencies[cur].totals.stillToPayEur,
+      investorCount: currencies[cur].investors.length,
+    };
+  }
+
+  res.json({
+    prevSplit, currentSplit, commissionPct, rates,
+    currencies, grandTotals,
+    stale: !!stale, balancesPartial,
+    updated_at: new Date().toISOString(),
+  });
+});
+
 /** Outstanding fiat per (currency → hex) over completed/paid sales (remaining > 0). */
 function outstandingByCurrency(users: any[]): Map<string, Map<string, number>> {
   const out = new Map<string, Map<string, number>>();

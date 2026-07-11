@@ -17,6 +17,7 @@ import AdminVerifyTx from "./pages/AdminVerifyTx";
 import AdminIncomingPayments from "./pages/AdminIncomingPayments";
 import AdminAnalytics from "./pages/AdminAnalytics";
 import AdminOverview from "./pages/AdminOverview";
+import ExpectingCashout from "./pages/ExpectingCashout";
 import SellLana from "./pages/SellLana";
 import ApiDocs from "./pages/ApiDocs";
 import Obligations from "./pages/Obligations";
@@ -44,6 +45,7 @@ const App = () => (
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/admin/verify-tx" element={<AdminVerifyTx />} />
             <Route path="/admin/payouts" element={<AdminPayouts />} />
+            <Route path="/admin/expecting-cashout" element={<ExpectingCashout />} />
             <Route path="/admin/settings" element={<AdminSettings />} />
             <Route path="/admin/api-keys" element={<AdminApiKeys />} />
             <Route path="/admin/admins" element={<AdminUsers />} />
