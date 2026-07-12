@@ -22,7 +22,7 @@ const Index = () => {
             <div>
               <h2 className="text-3xl md:text-4xl font-bold text-foreground">Payout Queue</h2>
               <p className="mt-2 text-muted-foreground max-w-xl">
-                Every unpaid obligation right now, in the exact order it will be paid — financiers first, per currency.
+                Every unpaid obligation right now, in the exact order it will be paid — financiers first, then crowd-funding, per currency.
               </p>
             </div>
             <a href="/obligations" className="text-sm font-semibold text-primary hover:underline whitespace-nowrap">

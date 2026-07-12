@@ -163,6 +163,44 @@ db.exec(`
     shop_name TEXT,
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  -- LanaCrowd donations (KIND 60200) — one row per donation receipt, read from
+  -- relays by the heartbeat. Powers the crowd-funding payout-priority tier: a
+  -- project OWNER who has raised donations is paid right after investors.
+  CREATE TABLE IF NOT EXISTS crowdfund_donations (
+    event_id TEXT PRIMARY KEY,
+    project_id TEXT,
+    owner_hex TEXT NOT NULL,
+    supporter_hex TEXT,
+    amount_lanoshis INTEGER NOT NULL DEFAULT 0,
+    amount_fiat REAL NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL,
+    tx TEXT,
+    donation_type TEXT NOT NULL DEFAULT 'donation',
+    timestamp_paid INTEGER,
+    event_created_at INTEGER,
+    fetched_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_cf_donations_owner ON crowdfund_donations(owner_hex);
+  CREATE INDEX IF NOT EXISTS idx_cf_donations_currency ON crowdfund_donations(currency);
+  CREATE INDEX IF NOT EXISTS idx_cf_donations_paid ON crowdfund_donations(timestamp_paid);
+
+  -- LanaCrowd projects (KIND 31234) — metadata for the monitoring tab + the
+  -- blocked-project (KIND 31235) exclusion. Replaceable: keep newest by created_at.
+  CREATE TABLE IF NOT EXISTS crowdfund_projects (
+    project_id TEXT PRIMARY KEY,
+    owner_hex TEXT,
+    title TEXT,
+    fiat_goal REAL,
+    currency TEXT,
+    wallet TEXT,
+    status TEXT,
+    visibility TEXT NOT NULL DEFAULT 'visible',
+    project_type TEXT,
+    event_created_at INTEGER,
+    fetched_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_cf_projects_owner ON crowdfund_projects(owner_hex);
 `);
 
 // --- Safe migrations: add columns to buyback_transactions ---
@@ -366,6 +404,148 @@ export function getSplitApproachingFromDb(): boolean {
 export function getFreezeLanaRetailAccountAboveFromDb(): number {
   const row = db.prepare('SELECT freeze_lana_retail_account_above FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
   return row?.freeze_lana_retail_account_above ?? 0;
+}
+
+/** Split start (Unix seconds) from KIND 38888, or 0 if not published. */
+export function getSplitStartedAtFromDb(): number {
+  const row = db.prepare('SELECT split_started_at FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
+  return row?.split_started_at || 0;
+}
+
+/**
+ * Sum of sale_payouts (fiat) per `hex|currency`, optionally only for payouts
+ * made since the current split started (`sinceUnixSec` in Unix seconds; 0 =
+ * lifetime). Shared by the Expecting Cash Out report + the crowd-funding
+ * eligibility math so both net payouts identically.
+ */
+export function getPaidByHexCurrencySinceSplit(hexes: string[], sinceUnixSec = 0): Map<string, number> {
+  const out = new Map<string, number>();
+  if (hexes.length === 0) return out;
+  const placeholders = hexes.map(() => '?').join(',');
+  const sinceClause = sinceUnixSec > 0 ? "AND sp.paid_at >= datetime(?, 'unixepoch')" : '';
+  const params: any[] = sinceUnixSec > 0 ? [...hexes, sinceUnixSec] : [...hexes];
+  const rows = db.prepare(`
+    SELECT bt.user_hex_id AS hex, bt.currency AS currency, COALESCE(SUM(sp.amount),0) AS paid
+    FROM sale_payouts sp
+    JOIN buyback_transactions bt ON sp.transaction_id = bt.id
+    WHERE bt.user_hex_id IN (${placeholders}) ${sinceClause}
+    GROUP BY bt.user_hex_id, bt.currency
+  `).all(...params) as any[];
+  for (const r of rows) out.set(`${r.hex}|${r.currency}`, r.paid || 0);
+  return out;
+}
+
+// ── Crowd-funding (LanaCrowd KIND 60200) eligibility ──────────────────────────
+
+export interface CrowdfundDonationData {
+  event_id: string;
+  project_id: string | null;
+  owner_hex: string;
+  supporter_hex: string | null;
+  amount_lanoshis: number;
+  amount_fiat: number;
+  currency: string;
+  tx: string | null;
+  donation_type: string;
+  timestamp_paid: number | null;
+  event_created_at: number | null;
+}
+const insertCrowdfundDonationStmt = db.prepare(`
+  INSERT OR IGNORE INTO crowdfund_donations
+    (event_id, project_id, owner_hex, supporter_hex, amount_lanoshis, amount_fiat, currency, tx, donation_type, timestamp_paid, event_created_at)
+  VALUES (@event_id, @project_id, @owner_hex, @supporter_hex, @amount_lanoshis, @amount_fiat, @currency, @tx, @donation_type, @timestamp_paid, @event_created_at)
+`);
+/** Insert a donation receipt (idempotent — dedupes on event_id). */
+export function insertCrowdfundDonation(d: CrowdfundDonationData): void {
+  insertCrowdfundDonationStmt.run(d);
+}
+
+export interface CrowdfundProjectData {
+  project_id: string;
+  owner_hex: string | null;
+  title: string | null;
+  fiat_goal: number | null;
+  currency: string | null;
+  wallet: string | null;
+  status: string | null;
+  project_type: string | null;
+  event_created_at: number | null;
+}
+/** Upsert a project (KIND 31234 is replaceable — keep the newest event). Visibility
+ *  is patched separately by KIND 31235 so re-indexing never clobbers a 'blocked' flag. */
+export function upsertCrowdfundProject(p: CrowdfundProjectData): void {
+  db.prepare(`
+    INSERT INTO crowdfund_projects
+      (project_id, owner_hex, title, fiat_goal, currency, wallet, status, project_type, event_created_at)
+    VALUES (@project_id, @owner_hex, @title, @fiat_goal, @currency, @wallet, @status, @project_type, @event_created_at)
+    ON CONFLICT(project_id) DO UPDATE SET
+      owner_hex = excluded.owner_hex, title = excluded.title, fiat_goal = excluded.fiat_goal,
+      currency = excluded.currency, wallet = excluded.wallet, status = excluded.status,
+      project_type = excluded.project_type, event_created_at = excluded.event_created_at,
+      fetched_at = datetime('now')
+    WHERE excluded.event_created_at >= COALESCE(crowdfund_projects.event_created_at, 0)
+  `).run(p);
+}
+export function setCrowdfundProjectVisibility(projectId: string, visibility: string): void {
+  db.prepare(`UPDATE crowdfund_projects SET visibility = ? WHERE project_id = ?`).run(visibility, projectId);
+}
+
+export interface CrowdfundRaised { owner_hex: string; currency: string; raisedFiat: number; raisedLana: number; donationCount: number; }
+/**
+ * Raised per owner+currency for donations since `sinceUnixSec` (0 = all-time),
+ * counting only donation_type='donation' and excluding donations whose project
+ * KIND 31235 has marked blocked.
+ */
+export function getCrowdfundRaised(sinceUnixSec = 0): CrowdfundRaised[] {
+  const sinceClause = sinceUnixSec > 0 ? 'AND d.timestamp_paid >= ?' : '';
+  const params: any[] = sinceUnixSec > 0 ? [sinceUnixSec] : [];
+  return (db.prepare(`
+    SELECT d.owner_hex AS owner_hex, d.currency AS currency,
+           COALESCE(SUM(d.amount_fiat),0) AS raisedFiat,
+           COALESCE(SUM(d.amount_lanoshis),0) AS raisedLanoshis,
+           COUNT(*) AS donationCount
+    FROM crowdfund_donations d
+    LEFT JOIN crowdfund_projects p ON p.project_id = d.project_id
+    WHERE d.donation_type = 'donation'
+      AND (p.visibility IS NULL OR p.visibility != 'blocked')
+      ${sinceClause}
+    GROUP BY d.owner_hex, d.currency
+  `).all(...params) as any[]).map((r) => ({
+    owner_hex: r.owner_hex, currency: r.currency,
+    raisedFiat: Math.round((r.raisedFiat || 0) * 100) / 100,
+    raisedLana: Math.round(((r.raisedLanoshis || 0) / 1e8) * 100) / 100,
+    donationCount: r.donationCount || 0,
+  }));
+}
+
+export interface CrowdfundEligibility { owner_hex: string; currency: string; raisedFiat: number; raisedLana: number; donationCount: number; paidFiat: number; remainingFiat: number; }
+/** Per owner+currency crowd-funding eligibility for THIS split: raised(since split)
+ *  − paid(since split). Both sides scoped to the same window. */
+export function getCrowdfundEligibility(sinceUnixSec = 0): CrowdfundEligibility[] {
+  const raised = getCrowdfundRaised(sinceUnixSec);
+  const hexes = [...new Set(raised.map((r) => r.owner_hex))];
+  const paid = getPaidByHexCurrencySinceSplit(hexes, sinceUnixSec);
+  return raised.map((r) => {
+    const paidFiat = Math.round((paid.get(`${r.owner_hex}|${r.currency}`) || 0) * 100) / 100;
+    return { ...r, paidFiat, remainingFiat: Math.max(0, Math.round((r.raisedFiat - paidFiat) * 100) / 100) };
+  });
+}
+
+/** Set of owner hexes with remaining crowd-funding eligibility > 0 in `currency`
+ *  (this split). NEVER throws → an empty set means "no crowd-funding blocks", so
+ *  payout ordering behaves exactly like today if the data is unavailable. */
+export function getCrowdfundBandSet(currency: string): Set<string> {
+  try {
+    const since = getSplitStartedAtFromDb();
+    const set = new Set<string>();
+    for (const e of getCrowdfundEligibility(since)) {
+      if (e.currency === currency && e.remainingFiat > 0) set.add(e.owner_hex);
+    }
+    return set;
+  } catch (err: any) {
+    console.warn('[lana-discount] getCrowdfundBandSet failed (fail-open):', err?.message);
+    return new Set<string>();
+  }
 }
 
 export interface BuybackTransactionData {

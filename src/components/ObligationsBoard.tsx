@@ -8,6 +8,7 @@ interface QueueItem {
   hex_short: string | null;
   is_financier: boolean;
   finance_rank: number | null;
+  is_crowdfunder: boolean;
   outstanding: number;
   payable: boolean;
 }
@@ -15,6 +16,7 @@ interface CurrencyBlock {
   total_outstanding: number;
   count: number;
   financier_count: number;
+  crowdfunder_count: number;
   queue: QueueItem[];
 }
 interface ObligationsData {
@@ -78,6 +80,7 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
                 <h3 className="text-lg font-bold text-foreground">{cur}</h3>
                 <span className="text-xs text-muted-foreground">
                   {block.count} recipient{block.count !== 1 ? 's' : ''} · {block.financier_count} financier{block.financier_count !== 1 ? 's' : ''}
+                  {block.crowdfunder_count > 0 && ` · ${block.crowdfunder_count} crowdfunding`}
                 </span>
               </div>
               <span className="font-mono font-bold text-amber-600">{fmt(block.total_outstanding, cur)}</span>
@@ -89,7 +92,9 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
                   className={`flex items-center gap-3 px-4 sm:px-6 py-3 border-b border-border/50 last:border-b-0 ${q.payable ? 'bg-green-50/50 dark:bg-green-500/[0.04]' : ''}`}
                 >
                   <span className={`inline-flex items-center justify-center w-8 h-8 shrink-0 rounded-full font-mono text-sm font-bold ${
-                    q.is_financier ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300' : 'bg-muted text-muted-foreground'
+                    q.is_financier ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300'
+                      : q.is_crowdfunder ? 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300'
+                      : 'bg-muted text-muted-foreground'
                   }`}>
                     {q.position}
                   </span>
@@ -98,6 +103,8 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
                       <span className="font-medium text-foreground truncate">{q.name}</span>
                       {q.is_financier ? (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300">Financier #{q.finance_rank}</span>
+                      ) : q.is_crowdfunder ? (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300">Crowdfunding</span>
                       ) : (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground">Non-financier</span>
                       )}

@@ -19,7 +19,7 @@ const Obligations = () => (
       </div>
       <ObligationsBoard />
       <p className="text-center text-xs text-muted-foreground mt-6">
-        Financiers first (by budget registration order), then the rest · per currency · updates every 30s
+        Financiers first (by budget registration order), then crowd-funding project owners, then the rest · per currency · updates every 30s
       </p>
     </main>
     <Footer />

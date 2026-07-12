@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import AdminNav from '@/components/AdminNav';
+import CrowdfundCashout from '@/components/CrowdfundCashout';
 
 /**
  * Expecting Cash Out — first-priority operator worklist. For the PREVIOUS split's
@@ -62,6 +63,7 @@ export default function ExpectingCashout() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cur, setCur] = useState<string | null>(null);
+  const [tab, setTab] = useState<'investors' | 'crowdfund'>('investors');
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -111,10 +113,16 @@ export default function ExpectingCashout() {
         <div className="flex items-start justify-between gap-4 flex-wrap mb-2">
           <div className="min-w-0">
             <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Expecting Cash Out</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              First-priority worklist: EUR still owed to <strong>Split {data ? data.prevSplit : '…'}</strong> investors,
-              from the current on-chain LANA in their wallets.
-            </p>
+            {tab === 'investors' ? (
+              <p className="mt-1 text-sm text-muted-foreground">
+                <strong>Tier 1</strong> — EUR still owed to <strong>Split {data ? data.prevSplit : '…'}</strong> investors,
+                from the current on-chain LANA in their wallets.
+              </p>
+            ) : (
+              <p className="mt-1 text-sm text-muted-foreground">
+                <strong>Tier 2</strong> — crowd-funding project owners, paid right after investors. Raised (KIND 60200) − paid, this split.
+              </p>
+            )}
           </div>
           <button
             onClick={load}
@@ -125,6 +133,25 @@ export default function ExpectingCashout() {
           </button>
         </div>
 
+        {/* Tabs — Tier 1 Investors / Tier 2 Crowd funding */}
+        <div className="flex gap-1 border-b border-border mb-4 mt-2">
+          {([['investors', 'Investors'], ['crowdfund', 'Crowd funding']] as const).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setTab(k)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                tab === k ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'crowdfund' ? (
+          <CrowdfundCashout adminHexId={session.nostrHexId} />
+        ) : (
+        <>
         {/* Banners */}
         {data?.degraded && (
           <div className="mb-4 rounded-lg border-2 border-red-400 dark:border-red-800 bg-red-50 dark:bg-red-950/30 px-4 py-3 text-sm text-red-700 dark:text-red-400">
@@ -269,6 +296,8 @@ export default function ExpectingCashout() {
               {data?.updated_at && <> · Updated {new Date(data.updated_at).toLocaleString('sl-SI')}.</>}
             </p>
           </>
+        )}
+        </>
         )}
       </div>
     </div>

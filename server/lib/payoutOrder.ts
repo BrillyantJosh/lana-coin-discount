@@ -15,10 +15,18 @@
 /** Priority sentinel for a seller who does not finance the currency in question. */
 export const NON_FINANCIER = Number.POSITIVE_INFINITY;
 
+/**
+ * Priority band for a crowd-funding project owner (Tier 2): paid right after
+ * financiers, ahead of everyone else. A finite value greater than any real
+ * financier rank M but less than NON_FINANCIER (+Infinity). Flat: all
+ * crowd-funders share this band, so they never block each other.
+ */
+export const CROWDFUND_TIER = 1_000_000;
+
 export interface QueueSeller {
   hex: string;
   remaining: number; // outstanding fiat in THIS currency (completed/paid sales only)
-  priority: number;  // financier: financeRank (1..M, sweeper last); non-financier: NON_FINANCIER
+  priority: number;  // financier: financeRank (1..M, sweeper last); crowd-funder: CROWDFUND_TIER; other: NON_FINANCIER
 }
 
 export interface BlockResult {
@@ -27,14 +35,20 @@ export interface BlockResult {
 }
 
 /**
- * Priority for a seller, given the currency's financier rank map (hex → rank).
- * Ranks come from Direct Fund's /api/admin/financing-order?currency=C (1-based,
- * the is_last_budget sweeper already ranked last among financiers). Anyone not in
- * the map does not finance this currency → NON_FINANCIER.
+ * Priority for a seller, given the currency's financier rank map (hex → rank) and
+ * the optional set of crowd-funding-eligible owners in this currency. Three tiers:
+ *   1. financier  → its financing rank (1..M; is_last_budget sweeper ranked last)
+ *   2. crowd-funder (not a financier, but has raised & unpaid donations this split)
+ *      → CROWDFUND_TIER (flat)
+ *   3. everyone else → NON_FINANCIER
+ * Ranks come from Direct Fund's /api/admin/financing-order?currency=C; the crowd
+ * set comes from lana.discount's local donation ledger (getCrowdfundBandSet).
  */
-export function priorityFor(hex: string, rankByHex: Map<string, number>): number {
+export function priorityFor(hex: string, rankByHex: Map<string, number>, crowdSet?: Set<string>): number {
   const r = rankByHex.get(hex);
-  return r == null ? NON_FINANCIER : r;
+  if (r != null) return r;
+  if (crowdSet && crowdSet.has(hex)) return CROWDFUND_TIER;
+  return NON_FINANCIER;
 }
 
 /**

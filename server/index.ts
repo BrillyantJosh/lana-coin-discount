@@ -5,8 +5,15 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './routes/api.js';
-import { fetchKind38888, fetchKind0, Kind38888Data } from './lib/nostr.js';
-import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb } from './db/index.js';
+import {
+  fetchKind38888, fetchKind0, Kind38888Data,
+  queryEventsFromRelays, parseDonation60200, parseProject31234, parseVisibility31235,
+  LANACROWD_AUTHORITY_PUBKEY, type NostrEvent,
+} from './lib/nostr.js';
+import db, {
+  closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb,
+  insertCrowdfundDonation, upsertCrowdfundProject, setCrowdfundProjectVisibility,
+} from './db/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -606,6 +613,60 @@ async function syncUserProfiles(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Crowd-funding sync — pulls LanaCrowd projects (KIND 31234), visibility
+// (31235) and donations (60200) from relays into local tables. Powers the
+// crowd-funding payout-priority tier + the /admin/expecting-cashout monitoring
+// tab. Read-only mirror; never blocks payouts (eligibility fails open).
+// ---------------------------------------------------------------------------
+async function pullCrowdfundDonations(): Promise<void> {
+  const relays = getRelaysFromDb();
+  if (!relays || relays.length === 0) return;
+
+  // Projects (31234) — metadata for the monitoring tab; keep newest per id.
+  const projectEvents = await queryEventsFromRelays(relays, { kinds: [31234], limit: 1000 }, 15000);
+  let projCount = 0;
+  for (const e of projectEvents) {
+    const p = parseProject31234(e);
+    if (!p) continue;
+    upsertCrowdfundProject({
+      project_id: p.projectId, owner_hex: p.ownerHex, title: p.title, fiat_goal: p.fiatGoal,
+      currency: p.currency, wallet: p.wallet, status: p.status, project_type: p.projectType,
+      event_created_at: p.eventCreatedAt,
+    });
+    projCount++;
+  }
+
+  // Visibility (31235) — authority-signed block/visible flags.
+  const visEvents = await queryEventsFromRelays(relays, { kinds: [31235], authors: [LANACROWD_AUTHORITY_PUBKEY], limit: 1000 }, 15000);
+  for (const e of visEvents) {
+    const v = parseVisibility31235(e);
+    if (v) setCrowdfundProjectVisibility(v.projectId, v.blocked ? 'blocked' : 'visible');
+  }
+
+  // Donations (60200) — the raised ledger. INSERT OR IGNORE dedupes on event_id.
+  // NOTE: relays cap ~500 events; the eligibility query scopes by timestamp_paid,
+  // so the current split is covered while volume is low. Add since/until paging
+  // if donation volume ever exceeds the cap within one split.
+  const donationEvents = await queryEventsFromRelays(relays, { kinds: [60200], limit: 2000 }, 20000);
+  let donCount = 0, skipped = 0;
+  const storeAll = db.transaction((events: NostrEvent[]) => {
+    for (const e of events) {
+      const d = parseDonation60200(e);
+      if (!d) { skipped++; continue; }
+      if (d.donationType === 'mentor_fee') { skipped++; continue; } // 10% provider cut, not a project's raise
+      insertCrowdfundDonation({
+        event_id: d.eventId, project_id: d.projectId, owner_hex: d.ownerHex, supporter_hex: d.supporterHex,
+        amount_lanoshis: d.amountLanoshis, amount_fiat: d.amountFiat, currency: d.currency, tx: d.tx,
+        donation_type: d.donationType, timestamp_paid: d.timestampPaid, event_created_at: d.eventCreatedAt,
+      });
+      donCount++;
+    }
+  });
+  storeAll(donationEvents);
+  console.log(`[lana-discount] Crowd-funding sync — ${projCount} projects, ${donCount} donations stored (${skipped} skipped)`);
+}
+
 // Heartbeat loop — waits for tasks to finish before sleeping (no overlap)
 let heartbeatRunning = true;
 
@@ -637,6 +698,11 @@ async function heartbeatLoop() {
         await withTimeout(() => autoSendPendingLana(), 'Auto-send LANA', 45000);
         lastAutoSendAt = new Date().toISOString();
         nextAutoSendIn = AUTO_SEND_CYCLE;
+      }
+
+      // Crowd-funding donations/projects every 5 heartbeats (= every 5 minutes)
+      if (heartbeatCount % 5 === 4) {
+        await withTimeout(() => pullCrowdfundDonations(), 'Crowd-funding sync', 30000);
       }
     } catch (err: any) {
       console.error(`[lana-discount] Heartbeat #${heartbeatCount} error:`, err.message);
@@ -690,5 +756,13 @@ app.listen(PORT, '0.0.0.0', async () => {
   const ok = await syncKind38888ToDb();
   if (!ok) {
     console.warn('[lana-discount] Initial sync failed — using seed data as fallback');
+  }
+
+  // Initial crowd-funding pull on startup (KIND 38888 must be synced first so
+  // getRelaysFromDb() is populated).
+  try {
+    await pullCrowdfundDonations();
+  } catch (err: any) {
+    console.warn('[lana-discount] Initial crowd-funding sync failed:', err.message);
   }
 });

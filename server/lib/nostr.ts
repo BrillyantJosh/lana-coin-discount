@@ -170,6 +170,92 @@ function parseKind38888Event(event: NostrEvent): Kind38888Data {
   };
 }
 
+// ── LanaCrowd (crowd-funding) — KIND 31234 project / 60200 donation / 31235 visibility ──
+
+/** Authority key that signs KIND 31235 project-visibility events. */
+export const LANACROWD_AUTHORITY_PUBKEY = '18a908e89354fb2d142d864bfcbea7a7ed4486c8fb66b746fcebe66ed372115e';
+
+export interface ParsedDonation {
+  eventId: string;
+  projectId: string | null;
+  ownerHex: string;
+  supporterHex: string | null;
+  amountLanoshis: number;
+  amountFiat: number;
+  currency: string;
+  tx: string | null;
+  donationType: string; // 'donation' | 'mentor_fee'
+  timestampPaid: number;
+  eventCreatedAt: number;
+}
+export interface ParsedProject {
+  projectId: string;
+  ownerHex: string;
+  title: string | null;
+  fiatGoal: number | null;
+  currency: string | null;
+  wallet: string | null;
+  status: string | null;
+  projectType: string | null;
+  eventCreatedAt: number;
+}
+
+const tagVal = (tags: string[][], name: string): string => tags.find((t) => t[0] === name)?.[1] || '';
+/** A LanaCrowd 'p' marker sits at tag index [2] (million-fun / mejmosefajn) OR [3]
+ *  (being3, which inserts an empty relay-hint slot). Read both. */
+const pByMarker = (tags: string[][], marker: string): string =>
+  tags.find((t) => t[0] === 'p' && (t[2] === marker || t[3] === marker))?.[1] || '';
+
+/** Parse a KIND 60200 donation receipt. Returns null if it is not a valid
+ *  lanacrowd donation (wrong service, or no resolvable project owner). */
+export function parseDonation60200(event: NostrEvent): ParsedDonation | null {
+  const tags = event.tags || [];
+  if (tagVal(tags, 'service') !== 'lanacrowd') return null;
+  const ownerHex = pByMarker(tags, 'project_owner');
+  if (!ownerHex) return null;
+  return {
+    eventId: event.id,
+    projectId: tagVal(tags, 'project') || null,
+    ownerHex,
+    supporterHex: pByMarker(tags, 'supporter') || null,
+    amountLanoshis: parseInt(tagVal(tags, 'amount_lanoshis') || '0') || 0,
+    amountFiat: parseFloat(tagVal(tags, 'amount_fiat') || '0') || 0,
+    currency: tagVal(tags, 'currency') || 'EUR',
+    tx: tagVal(tags, 'tx') || null,
+    donationType: tagVal(tags, 'type') || 'donation',
+    timestampPaid: parseInt(tagVal(tags, 'timestamp_paid') || '') || event.created_at,
+    eventCreatedAt: event.created_at,
+  };
+}
+
+/** Parse a KIND 31234 project definition. Returns null if it has no project id. */
+export function parseProject31234(event: NostrEvent): ParsedProject | null {
+  const tags = event.tags || [];
+  const projectId = tagVal(tags, 'd');
+  if (!projectId) return null;
+  return {
+    projectId,
+    ownerHex: pByMarker(tags, 'owner') || event.pubkey,
+    title: tagVal(tags, 'title') || null,
+    fiatGoal: parseFloat(tagVal(tags, 'fiat_goal') || '') || null,
+    currency: tagVal(tags, 'currency') || null,
+    wallet: tagVal(tags, 'wallet') || null,
+    status: tagVal(tags, 'status') || null,
+    projectType: tagVal(tags, 'project_type') || null,
+    eventCreatedAt: event.created_at,
+  };
+}
+
+/** Parse a KIND 31235 visibility event. Only honoured if signed by the authority
+ *  key. Returns the referenced project id + whether it is blocked. */
+export function parseVisibility31235(event: NostrEvent): { projectId: string; blocked: boolean } | null {
+  if (event.pubkey !== LANACROWD_AUTHORITY_PUBKEY) return null;
+  const tags = event.tags || [];
+  const projectId = tagVal(tags, 'd');
+  if (!projectId) return null;
+  return { projectId, blocked: tagVal(tags, 'status') === 'blocked' };
+}
+
 /**
  * Fetch KIND 38888 system parameters from Nostr relays
  */

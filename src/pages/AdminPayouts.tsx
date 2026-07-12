@@ -363,13 +363,16 @@ const AdminPayouts = () => {
   // Financier ranking (FIFO), keyed by full seller hex, for payout-priority display.
   const financingMap = new Map<string, FinancierRank>();
   for (const f of financing) financingMap.set(f.nostr_hex_id, f);
-  const NON_FINANCIER_RANK = 1e9, SWEEPER_RANK = 5e8;
-  // Effective payout order: real financiers first (their rank), sweeper next,
-  // recipients with no current-split budget last.
+  // Tier-2 crowd-funders (server-flagged: raised & unpaid LanaCrowd donations this split).
+  const crowdfunderSet = new Set<string>(users.filter((u: any) => u.crowdfunder).map((u: any) => u.hexId));
+  const NON_FINANCIER_RANK = 1e9, SWEEPER_RANK = 5e8, CROWDFUND_RANK = 7e8;
+  // Effective payout order: Tier 1 financiers first (rank; sweeper last among them),
+  // then Tier 2 crowd-funders, then recipients with no priority last.
   const payoutRankOf = (hex: string): number => {
     const f = financingMap.get(hex);
-    if (!f) return NON_FINANCIER_RANK;
-    return f.is_last_budget ? SWEEPER_RANK : f.rank;
+    if (f) return f.is_last_budget ? SWEEPER_RANK : f.rank;
+    if (crowdfunderSet.has(hex)) return CROWDFUND_RANK;
+    return NON_FINANCIER_RANK;
   };
   const priorityBadge = (hex: string): { label: string; cls: string; title: string } => {
     const f = financingMap.get(hex);
@@ -381,12 +384,17 @@ const AdminPayouts = () => {
     if (f && f.is_last_budget) return {
       label: 'Sweeper · last',
       cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
-      title: 'Last-budget sweeper — paid last',
+      title: 'Last-budget sweeper — paid last among financiers',
+    };
+    if (crowdfunderSet.has(hex)) return {
+      label: 'Crowdfunding',
+      cls: 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300',
+      title: 'Tier 2 — crowd-funding project owner, paid right after investors',
     };
     return {
       label: 'Non-financier · last',
       cls: 'bg-muted text-muted-foreground',
-      title: 'No current-split funding budget — paid last',
+      title: 'No current-split funding budget or crowd-funding — paid last',
     };
   };
 
@@ -480,7 +488,7 @@ const AdminPayouts = () => {
             {showPayoutOrder && (
               <div className="border-t border-border px-4 sm:px-6 py-3">
                 <p className="text-xs text-muted-foreground mb-3">
-                  Those who finance first have payout priority (earliest-registered budget first). The last-budget sweeper and anyone with no current-split funding budget are paid last.
+                  Those who finance first have payout priority (earliest-registered budget first; the last-budget sweeper is paid last among financiers). Next come <strong className="text-foreground">crowd-funding project owners</strong> (Tier 2 · <span className="text-teal-600 dark:text-teal-400">Crowdfunding</span> badge). Anyone with no funding budget or crowd-funding is paid last.
                 </p>
                 <ol className="space-y-1.5">
                   {financing.map(f => (
