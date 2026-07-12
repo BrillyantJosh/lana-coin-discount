@@ -98,7 +98,7 @@ export default function CrowdfundCashout({ adminHexId }: { adminHexId: string })
           <div>
             <p className="text-xs uppercase tracking-wider text-muted-foreground">Still eligible ({cur})</p>
             <p className="text-2xl sm:text-3xl font-bold text-foreground tabular-nums">{fmt(gt?.stillEligibleFiat || 0, cur!)}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">{gt?.ownerCount || 0} owner{(gt?.ownerCount || 0) !== 1 ? 's' : ''} · raised − paid since split start{fmtSplitStart(data?.splitStartedAt) ? ` (${fmtSplitStart(data?.splitStartedAt)})` : ''}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{gt?.ownerCount || 0} owner{(gt?.ownerCount || 0) !== 1 ? 's' : ''} · raised − project-wallet cash-outs, since split start{fmtSplitStart(data?.splitStartedAt) ? ` (${fmtSplitStart(data?.splitStartedAt)})` : ''}</p>
           </div>
           <div>
             <p className="text-xs uppercase tracking-wider text-muted-foreground">Raised ({cur})</p>
@@ -130,7 +130,7 @@ export default function CrowdfundCashout({ adminHexId }: { adminHexId: string })
               <th className="px-3 py-3 font-medium text-left">Project owner</th>
               <th className="px-3 py-3 font-medium text-right">Raised LANA</th>
               <th className="px-3 py-3 font-medium text-right">Raised</th>
-              <th className="px-3 py-3 font-medium text-right">Already paid</th>
+              <th className="px-3 py-3 font-medium text-right" title="Only LANA cashed out of the project wallet — investor / LanaPays.Us payouts are not counted">Cashed out</th>
               <th className="px-3 py-3 font-medium text-right">Still eligible</th>
             </tr>
           </thead>
@@ -170,7 +170,7 @@ export default function CrowdfundCashout({ adminHexId }: { adminHexId: string })
             <div className="mt-2 grid grid-cols-2 gap-1.5 text-xs">
               <span className="text-muted-foreground">Raised LANA</span><span className="text-right font-mono tabular-nums text-foreground">{fmtLana(o.raisedLana)}</span>
               <span className="text-muted-foreground">Raised</span><span className="text-right font-mono tabular-nums text-foreground">{fmt(o.raisedFiat, cur!)}</span>
-              <span className="text-muted-foreground">Already paid</span><span className="text-right font-mono tabular-nums text-muted-foreground">{fmt(o.alreadyPaidFiat, cur!)}</span>
+              <span className="text-muted-foreground">Cashed out</span><span className="text-right font-mono tabular-nums text-muted-foreground">{fmt(o.alreadyPaidFiat, cur!)}</span>
             </div>
           </div>
         ))}
@@ -225,7 +225,7 @@ export default function CrowdfundCashout({ adminHexId }: { adminHexId: string })
       </div>
 
       <p className="mt-4 text-xs text-muted-foreground leading-relaxed">
-        <strong>Still eligible</strong> = raised − already paid, this split only. A project owner with still-eligible &gt; 0 is paid <strong>right after investors</strong> (Tier 2) and ahead of everyone else, in whichever currency they raised. Excludes the 10% mentor fee and any blocked project.
+        <strong>Still eligible</strong> = raised − <strong>project-wallet cash-outs</strong>, this split only. Only LANA sold out of the project's own wallet counts as cashed out — <strong>investor / LanaPays.Us payouts do NOT reduce it</strong>, so someone who is both an investor and a project owner keeps their crowd-funding eligibility (the two entitlements are separate). A project owner with still-eligible &gt; 0 is paid <strong>right after investors</strong> (Tier 2) and ahead of everyone else, in whichever currency they raised. Excludes the 10% mentor fee and any blocked project.
         {data?.updated_at && <> · Updated {new Date(data.updated_at).toLocaleString('sl-SI')}.</>}
       </p>
     </>

@@ -518,13 +518,57 @@ export function getCrowdfundRaised(sinceUnixSec = 0): CrowdfundRaised[] {
   }));
 }
 
+/**
+ * Crowd-funding-SPECIFIC payouts per `owner|currency`: only sale_payouts whose
+ * buyback was sold FROM one of the owner's crowd-funding project wallets
+ * (KIND 31234 `wallet` — where donations land). This deliberately EXCLUDES the
+ * owner's investor / LanaPays.Us cash-outs: a person can be an investor AND a
+ * project owner, and their investor payouts (a separate entitlement, paid from a
+ * different wallet) must NOT cancel their crowd-funding raise. Only LANA cashed
+ * out of the project wallet reduces crowd-funding eligibility.
+ */
+export function getCrowdfundPaid(ownerHexes: string[], sinceUnixSec = 0): Map<string, number> {
+  const out = new Map<string, number>();
+  if (ownerHexes.length === 0) return out;
+  const ph = ownerHexes.map(() => '?').join(',');
+
+  // owner → set of their project wallets (the wallets donations were sent to)
+  const walletsByOwner = new Map<string, Set<string>>();
+  for (const r of db.prepare(
+    `SELECT owner_hex, wallet FROM crowdfund_projects WHERE owner_hex IN (${ph}) AND wallet IS NOT NULL AND wallet != ''`
+  ).all(...ownerHexes) as any[]) {
+    if (!walletsByOwner.has(r.owner_hex)) walletsByOwner.set(r.owner_hex, new Set());
+    walletsByOwner.get(r.owner_hex)!.add(r.wallet);
+  }
+  if (walletsByOwner.size === 0) return out; // no known project wallets → subtract nothing
+
+  const sinceClause = sinceUnixSec > 0 ? "AND sp.paid_at >= datetime(?, 'unixepoch')" : '';
+  const params: any[] = sinceUnixSec > 0 ? [...ownerHexes, sinceUnixSec] : [...ownerHexes];
+  const rows = db.prepare(`
+    SELECT bt.user_hex_id AS owner, bt.currency AS currency, bt.sender_wallet_id AS sw,
+           COALESCE(SUM(sp.amount),0) AS paid
+    FROM sale_payouts sp
+    JOIN buyback_transactions bt ON sp.transaction_id = bt.id
+    WHERE bt.user_hex_id IN (${ph}) ${sinceClause}
+    GROUP BY bt.user_hex_id, bt.currency, bt.sender_wallet_id
+  `).all(...params) as any[];
+  for (const r of rows) {
+    if (walletsByOwner.get(r.owner)?.has(r.sw)) {
+      const key = `${r.owner}|${r.currency}`;
+      out.set(key, Math.round(((out.get(key) || 0) + (r.paid || 0)) * 100) / 100);
+    }
+  }
+  return out;
+}
+
 export interface CrowdfundEligibility { owner_hex: string; currency: string; raisedFiat: number; raisedLana: number; donationCount: number; paidFiat: number; remainingFiat: number; }
 /** Per owner+currency crowd-funding eligibility for THIS split: raised(since split)
- *  − paid(since split). Both sides scoped to the same window. */
+ *  − crowd-funding cash-outs(since split). "Paid" here is ONLY LANA sold out of a
+ *  project wallet — investor / LanaPays.Us payouts do not reduce it. */
 export function getCrowdfundEligibility(sinceUnixSec = 0): CrowdfundEligibility[] {
   const raised = getCrowdfundRaised(sinceUnixSec);
   const hexes = [...new Set(raised.map((r) => r.owner_hex))];
-  const paid = getPaidByHexCurrencySinceSplit(hexes, sinceUnixSec);
+  const paid = getCrowdfundPaid(hexes, sinceUnixSec);
   return raised.map((r) => {
     const paidFiat = Math.round((paid.get(`${r.owner_hex}|${r.currency}`) || 0) * 100) / 100;
     return { ...r, paidFiat, remainingFiat: Math.max(0, Math.round((r.raisedFiat - paidFiat) * 100) / 100) };
