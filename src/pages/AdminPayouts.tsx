@@ -133,9 +133,11 @@ const AdminPayouts = () => {
   // Collapsed by default (the FIFO financier list). The dedicated "Pay by order"
   // tab is the primary way to see the full payout sequence now.
   const [showPayoutOrder, setShowPayoutOrder] = useState(false);
-  // Page view: 'manage' = record payouts (cards + forms); 'order' = the payout
-  // queue (who can be paid, in order) for the active currency.
-  const [pageTab, setPageTab] = useState<'manage' | 'order'>('manage');
+  // Page view: 'order' (default) = the payout queue (who can be paid, in order)
+  // with inline pay; 'manage' = the full per-seller cards + forms.
+  const [pageTab, setPageTab] = useState<'manage' | 'order'>('order');
+  // Which queue row is expanded for paying (seller hex).
+  const [queueOpenHex, setQueueOpenHex] = useState<string | null>(null);
   // GBP and EUR are separate budgets → separate payout classes. The operator
   // views (and pays out) one currency at a time; ordering never crosses currencies.
   const [selectedCurrency, setSelectedCurrency] = useState<string>('');
@@ -513,18 +515,24 @@ const AdminPayouts = () => {
   // POST guard enforces — so the list matches exactly what will/won't be allowed.
   const sym = CURRENCY_SYMBOLS[activeCurrency] || activeCurrency;
   const payoutQueue = users
-    .map(u => ({ user: u, sales: (u.sales || []).filter(s => s.currency === activeCurrency) }))
-    .filter(x => x.sales.length > 0)
-    .map(({ user, sales }) => {
+    // scope to active currency (userForCur carries the currency's payment method + profile)
+    .map(u => ({ userForCur: { ...u, sales: (u.sales || []).filter(s => s.currency === activeCurrency) } }))
+    .filter(x => x.userForCur.sales.length > 0)
+    .map(({ userForCur }) => {
+      const sales = userForCur.sales;
       const remaining = Math.round((sales.reduce((s, x) => s + x.netFiat, 0) - sales.reduce((s, x) => s + x.totalPaid, 0)) * 100) / 100;
       const blockedSale = sales.find(s => s.orderBlocked && s.remaining > 0);
+      // Still-payable sales (unpaid, not broadcast) — what "Pay" can act on.
+      const payableSales = sales.filter(s => s.remaining > 0 && s.status !== 'paid' && s.status !== 'broadcast');
       return {
-        hexId: user.hexId,
-        name: resolveDisplayName(user),
-        fullName: getFullName(user),
+        hexId: userForCur.hexId,
+        user: userForCur,
+        name: resolveDisplayName(userForCur),
+        fullName: getFullName(userForCur),
         remaining,
-        rank: payoutRankOf(user.hexId),
-        badge: priorityBadge(user.hexId),
+        payableSales,
+        rank: payoutRankOf(userForCur.hexId),
+        badge: priorityBadge(userForCur.hexId),
         orderBlocked: !!blockedSale,
         orderBlockedBy: blockedSale?.orderBlockedBy || null,
       };
@@ -714,7 +722,7 @@ const AdminPayouts = () => {
           /* ── Pay by order: the payout sequence for the active currency ── */
           payoutQueue.length === 0 ? (
             <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
-              <p className="text-lg text-muted-foreground">Nothing outstanding to pay in {activeCurrency}.</p>
+              <p className="text-lg text-muted-foreground">Nothing outstanding to pay{activeCurrency ? ` in ${activeCurrency}` : ''}.</p>
               {presentCurrencies.length > 1 && (
                 <p className="text-sm text-muted-foreground/70 mt-1">Try another currency above.</p>
               )}
@@ -729,35 +737,120 @@ const AdminPayouts = () => {
                 <span className="text-xs text-muted-foreground">Financiers first (FIFO) → crowd-funders → the rest</span>
               </div>
               <ol className="divide-y divide-border/60">
-                {payoutQueue.map((e, i) => (
-                  <li key={e.hexId} className={`flex items-center gap-3 sm:gap-4 px-4 sm:px-6 py-3 ${e.orderBlocked ? 'opacity-70' : ''}`}>
-                    <span className={`inline-flex items-center justify-center min-w-[2rem] h-8 px-2 rounded-lg font-mono text-sm font-bold flex-shrink-0 ${
-                      !e.orderBlocked ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300' : 'bg-muted text-muted-foreground'
-                    }`}>{i + 1}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-foreground truncate">{e.name}</span>
-                        <span title={e.badge.title} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${e.badge.cls}`}>{e.badge.label}</span>
+                {payoutQueue.map((e, i) => {
+                  const rowOpen = queueOpenHex === e.hexId;
+                  const canPay = e.payableSales.length > 0;
+                  return (
+                  <li key={e.hexId} className={`px-4 sm:px-6 py-3 ${e.orderBlocked && !rowOpen ? 'opacity-70' : ''}`}>
+                    <div className="flex items-center gap-3 sm:gap-4">
+                      <span className={`inline-flex items-center justify-center min-w-[2rem] h-8 px-2 rounded-lg font-mono text-sm font-bold flex-shrink-0 ${
+                        !e.orderBlocked ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300' : 'bg-muted text-muted-foreground'
+                      }`}>{i + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-foreground truncate">{e.name}</span>
+                          <span title={e.badge.title} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${e.badge.cls}`}>{e.badge.label}</span>
+                        </div>
+                        {e.orderBlocked ? (
+                          <div className="text-xs text-orange-700 dark:text-orange-400 mt-0.5">⛔ Waiting behind {e.orderBlockedBy || 'a higher-priority recipient'}</div>
+                        ) : (
+                          <div className="text-xs text-green-700 dark:text-green-400 mt-0.5 font-medium">✅ Payable now</div>
+                        )}
                       </div>
-                      {e.orderBlocked ? (
-                        <div className="text-xs text-orange-700 dark:text-orange-400 mt-0.5">⛔ Waiting behind {e.orderBlockedBy || 'a higher-priority recipient'}</div>
-                      ) : (
-                        <div className="text-xs text-green-700 dark:text-green-400 mt-0.5 font-medium">✅ Payable now</div>
+                      <div className="text-right flex-shrink-0">
+                        <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Owed</div>
+                        <div className="font-mono text-base font-bold text-amber-600">{sym}{e.remaining.toFixed(2)}</div>
+                      </div>
+                      {/* Pay right here. Blocked rows still allow paying — the POST guard
+                          asks the admin to confirm paying out of order (financiers first). */}
+                      {canPay && (
+                        <button
+                          onClick={() => {
+                            if (rowOpen) { setQueueOpenHex(null); setPayoutFormSaleId(null); setNextPayoutId(null); }
+                            else if (e.payableSales.length === 1) { setQueueOpenHex(e.hexId); openPayoutForm(e.payableSales[0], e.user); }
+                            else { setQueueOpenHex(e.hexId); }
+                          }}
+                          className={`flex-shrink-0 inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-bold transition-colors ${
+                            rowOpen
+                              ? 'border border-border text-muted-foreground hover:text-foreground'
+                              : e.orderBlocked
+                              ? 'border border-orange-300 text-orange-700 hover:bg-orange-50 dark:border-orange-500/40 dark:text-orange-300'
+                              : 'bg-green-600 text-white hover:bg-green-700'
+                          }`}
+                        >
+                          {rowOpen ? 'Close' : e.orderBlocked ? 'Pay anyway' : (
+                            <>
+                              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+                              Pay
+                            </>
+                          )}
+                        </button>
                       )}
                     </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Owed</div>
-                      <div className="font-mono text-base font-bold text-amber-600">{sym}{e.remaining.toFixed(2)}</div>
-                    </div>
+
+                    {/* Inline pay — the SAME account pre-fill + POST guard + force-override
+                        flow as the Payouts tab (openPayoutForm / submitPayout). */}
+                    {rowOpen && canPay && (
+                      <div className="mt-3 sm:pl-11 space-y-2">
+                        {e.payableSales.map(s => (
+                          payoutFormSaleId === s.id ? (
+                            <div key={s.id} className="rounded-xl border-2 border-primary/30 bg-primary/5 p-3 space-y-3">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <h5 className="text-sm font-bold text-foreground">Record payout · TX #{s.id}</h5>
+                                {nextPayoutId && (
+                                  <span className="font-mono text-sm font-bold text-primary bg-primary/10 px-2 py-0.5 rounded">{nextPayoutId}</span>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                <div>
+                                  <label className="text-xs text-muted-foreground font-medium mb-1 block">Amount ({s.currency}) *</label>
+                                  <input type="number" step="0.01" min="0.01" max={s.remaining} value={payoutAmount}
+                                    onChange={ev => setPayoutAmount(ev.target.value)}
+                                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="0.00" />
+                                  <p className="text-[10px] text-muted-foreground mt-0.5">Remaining: <span className="font-bold text-amber-600">{sym}{s.remaining.toFixed(2)}</span></p>
+                                </div>
+                                <div>
+                                  <label className="text-xs text-muted-foreground font-medium mb-1 block">Paid to Account</label>
+                                  <input type="text" value={payoutAccount} onChange={ev => setPayoutAccount(ev.target.value)}
+                                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="IBAN / Account" />
+                                </div>
+                                <div>
+                                  <label className="text-xs text-muted-foreground font-medium mb-1 block">Note</label>
+                                  <input type="text" value={payoutNote} onChange={ev => setPayoutNote(ev.target.value)}
+                                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="Optional note" />
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button onClick={() => submitPayout(s)} disabled={submitting || !payoutAmount}
+                                  className="inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                  {submitting ? (<><div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />Recording...</>) : 'Record payout'}
+                                </button>
+                                <button onClick={() => { setPayoutFormSaleId(null); setNextPayoutId(null); if (e.payableSales.length === 1) setQueueOpenHex(null); }}
+                                  className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div key={s.id} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm">
+                              <span className="text-muted-foreground text-xs w-20 flex-shrink-0">{formatDate(s.createdAt)}</span>
+                              <span className="font-mono flex-1 min-w-0 truncate">{s.lanaAmount.toLocaleString()} LANA</span>
+                              <span className="font-mono font-bold text-amber-600">{sym}{s.remaining.toFixed(2)}</span>
+                              <button onClick={() => openPayoutForm(s, e.user)}
+                                className="inline-flex items-center gap-1 rounded-lg bg-green-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-green-700 transition-colors flex-shrink-0">Pay</button>
+                            </div>
+                          )
+                        ))}
+                      </div>
+                    )}
                   </li>
-                ))}
+                  );
+                })}
               </ol>
               <div className="px-4 sm:px-6 py-3 border-t border-border">
                 <button
                   onClick={() => setPageTab('manage')}
                   className="text-sm text-primary font-medium hover:underline"
                 >
-                  → Go to Payouts to record a payment
+                  → Open full Payouts view (search, history, per-sale detail)
                 </button>
               </div>
             </div>
