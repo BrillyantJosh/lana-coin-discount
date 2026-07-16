@@ -130,7 +130,12 @@ const AdminPayouts = () => {
   // ONLY when this matches the active currency — so a slow/failed fetch after a
   // tab switch can never show the previous currency's ranks under the new tab.
   const [financingCurrency, setFinancingCurrency] = useState<string>('');
-  const [showPayoutOrder, setShowPayoutOrder] = useState(true);
+  // Collapsed by default (the FIFO financier list). The dedicated "Pay by order"
+  // tab is the primary way to see the full payout sequence now.
+  const [showPayoutOrder, setShowPayoutOrder] = useState(false);
+  // Page view: 'manage' = record payouts (cards + forms); 'order' = the payout
+  // queue (who can be paid, in order) for the active currency.
+  const [pageTab, setPageTab] = useState<'manage' | 'order'>('manage');
   // GBP and EUR are separate budgets → separate payout classes. The operator
   // views (and pays out) one currency at a time; ordering never crosses currencies.
   const [selectedCurrency, setSelectedCurrency] = useState<string>('');
@@ -500,6 +505,38 @@ const AdminPayouts = () => {
       return b._remaining - a._remaining;
     });
 
+  // ── "Pay by order" queue for the active currency ──────────────────────────
+  // The exact sequence in which outstanding requests may be paid: strictly by
+  // payout priority (financiers by FIFO rank → crowd-funders → the rest), with
+  // each recipient marked payable-now or waiting behind a higher-priority one.
+  // Uses the server's per-(hex|currency) orderBlocked flag — the same gate the
+  // POST guard enforces — so the list matches exactly what will/won't be allowed.
+  const sym = CURRENCY_SYMBOLS[activeCurrency] || activeCurrency;
+  const payoutQueue = users
+    .map(u => ({ user: u, sales: (u.sales || []).filter(s => s.currency === activeCurrency) }))
+    .filter(x => x.sales.length > 0)
+    .map(({ user, sales }) => {
+      const remaining = Math.round((sales.reduce((s, x) => s + x.netFiat, 0) - sales.reduce((s, x) => s + x.totalPaid, 0)) * 100) / 100;
+      const blockedSale = sales.find(s => s.orderBlocked && s.remaining > 0);
+      return {
+        hexId: user.hexId,
+        name: resolveDisplayName(user),
+        fullName: getFullName(user),
+        remaining,
+        rank: payoutRankOf(user.hexId),
+        badge: priorityBadge(user.hexId),
+        orderBlocked: !!blockedSale,
+        orderBlockedBy: blockedSale?.orderBlockedBy || null,
+      };
+    })
+    .filter(x => x.remaining > 0) // worklist = still-owed only
+    .filter(x => {
+      if (!q) return true;
+      return x.name.toLowerCase().includes(q) || (x.fullName || '').toLowerCase().includes(q) || x.hexId.toLowerCase().includes(q);
+    })
+    .sort((a, b) => (a.rank - b.rank) || (b.remaining - a.remaining));
+  const queueTotalOwed = Math.round(payoutQueue.reduce((s, x) => s + x.remaining, 0) * 100) / 100;
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <AdminNav />
@@ -550,8 +587,27 @@ const AdminPayouts = () => {
           </div>
         )}
 
+        {/* Page tabs: record payouts vs. see the payout order (per active currency). */}
+        {!loading && presentCurrencies.length > 0 && (
+          <div className="mb-5 flex rounded-xl border border-border bg-card overflow-hidden w-fit">
+            <button
+              onClick={() => setPageTab('manage')}
+              className={`px-5 py-2.5 text-sm font-semibold transition-colors ${pageTab === 'manage' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              Payouts
+            </button>
+            <button
+              onClick={() => setPageTab('order')}
+              title="See exactly in which order the outstanding requests may be paid"
+              className={`px-5 py-2.5 text-sm font-semibold transition-colors ${pageTab === 'order' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              Pay by order
+            </button>
+          </div>
+        )}
+
         {/* Payout order (FIFO financing) for the ACTIVE currency — display only. Financiers first; sweeper + non-financiers last. */}
-        {!loading && financingActive.length > 0 && (
+        {pageTab === 'manage' && !loading && financingActive.length > 0 && (
           <div className="mb-4 rounded-2xl border-2 border-border bg-card overflow-hidden">
             <button
               onClick={() => setShowPayoutOrder(v => !v)}
@@ -606,7 +662,7 @@ const AdminPayouts = () => {
         )}
 
         {/* Search + Sort bar */}
-        {!loading && (
+        {pageTab === 'manage' && !loading && (
           <div className="mb-4 flex flex-col sm:flex-row gap-2">
             <div className="relative flex-1">
               <svg className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -654,6 +710,58 @@ const AdminPayouts = () => {
               <p className="text-muted-foreground">Loading payouts data...</p>
             </div>
           </div>
+        ) : pageTab === 'order' ? (
+          /* ── Pay by order: the payout sequence for the active currency ── */
+          payoutQueue.length === 0 ? (
+            <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
+              <p className="text-lg text-muted-foreground">Nothing outstanding to pay in {activeCurrency}.</p>
+              {presentCurrencies.length > 1 && (
+                <p className="text-sm text-muted-foreground/70 mt-1">Try another currency above.</p>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-2xl border-2 border-border bg-card overflow-hidden">
+              <div className="px-4 sm:px-6 py-3 border-b border-border flex items-center justify-between gap-2 flex-wrap">
+                <span className="font-semibold text-foreground">
+                  {activeCurrency} — pay in this order
+                  <span className="ml-2 text-xs text-muted-foreground font-normal">{payoutQueue.length} waiting · {sym}{queueTotalOwed.toFixed(2)} owed</span>
+                </span>
+                <span className="text-xs text-muted-foreground">Financiers first (FIFO) → crowd-funders → the rest</span>
+              </div>
+              <ol className="divide-y divide-border/60">
+                {payoutQueue.map((e, i) => (
+                  <li key={e.hexId} className={`flex items-center gap-3 sm:gap-4 px-4 sm:px-6 py-3 ${e.orderBlocked ? 'opacity-70' : ''}`}>
+                    <span className={`inline-flex items-center justify-center min-w-[2rem] h-8 px-2 rounded-lg font-mono text-sm font-bold flex-shrink-0 ${
+                      !e.orderBlocked ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300' : 'bg-muted text-muted-foreground'
+                    }`}>{i + 1}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-semibold text-foreground truncate">{e.name}</span>
+                        <span title={e.badge.title} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${e.badge.cls}`}>{e.badge.label}</span>
+                      </div>
+                      {e.orderBlocked ? (
+                        <div className="text-xs text-orange-700 dark:text-orange-400 mt-0.5">⛔ Waiting behind {e.orderBlockedBy || 'a higher-priority recipient'}</div>
+                      ) : (
+                        <div className="text-xs text-green-700 dark:text-green-400 mt-0.5 font-medium">✅ Payable now</div>
+                      )}
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Owed</div>
+                      <div className="font-mono text-base font-bold text-amber-600">{sym}{e.remaining.toFixed(2)}</div>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+              <div className="px-4 sm:px-6 py-3 border-t border-border">
+                <button
+                  onClick={() => setPageTab('manage')}
+                  className="text-sm text-primary font-medium hover:underline"
+                >
+                  → Go to Payouts to record a payment
+                </button>
+              </div>
+            </div>
+          )
         ) : sortedUsers.length === 0 ? (
           <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
             {q ? (
