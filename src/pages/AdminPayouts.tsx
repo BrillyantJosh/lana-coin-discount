@@ -77,6 +77,8 @@ interface UserWithSales {
   sales: SaleEntry[];
   profile?: UserProfile | null;
   paymentMethods?: PaymentMethod[];
+  crowdfunder?: boolean;               // any-currency crowd-funder (back-compat)
+  crowdfunderCurrencies?: string[];    // currencies where this seller is a crowd-funder (Tier 2)
 }
 
 // One investor's place in the FIFO financing order (from Direct Fund). Used to
@@ -119,10 +121,19 @@ const AdminPayouts = () => {
   // Default to financiers-first so the payout order is what you see on open.
   const [sortMode, setSortMode] = useState<'remaining' | 'latest_payment' | 'financing_priority'>('financing_priority');
 
-  // Payout-priority (FIFO financing order) — display only. Panel open by default.
+  // Payout-priority (FIFO financing order) for the SELECTED currency — display
+  // only. Each currency is a separate class with its own budget/order, so this
+  // holds one currency's order at a time.
   const [financing, setFinancing] = useState<FinancierRank[]>([]);
   const [financingStale, setFinancingStale] = useState(false);
+  // Which currency the loaded `financing` order belongs to. The order is applied
+  // ONLY when this matches the active currency — so a slow/failed fetch after a
+  // tab switch can never show the previous currency's ranks under the new tab.
+  const [financingCurrency, setFinancingCurrency] = useState<string>('');
   const [showPayoutOrder, setShowPayoutOrder] = useState(true);
+  // GBP and EUR are separate budgets → separate payout classes. The operator
+  // views (and pays out) one currency at a time; ordering never crosses currencies.
+  const [selectedCurrency, setSelectedCurrency] = useState<string>('');
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -141,22 +152,38 @@ const AdminPayouts = () => {
     fetchPayouts();
   }, [session, isAdmin]);
 
-  // Load the FIFO financing order (display-only; failures degrade silently).
+  // Load the FIFO financing order for the SELECTED currency (display-only;
+  // failures degrade silently). Re-fetches whenever the operator switches
+  // currency, because each currency has its own budget and its own order.
   useEffect(() => {
-    if (!session || !isAdmin) return;
+    if (!session || !isAdmin || !selectedCurrency) return;
+    let alive = true;
     (async () => {
       try {
-        const res = await fetch('/api/admin/financing-order', {
+        const res = await fetch(`/api/admin/financing-order?currency=${encodeURIComponent(selectedCurrency)}`, {
           headers: { 'x-admin-hex-id': session.nostrHexId },
         });
         const data = await res.json();
+        if (!alive) return;
         setFinancing(data.order || []);
         setFinancingStale(!!data.stale);
+        setFinancingCurrency(selectedCurrency);
       } catch {
-        /* display-only — leave the list empty on error */
+        /* display-only — on error the order simply won't match the active
+           currency (see financingActive), so no stale ranks are shown. */
       }
     })();
-  }, [session, isAdmin]);
+    return () => { alive = false; };
+  }, [session, isAdmin, selectedCurrency]);
+
+  // Pick a default currency once payouts load, and keep the selection valid if the
+  // set of present currencies changes. Setting it triggers the financing fetch above.
+  useEffect(() => {
+    const present = Array.from(
+      new Set(users.flatMap(u => (u.sales || []).map(s => s.currency)).filter(Boolean))
+    ).sort();
+    setSelectedCurrency(cur => (cur && present.includes(cur)) ? cur : (present[0] || ''));
+  }, [users]);
 
   const fetchPayouts = async () => {
     if (!session) return;
@@ -360,11 +387,28 @@ const AdminPayouts = () => {
 
   const q = search.trim().toLowerCase();
 
-  // Financier ranking (FIFO), keyed by full seller hex, for payout-priority display.
+  // ── Currency classes ──────────────────────────────────────────────────────
+  // GBP and EUR are separate budgets → each is its own payout class with its own
+  // FIFO order. The operator views one currency at a time; nothing crosses.
+  const presentCurrencies = Array.from(
+    new Set(users.flatMap(u => (u.sales || []).map(s => s.currency)).filter(Boolean))
+  ).sort();
+  const activeCurrency = selectedCurrency && presentCurrencies.includes(selectedCurrency)
+    ? selectedCurrency
+    : (presentCurrencies[0] || '');
+
+  // Apply the loaded financing order ONLY if it belongs to the active currency
+  // (guards the tab-switch race and failed fetches — never show €-ranks under £).
+  const financingActive = financingCurrency === activeCurrency ? financing : [];
+  const financingStaleActive = financingCurrency === activeCurrency ? financingStale : false;
+  // Financier ranking (FIFO) for the ACTIVE currency, keyed by full seller hex.
   const financingMap = new Map<string, FinancierRank>();
-  for (const f of financing) financingMap.set(f.nostr_hex_id, f);
-  // Tier-2 crowd-funders (server-flagged: raised & unpaid LanaCrowd donations this split).
-  const crowdfunderSet = new Set<string>(users.filter((u: any) => u.crowdfunder).map((u: any) => u.hexId));
+  for (const f of financingActive) financingMap.set(f.nostr_hex_id, f);
+  // Tier-2 crowd-funders IN THIS CURRENCY (server-flagged per currency: raised &
+  // unpaid LanaCrowd donations this split, in the active currency's budget).
+  const crowdfunderSet = new Set<string>(
+    users.filter(u => (u.crowdfunderCurrencies || []).includes(activeCurrency)).map(u => u.hexId)
+  );
   const NON_FINANCIER_RANK = 1e9, SWEEPER_RANK = 5e8, CROWDFUND_RANK = 7e8;
   // Effective payout order: Tier 1 financiers first (rank; sweeper last among them),
   // then Tier 2 crowd-funders, then recipients with no priority last.
@@ -399,6 +443,10 @@ const AdminPayouts = () => {
   };
 
   const sortedUsers = users
+    // Scope every seller card to the ACTIVE currency only — its sales, its totals,
+    // its rank. A seller with both £ and € sales appears under each currency's tab
+    // with only that currency's sales. This is what keeps the two budgets separate.
+    .map(user => ({ ...user, sales: (user.sales || []).filter(s => s.currency === activeCurrency) }))
     .filter(user => user.sales.length > 0)
     .filter(user => {
       if (!q) return true;
@@ -465,19 +513,56 @@ const AdminPayouts = () => {
           </p>
         </div>
 
-        {/* Payout order (FIFO financing) — display only. Financiers first; sweeper + non-financiers last. */}
-        {!loading && financing.length > 0 && (
+        {/* Currency classes — GBP and EUR are separate budgets, each with its own
+            payout order. Pick a currency; everything below is scoped to it. */}
+        {!loading && presentCurrencies.length > 0 && (
+          <div className="mb-5">
+            <div className="flex flex-wrap gap-2">
+              {presentCurrencies.map(cur => {
+                const sym = CURRENCY_SYMBOLS[cur] || cur;
+                const owed = Math.round(users.reduce((s, u) =>
+                  s + (u.sales || []).filter(x => x.currency === cur).reduce((a, x) => a + x.remaining, 0), 0) * 100) / 100;
+                const isActive = cur === activeCurrency;
+                return (
+                  <button
+                    key={cur}
+                    onClick={() => setSelectedCurrency(cur)}
+                    className={`px-4 py-2 rounded-xl text-sm font-semibold border-2 transition-colors ${
+                      isActive
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'bg-card text-foreground border-border hover:bg-muted/40'
+                    }`}
+                    title={`Show the ${cur} payout class`}
+                  >
+                    {sym} {cur}
+                    <span className={`ml-1.5 font-mono text-xs ${isActive ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>
+                      {sym}{owed.toFixed(2)} owed
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {presentCurrencies.length > 1 && (
+              <p className="text-xs text-muted-foreground mt-2">
+                Each currency is a separate budget and a separate payout order — a {activeCurrency} recipient is never ranked against another currency.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Payout order (FIFO financing) for the ACTIVE currency — display only. Financiers first; sweeper + non-financiers last. */}
+        {!loading && financingActive.length > 0 && (
           <div className="mb-4 rounded-2xl border-2 border-border bg-card overflow-hidden">
             <button
               onClick={() => setShowPayoutOrder(v => !v)}
               className="w-full px-4 sm:px-6 py-3 flex items-center justify-between text-left hover:bg-muted/30 transition-colors"
             >
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold text-foreground">Payout order — financiers first</span>
+                <span className="font-semibold text-foreground">{activeCurrency} payout order — financiers first</span>
                 <span className="text-xs text-muted-foreground">
-                  FIFO · {financing.filter(f => !f.is_last_budget).length} financier{financing.filter(f => !f.is_last_budget).length !== 1 ? 's' : ''}
+                  FIFO · {financingActive.filter(f => !f.is_last_budget).length} financier{financingActive.filter(f => !f.is_last_budget).length !== 1 ? 's' : ''}
                 </span>
-                {financingStale && (
+                {financingStaleActive && (
                   <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300" title="Cached — Direct Fund was briefly unreachable">cached</span>
                 )}
               </div>
@@ -491,7 +576,7 @@ const AdminPayouts = () => {
                   Those who finance first have payout priority (earliest-registered budget first; the last-budget sweeper is paid last among financiers). Next come <strong className="text-foreground">crowd-funding project owners</strong> (Tier 2 · <span className="text-teal-600 dark:text-teal-400">Crowdfunding</span> badge). Anyone with no funding budget or crowd-funding is paid last.
                 </p>
                 <ol className="space-y-1.5">
-                  {financing.map(f => (
+                  {financingActive.map(f => (
                     <li key={f.nostr_hex_id} className="flex items-center gap-2 text-sm">
                       <span className={`inline-flex items-center justify-center min-w-[1.75rem] h-6 px-1.5 rounded font-mono text-xs font-bold ${f.is_last_budget ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' : 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300'}`}>
                         {f.is_last_budget ? '↓' : f.rank}
@@ -578,9 +663,13 @@ const AdminPayouts = () => {
               </>
             ) : (
               <>
-                <p className="text-lg text-muted-foreground">No completed transactions yet.</p>
+                <p className="text-lg text-muted-foreground">
+                  {activeCurrency ? `No ${activeCurrency} transactions to pay out.` : 'No completed transactions yet.'}
+                </p>
                 <p className="text-sm text-muted-foreground/70 mt-1">
-                  Transactions will appear here once users start selling LANA.
+                  {presentCurrencies.length > 1
+                    ? 'Try another currency above, or wait for new sales.'
+                    : 'Transactions will appear here once users start selling LANA.'}
                 </p>
               </>
             )}
@@ -620,7 +709,7 @@ const AdminPayouts = () => {
                           <span className="text-xs text-muted-foreground font-mono">
                             {user.hexId.slice(0, 8)}...{user.hexId.slice(-6)}
                           </span>
-                          {financing.length > 0 && (() => {
+                          {(financingActive.length > 0 || crowdfunderSet.size > 0) && (() => {
                             const b = priorityBadge(user.hexId);
                             return <span title={b.title} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${b.cls}`}>{b.label}</span>;
                           })()}

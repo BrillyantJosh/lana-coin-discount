@@ -893,19 +893,26 @@ router.get('/admin/payouts', async (req: Request, res: Response) => {
     const users = getAllSalesWithPayouts();
     // Annotate each sale with its payout-order block status (financiers → crowd-funders → rest, per currency).
     const blocks = await computeAllBlocks(users);
-    // Per-user crowd-funder flag (union across the currencies present) for the priority badge/sort.
+    // Crowd-funder eligibility is PER CURRENCY (a project raised in EUR is not a
+    // crowd-funder in GBP — separate budgets). Expose the exact set of currencies
+    // in which each user is a crowd-funder so the admin UI can rank correctly
+    // within each currency, not by a cross-currency union.
     const curSet = new Set<string>();
     for (const u of users) for (const sale of u.sales || []) if (sale.currency) curSet.add(sale.currency);
-    const crowdfunderHexes = new Set<string>();
-    for (const cur of curSet) for (const hex of getCrowdfundBandSet(cur)) crowdfunderHexes.add(hex);
-    const annotated = users.map((u: any) => ({
-      ...u,
-      crowdfunder: crowdfunderHexes.has(u.hexId),
-      sales: (u.sales || []).map((sale: any) => {
-        const b = blocks.get(`${u.hexId}|${sale.currency}`);
-        return { ...sale, orderBlocked: b?.blocked || false, orderBlockedBy: b?.blockedByName || null };
-      }),
-    }));
+    const crowdByCur = new Map<string, Set<string>>();
+    for (const cur of curSet) crowdByCur.set(cur, getCrowdfundBandSet(cur));
+    const annotated = users.map((u: any) => {
+      const crowdfunderCurrencies = [...curSet].filter(cur => crowdByCur.get(cur)?.has(u.hexId));
+      return {
+        ...u,
+        crowdfunder: crowdfunderCurrencies.length > 0, // back-compat (any currency)
+        crowdfunderCurrencies,                          // per-currency (new)
+        sales: (u.sales || []).map((sale: any) => {
+          const b = blocks.get(`${u.hexId}|${sale.currency}`);
+          return { ...sale, orderBlocked: b?.blocked || false, orderBlockedBy: b?.blockedByName || null };
+        }),
+      };
+    });
     return res.json({ users: annotated });
   } catch (err) {
     console.error('Admin payouts fetch error:', err);
