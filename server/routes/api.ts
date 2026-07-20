@@ -2229,7 +2229,7 @@ router.get('/admin/crowdfund-cashout', async (req: Request, res: Response) => {
     if (ownerHexes.size > 0) {
       const ph = [...ownerHexes].map(() => '?').join(',');
       for (const r of db.prepare(`SELECT nostr_hex_id, display_name, full_name FROM users WHERE nostr_hex_id IN (${ph})`).all(...ownerHexes) as any[]) {
-        const nm = r.display_name || r.full_name;
+        const nm = r.full_name || r.display_name;   // payout → real name first
         if (nm) nameByHex.set(r.nostr_hex_id, nm);
       }
     }
@@ -2393,7 +2393,7 @@ router.get('/payouts-history', (_req: Request, res: Response) => {
     `).all() as any[];
     const payouts = rows.map(r => ({
       payout_id: r.payout_id,
-      name: r.display_name || r.full_name || 'Anonymous',
+      name: r.full_name || r.display_name || 'Anonymous',   // payout → real name first
       hex_short: r.hex ? r.hex.slice(0, 8) : null,
       amount: Math.round((r.amount || 0) * 100) / 100,
       currency: r.currency,
@@ -2452,7 +2452,7 @@ router.get('/payouts-daily', (_req: Request, res: Response) => {
       dc.total = r2(dc.total + amt);
       dc.count += 1; // distinct people that day
       dc.payouts += (r.payouts || 0);
-      dc.people.push({ name: r.display_name || r.full_name || 'Anonymous', hex_short: r.hex ? r.hex.slice(0, 8) : null, amount: amt });
+      dc.people.push({ name: r.full_name || r.display_name || 'Anonymous', hex_short: r.hex ? r.hex.slice(0, 8) : null, amount: amt });
       totalsByCurrency[r.currency] = r2((totalsByCurrency[r.currency] || 0) + amt);
       countByCurrency[r.currency] = (countByCurrency[r.currency] || 0) + (r.payouts || 0);
     }
@@ -2499,7 +2499,7 @@ router.get('/pending-verification', (_req: Request, res: Response) => {
       LIMIT 100
     `).all() as any[];
     const items = rows.map(r => ({
-      name: r.display_name || r.full_name || 'Anonymous',
+      name: r.full_name || r.display_name || 'Anonymous',   // payout → real name first
       hex_short: r.hex ? r.hex.slice(0, 8) : null,
       amount: Math.round((r.net_fiat || 0) * 100) / 100,   // expected payout once verified
       currency: r.currency,

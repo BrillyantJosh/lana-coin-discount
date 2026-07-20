@@ -327,11 +327,15 @@ const AdminPayouts = () => {
     }
   };
 
-  /** Resolve user display name: DB name → KIND 0 display_name → KIND 0 name → Anonymous */
+  /**
+   * Resolve the payout name — the REAL name, because a payout is a bank transfer.
+   * Order: server name (already real-name-first) → KIND 0 `name` → KIND 0
+   * display_name (nickname, only if no real name) → account holder → Anonymous.
+   */
   const resolveDisplayName = (user: UserWithSales): string => {
     if (user.displayName && user.displayName !== 'Anonymous') return user.displayName;
-    if (user.profile?.display_name) return user.profile.display_name;
     if (user.profile?.name) return user.profile.name;
+    if (user.profile?.display_name) return user.profile.display_name;
     // Fallback to account holder from payment methods
     for (const pm of user.paymentMethods || []) {
       if (pm.fields?.account_holder) return pm.fields.account_holder;
@@ -339,11 +343,11 @@ const AdminPayouts = () => {
     return user.displayName || 'Anonymous';
   };
 
-  /** Get full name (KIND 0 name field, different from display_name) */
-  const getFullName = (user: UserWithSales): string | null => {
-    const dn = user.profile?.display_name || user.displayName;
-    const n = user.profile?.name;
-    if (n && n !== dn) return n;
+  /** The nickname (KIND 0 display_name), shown in parentheses when it differs from the real name. */
+  const getNickname = (user: UserWithSales): string | null => {
+    const real = user.profile?.name || user.displayName;
+    const nick = user.profile?.display_name;
+    if (nick && nick !== real) return nick;
     return null;
   };
 
@@ -458,9 +462,9 @@ const AdminPayouts = () => {
     .filter(user => {
       if (!q) return true;
       const name = resolveDisplayName(user).toLowerCase();
-      const full = (getFullName(user) || '').toLowerCase();
+      const nick = (getNickname(user) || '').toLowerCase();
       const hex = user.hexId.toLowerCase();
-      return name.includes(q) || full.includes(q) || hex.includes(q);
+      return name.includes(q) || nick.includes(q) || hex.includes(q);
     })
     .map(user => {
       const totalOwed = user.sales.reduce((s, sale) => s + sale.netFiat, 0);
@@ -528,7 +532,7 @@ const AdminPayouts = () => {
         hexId: userForCur.hexId,
         user: userForCur,
         name: resolveDisplayName(userForCur),
-        fullName: getFullName(userForCur),
+        nickname: getNickname(userForCur),
         remaining,
         payableSales,
         rank: payoutRankOf(userForCur.hexId),
@@ -540,7 +544,7 @@ const AdminPayouts = () => {
     .filter(x => x.remaining > 0) // worklist = still-owed only
     .filter(x => {
       if (!q) return true;
-      return x.name.toLowerCase().includes(q) || (x.fullName || '').toLowerCase().includes(q) || x.hexId.toLowerCase().includes(q);
+      return x.name.toLowerCase().includes(q) || (x.nickname || '').toLowerCase().includes(q) || x.hexId.toLowerCase().includes(q);
     })
     .sort((a, b) => (a.rank - b.rank) || (b.remaining - a.remaining));
   const queueTotalOwed = Math.round(payoutQueue.reduce((s, x) => s + x.remaining, 0) * 100) / 100;
@@ -904,8 +908,8 @@ const AdminPayouts = () => {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className={`font-bold ${userRemaining > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>{displayName}</span>
-                          {getFullName(user) && (
-                            <span className="text-xs text-muted-foreground">({getFullName(user)})</span>
+                          {getNickname(user) && (
+                            <span className="text-xs text-muted-foreground">({getNickname(user)})</span>
                           )}
                           <span className="text-xs text-muted-foreground font-mono">
                             {user.hexId.slice(0, 8)}...{user.hexId.slice(-6)}

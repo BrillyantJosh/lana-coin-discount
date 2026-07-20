@@ -875,7 +875,9 @@ export function getAllSalesWithPayouts(): any[] {
 
     return {
       hexId: user.user_hex_id,
-      displayName: user.display_name || user.full_name || 'Anonymous',
+      // Payouts are real bank transfers, so the REAL name (KIND 0 `name` →
+      // full_name) wins over display_name, which users treat as a nickname.
+      displayName: user.full_name || user.display_name || 'Anonymous',
       sales: sales.map(sale => {
         const payouts = getPayouts.all(sale.id) as any[];
         const totalPaid = payouts.reduce((sum: number, p: any) => sum + p.amount, 0);
