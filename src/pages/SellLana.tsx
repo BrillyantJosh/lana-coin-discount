@@ -492,12 +492,18 @@ const SellLana = () => {
                         return (
                           <button
                             key={w.walletId}
-                            onClick={() => setSelectedWallet(w.walletId)}
+                            // A frozen wallet may not be sold from — the badge
+                            // used to be the ONLY signal and the button still
+                            // went through. The server refuses it too; this just
+                            // stops the user reaching a dead end.
+                            disabled={isFrozen}
+                            title={isFrozen ? 'This wallet is frozen — funds cannot be sold from it.' : undefined}
+                            onClick={() => { if (!isFrozen) setSelectedWallet(w.walletId); }}
                             className={`w-full rounded-xl border-2 px-5 py-4 text-left transition-all ${
                               selectedWallet === w.walletId
                                 ? 'border-primary bg-primary/5'
                                 : 'border-border hover:border-muted-foreground/30'
-                            } ${isFrozen ? 'opacity-60' : ''}`}
+                            } ${isFrozen ? 'opacity-60 cursor-not-allowed hover:border-border' : ''}`}
                           >
                             <div className="flex items-start gap-4">
                               {/* Wallet info */}
@@ -510,6 +516,21 @@ const SellLana = () => {
                                     </span>
                                   )}
                                 </div>
+                                {isFrozen && (
+                                  <p className="text-xs text-blue-700 mb-1">
+                                    Funds cannot be sold from a frozen wallet.{' '}
+                                    <a
+                                      href="https://unfreeze.lanapays.us"
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={e => e.stopPropagation()}
+                                      className="underline font-medium"
+                                    >
+                                      Unfreeze it
+                                    </a>{' '}
+                                    first.
+                                  </p>
+                                )}
                                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                                   <span className="inline-flex items-center gap-1">
                                     <span className="font-medium text-foreground/70">Type:</span>
@@ -1079,8 +1100,22 @@ const SellLana = () => {
                           <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                         </svg>
                       </div>
-                      <h2 className="text-2xl font-bold text-foreground mb-2">Transaction Failed</h2>
+                      <h2 className="text-2xl font-bold text-foreground mb-2">
+                        {txResult.code === 'WALLET_FROZEN' ? 'Account Frozen' : 'Transaction Failed'}
+                      </h2>
                       <p className="text-red-600 mb-4">{txResult.error}</p>
+                      {/* A freeze is not a failed transaction — nothing was sent,
+                          and there is a concrete next step. */}
+                      {txResult.unfreezeUrl && (
+                        <a
+                          href={txResult.unfreezeUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-block rounded-xl border border-border px-5 py-2.5 text-sm font-medium text-foreground hover:bg-muted transition-colors mb-2"
+                        >
+                          Go to unfreeze.lanapays.us
+                        </a>
+                      )}
                     </>
                   )}
                 </div>

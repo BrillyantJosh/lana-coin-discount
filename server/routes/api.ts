@@ -4,6 +4,11 @@ import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb,
 import { sendLanaTransaction } from '../lib/transaction.js';
 import { computeBlocker, priorityFor, type QueueSeller } from '../lib/payoutOrder.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore } from '../lib/nostr.js';
+import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
+
+// The registrar's freeze answer is read through check.lanapays.us — the same
+// public proxy the mobile app uses, so both refuse on identical evidence.
+const WALLET_CHECK_BASE_URL = process.env.WALLET_CHECK_BASE_URL || 'https://check.lanapays.us';
 import { fetchBatchBalances, electrumCall } from '../lib/electrum.js';
 
 const router = Router();
@@ -1463,6 +1468,41 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.warn('[lana-discount] Rating check failed, blocking sale:', err.message);
       return res.status(403).json({ error: 'Unable to verify payment rating. Please try again.' });
+    }
+
+    // FREEZE GATE — a frozen account must not be able to sell its funds out.
+    // Checked here, on the server, before anything moves: the sell page can be
+    // bypassed, and until now nothing behind it looked at freeze status at all.
+    // Two independent sources (registrar per wallet + KIND 30889 account/wallet
+    // status); see server/lib/freeze.ts for why the verdict is conservative.
+    try {
+      const relays = getRelaysFromDb();
+      const trusted = getTrustedSignersFromDb();
+      const [registrar, walletList] = await Promise.all([
+        registrarSignal(senderAddress, WALLET_CHECK_BASE_URL),
+        fetchUserWallets(hexId, relays, trusted.LanaRegistrar || [])
+          .then(ws => walletListSignal(ws, senderAddress))
+          .catch(() => ({ source: 'wallet-list', reachable: false, frozen: false })),
+      ]);
+      const verdict = evaluateFreeze([registrar, walletList]);
+      if (verdict.blocked) {
+        console.log(
+          `[lana-discount] Sell blocked (${verdict.code}): ${hexId.slice(0, 12)}… wallet ${senderAddress.slice(0, 10)}… — ` +
+          verdict.signals.map(s => `${s.source}:${s.reachable ? (s.frozen ? 'FROZEN' : 'ok') : 'unreachable'}`).join(' '),
+        );
+        return res.status(403).json({
+          error: verdict.reason,
+          code: verdict.code,
+          unfreezeUrl: verdict.code === 'WALLET_FROZEN' ? 'https://unfreeze.lanapays.us' : undefined,
+        });
+      }
+    } catch (err: any) {
+      // A crash in the gate itself must not become an open door.
+      console.warn('[lana-discount] Freeze check failed, blocking sale:', err.message);
+      return res.status(403).json({
+        error: 'Freeze status could not be verified right now. Please try again shortly.',
+        code: 'FREEZE_UNVERIFIABLE',
+      });
     }
 
     // Validate currency
