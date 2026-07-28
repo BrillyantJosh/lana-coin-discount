@@ -3,8 +3,9 @@ import { createHash, randomBytes } from 'crypto';
 import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, getSplitApproachingFromDb, getFreezeLanaRetailAccountAboveFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists, getCrowdfundBandSet, getCrowdfundEligibility, getSplitStartedAtFromDb, getPaidByHexCurrencySinceSplit } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
 import { computeBlocker, priorityFor, type QueueSeller } from '../lib/payoutOrder.js';
-import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore } from '../lib/nostr.js';
+import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore, queryEventsFromRelays } from '../lib/nostr.js';
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
+import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
 
 // The registrar's freeze answer is read through check.lanapays.us — the same
 // public proxy the mobile app uses, so both refuse on identical evidence.
@@ -2384,10 +2385,19 @@ async function buildObligations(): Promise<{ currencies: Record<string, any>; to
     const queue = ordered.map((e, i) => {
       const { blocked } = computeBlocker(sellers, e.hex);
       const name = (e.financeRank != null ? (nameByHex.get(e.hex) || nameOf.get(e.hex)) : nameOf.get(e.hex)) || 'Anonymous';
+      // Freeze status is already public (KIND 30889); surfaced here so a reader
+      // can see that someone in the queue cannot be settled the usual way.
+      // null = we have not resolved them yet, which is NOT "clean".
+      const fz = freezeOf(e.hex);
       return {
         position: i + 1,
         name,
         hex_short: e.hex.slice(0, 8),
+        frozen: fz ? fz.frozen : null,
+        freeze_level: fz?.level ?? null,          // 'account' | 'wallet' | 'none'
+        frozen_wallets: fz?.frozenWallets ?? null,
+        total_wallets: fz?.totalWallets ?? null,
+        freeze_reasons: fz?.reasons ?? [],
         is_financier: e.financeRank != null,
         finance_rank: e.financeRank,
         is_crowdfunder: e.isCrowdfunder,
@@ -2404,6 +2414,27 @@ async function buildObligations(): Promise<{ currencies: Record<string, any>; to
     };
   }
   return { currencies, total_currencies: Object.keys(currencies).length };
+}
+
+/**
+ * Refresh freeze status for exactly the people the public board names — the
+ * unpaid payout queue plus the recipients of the last 100 payouts. Three
+ * batched relay queries cover all of them (~1s), rather than three per person.
+ * Exported for the heartbeat; safe to call on a schedule.
+ */
+export async function refreshBoardFreezeStatus(): Promise<{ resolved: number; frozen: number }> {
+  const hexes = new Set<string>();
+  for (const u of getAllSalesWithPayouts()) {
+    if (u.hexId) hexes.add(u.hexId);
+  }
+  const paid = db.prepare(`
+    SELECT DISTINCT bt.user_hex_id AS hex
+    FROM sale_payouts sp JOIN buyback_transactions bt ON bt.id = sp.transaction_id
+    ORDER BY sp.paid_at DESC LIMIT 200
+  `).all() as any[];
+  for (const r of paid) if (r.hex) hexes.add(r.hex);
+
+  return refreshFrozenDirectory([...hexes], getRelaysFromDb(), queryEventsFromRelays);
 }
 
 // GET /api/obligations — PUBLIC (no auth), CORS same-origin. Transparency board.
@@ -2431,14 +2462,22 @@ router.get('/payouts-history', (_req: Request, res: Response) => {
       ORDER BY sp.paid_at DESC, sp.id DESC
       LIMIT 100
     `).all() as any[];
-    const payouts = rows.map(r => ({
-      payout_id: r.payout_id,
-      name: r.full_name || r.display_name || 'Anonymous',   // payout → real name first
-      hex_short: r.hex ? r.hex.slice(0, 8) : null,
-      amount: Math.round((r.amount || 0) * 100) / 100,
-      currency: r.currency,
-      paid_at: r.paid_at,
-    }));
+    const payouts = rows.map(r => {
+      const fz = freezeOf(r.hex);
+      return {
+        payout_id: r.payout_id,
+        name: r.full_name || r.display_name || 'Anonymous',   // payout → real name first
+        hex_short: r.hex ? r.hex.slice(0, 8) : null,
+        amount: Math.round((r.amount || 0) * 100) / 100,
+        currency: r.currency,
+        paid_at: r.paid_at,
+        frozen: fz ? fz.frozen : null,
+        freeze_level: fz?.level ?? null,
+        frozen_wallets: fz?.frozenWallets ?? null,
+        total_wallets: fz?.totalWallets ?? null,
+        freeze_reasons: fz?.reasons ?? [],
+      };
+    });
     res.json({ count: payouts.length, payouts, updated_at: new Date().toISOString() });
   } catch (err: any) {
     console.error('[lana-discount] payouts-history error:', err.message);

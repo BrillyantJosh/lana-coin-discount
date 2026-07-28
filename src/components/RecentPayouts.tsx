@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { FrozenBadge } from './FrozenBadge';
 
 /** Shared live list of recent payouts. Used by the /history page (full 100) and
  * embedded on the landing (pass `limit`). */
@@ -9,6 +10,12 @@ interface PayoutItem {
   amount: number;
   currency: string;
   paid_at: string;
+  /** null = not resolved yet (which is NOT the same as "clean") */
+  frozen: boolean | null;
+  freeze_level: 'account' | 'wallet' | 'none' | null;
+  frozen_wallets: number | null;
+  total_wallets: number | null;
+  freeze_reasons: string[];
 }
 interface HistoryData {
   count: number;
@@ -89,6 +96,7 @@ export default function RecentPayouts({ limit }: { limit?: number }) {
                 <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{fmtDateTime(p.paid_at)}</td>
                 <td className="px-4 py-3">
                   <span className="font-medium text-foreground">{p.name}</span>
+                  <FrozenBadge info={p} className="ml-1.5 align-middle" />
                   {p.hex_short && <span className="ml-2 text-xs text-muted-foreground font-mono">{p.hex_short}…</span>}
                 </td>
                 <td className="px-4 py-3 text-right font-mono font-bold text-foreground whitespace-nowrap">{fmt(p.amount, p.currency)}</td>
@@ -105,6 +113,7 @@ export default function RecentPayouts({ limit }: { limit?: number }) {
           <div key={`${p.payout_id}-${i}`} className="rounded-xl border border-border bg-card p-4">
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium text-foreground truncate">{p.name}</span>
+              <FrozenBadge info={p} />
               <span className="font-mono font-bold text-foreground whitespace-nowrap">{fmt(p.amount, p.currency)}</span>
             </div>
             <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">

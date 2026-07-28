@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { FrozenBadge } from './FrozenBadge';
 
 /** Shared live board of UNPAID obligations, per currency, in payout order.
  * Used by the /obligations page and embedded on the landing. */
@@ -11,6 +12,12 @@ interface QueueItem {
   is_crowdfunder: boolean;
   outstanding: number;
   payable: boolean;
+  /** null = not resolved yet (which is NOT the same as "clean") */
+  frozen: boolean | null;
+  freeze_level: 'account' | 'wallet' | 'none' | null;
+  frozen_wallets: number | null;
+  total_wallets: number | null;
+  freeze_reasons: string[];
 }
 interface CurrencyBlock {
   total_outstanding: number;
@@ -108,6 +115,7 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
                       ) : (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground">Non-financier</span>
                       )}
+                      <FrozenBadge info={q} />
                     </div>
                     {q.hex_short && <span className="text-xs text-muted-foreground font-mono">{q.hex_short}…</span>}
                   </div>

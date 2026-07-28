@@ -691,6 +691,17 @@ async function heartbeatLoop() {
         await withTimeout(() => syncUserProfiles(), 'Profile sync', 30000);
       }
 
+      // Freeze status for the people named on the public board, every 15 min.
+      // Three batched relay queries for everyone (~1s), offset so it never
+      // shares a tick with the profile sync above.
+      if (heartbeatCount % 15 === 7) {
+        await withTimeout(async () => {
+          const { refreshBoardFreezeStatus } = await import('./routes/api.js');
+          const r = await refreshBoardFreezeStatus();
+          console.log(`[lana-discount] Freeze directory: ${r.resolved} resolved, ${r.frozen} frozen`);
+        }, 'Freeze directory', 30000);
+      }
+
       // Auto-send pending LANA every 5 heartbeats (= every 5 minutes)
       nextAutoSendIn = AUTO_SEND_CYCLE - ((heartbeatCount % AUTO_SEND_CYCLE) - AUTO_SEND_OFFSET + AUTO_SEND_CYCLE) % AUTO_SEND_CYCLE;
       if (nextAutoSendIn === AUTO_SEND_CYCLE) nextAutoSendIn = 0;
@@ -764,5 +775,15 @@ app.listen(PORT, '0.0.0.0', async () => {
     await pullCrowdfundDonations();
   } catch (err: any) {
     console.warn('[lana-discount] Initial crowd-funding sync failed:', err.message);
+  }
+
+  // Freeze status on startup, so the public board is not blank about it for the
+  // first quarter hour after a deploy.
+  try {
+    const { refreshBoardFreezeStatus } = await import('./routes/api.js');
+    const r = await refreshBoardFreezeStatus();
+    console.log(`[lana-discount] Freeze directory: ${r.resolved} resolved, ${r.frozen} frozen`);
+  } catch (err: any) {
+    console.warn('[lana-discount] Initial freeze sync failed:', err.message);
   }
 });
