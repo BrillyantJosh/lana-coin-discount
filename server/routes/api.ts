@@ -338,7 +338,7 @@ router.get('/admin/transactions', (req: Request, res: Response) => {
     const transactions = data.map((tx: any) => ({
       id: tx.id,
       date: tx.created_at,
-      user: tx.display_name || tx.full_name || 'Anonymous',
+      user: tx.full_name || tx.display_name || 'Anonymous',   // money view → KIND 0 real name first
       hexId: tx.user_hex_id.slice(0, 8) + '...' + tx.user_hex_id.slice(-6),
       fullHexId: tx.user_hex_id,
       lanaAmount: tx.lana_amount_display,
@@ -376,7 +376,7 @@ router.get('/admin/stats', async (_req: Request, res: Response) => {
     const recentTransactions = recentTxs.map((tx: any) => ({
       id: tx.id,
       date: tx.created_at?.split('T')[0] || tx.created_at?.split(' ')[0] || '',
-      user: tx.display_name || tx.full_name || 'Anonymous',
+      user: tx.full_name || tx.display_name || 'Anonymous',   // money view → KIND 0 real name first
       hexId: tx.user_hex_id.slice(0, 8) + '...' + tx.user_hex_id.slice(-6),
       fullHexId: tx.user_hex_id,
       lanaAmount: tx.lana_amount_display,

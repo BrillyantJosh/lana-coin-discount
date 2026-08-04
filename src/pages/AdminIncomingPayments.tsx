@@ -223,7 +223,11 @@ const AdminIncomingPayments = () => {
         try {
           const pRes = await fetch(`/api/user/${hex}/profile`);
           const pData = await pRes.json();
-          const name = pData.displayName || pData.fullName || pData.profile?.display_name || pData.profile?.name || null;
+          // REAL name first: this labels a bank wire, so it must match the
+          // person on the payout, not their nickname. (KIND 0 `name` is the
+          // real name here, `display_name` the nickname — the reverse of
+          // plain Nostr.)
+          const name = pData.fullName || pData.profile?.name || pData.displayName || pData.profile?.display_name || null;
           if (name) newNames[hex] = name;
         } catch {}
       }));

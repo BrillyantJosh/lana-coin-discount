@@ -111,11 +111,12 @@ const AdminDashboard = () => {
         const names: Record<string, string> = {};
         await Promise.all(uniqueIds.map(async (hexId) => {
           try {
-            // Try KIND 0 profile first (display_name / name)
+            // KIND 0 first, REAL name before nickname — this list carries
+            // amounts, so it names the person, not their handle.
             const profileRes = await fetch(`/api/user/${hexId}/profile`);
             const profileData = await profileRes.json();
-            if (profileData.displayName) { names[hexId] = profileData.displayName; return; }
             if (profileData.fullName) { names[hexId] = profileData.fullName; return; }
+            if (profileData.displayName) { names[hexId] = profileData.displayName; return; }
             // Fallback: payout account holder
             const r = await fetch(`/api/user/${hexId}/payout-account`);
             const d = await r.json();
