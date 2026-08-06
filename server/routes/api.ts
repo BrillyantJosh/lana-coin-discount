@@ -5,7 +5,7 @@ import { sendLanaTransaction } from '../lib/transaction.js';
 import { computeBlocker, priorityFor, type QueueSeller } from '../lib/payoutOrder.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore, queryEventsFromRelays } from '../lib/nostr.js';
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
-import { evaluateBuybackSplit, parseAllowedOffsets } from '../lib/buybackSplit.js';
+import { evaluateBuybackSplit } from '../lib/buybackSplit.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
 
 // The registrar's freeze answer is read through check.lanapays.us — the same
@@ -1148,18 +1148,6 @@ router.put('/admin/settings', (req: Request, res: Response) => {
       setAppSetting('commission_other', String(val), adminHex);
     }
 
-    // Which Splits may be sold back, as offsets from the current one.
-    // '1' (the default) = only the split immediately before the current one.
-    // '1,2' would widen it; '0' would include the split that is still running.
-    const { buyback_allowed_split_offsets } = req.body;
-    if (buyback_allowed_split_offsets !== undefined) {
-      const raw = String(buyback_allowed_split_offsets).trim();
-      if (!/^\d+(\s*,\s*\d+)*$/.test(raw)) {
-        return res.status(400).json({ error: 'Allowed split offsets must be whole numbers separated by commas, e.g. 1 or 1,2' });
-      }
-      setAppSetting('buyback_allowed_split_offsets', raw.replace(/\s+/g, ''), adminHex);
-    }
-
     // Minimum sell amounts per currency
     const { min_sell_amounts } = req.body;
     if (min_sell_amounts && typeof min_sell_amounts === 'object') {
@@ -1400,7 +1388,6 @@ router.post('/sell/split-check', async (req: Request, res: Response) => {
     const verdict = evaluateBuybackSplit({
       walletSplit: registrar.splitCreated ?? null,
       currentSplit: parseInt(getSplitFromDb() || '') || null,
-      allowedOffsets: parseAllowedOffsets(getAppSetting('buyback_allowed_split_offsets')),
       registrarReachable: registrar.reachable,
     });
     return res.json(verdict);
@@ -1554,7 +1541,6 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
       const splitVerdict = evaluateBuybackSplit({
         walletSplit: registrar.splitCreated ?? null,
         currentSplit: parseInt(getSplitFromDb() || '') || null,
-        allowedOffsets: parseAllowedOffsets(getAppSetting('buyback_allowed_split_offsets')),
         registrarReachable: registrar.reachable,
       });
       if (!splitVerdict.allowed) {

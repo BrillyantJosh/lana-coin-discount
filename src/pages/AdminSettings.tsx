@@ -40,10 +40,6 @@ const AdminSettings = () => {
   const [initialCommissionLanapays, setInitialCommissionLanapays] = useState('21');
   const [initialCommissionOther, setInitialCommissionOther] = useState('30');
 
-  // Buyback window: which Splits may be sold back, as offsets from the current one.
-  const [splitOffsets, setSplitOffsets] = useState('1');
-  const [initialSplitOffsets, setInitialSplitOffsets] = useState('1');
-
   // Minimum sell amounts per currency
   const [minSellAmounts, setMinSellAmounts] = useState<Record<string, string>>({});
   const [initialMinSellAmounts, setInitialMinSellAmounts] = useState<Record<string, string>>({});
@@ -88,11 +84,6 @@ const AdminSettings = () => {
       setInitialCommissionLanapays(cLp);
       setInitialCommissionOther(cOt);
 
-      // Unset means the documented default: only the Split before the current one.
-      const offsets = data.settings.buyback_allowed_split_offsets || '1';
-      setSplitOffsets(offsets);
-      setInitialSplitOffsets(offsets);
-
       // Load minimum sell amounts per currency
       const mins: Record<string, string> = {};
       for (const key of Object.keys(data.settings)) {
@@ -132,7 +123,6 @@ const AdminSettings = () => {
     if (activeCurrencies.some(c => !initialCurrencies.includes(c))) return true;
     if (commissionLanapays !== initialCommissionLanapays) return true;
     if (commissionOther !== initialCommissionOther) return true;
-    if (splitOffsets !== initialSplitOffsets) return true;
     for (const curr of activeCurrencies) {
       if ((minSellAmounts[curr] || '0') !== (initialMinSellAmounts[curr] || '0')) return true;
     }
@@ -160,7 +150,6 @@ const AdminSettings = () => {
           active_currencies: activeCurrencies,
           commission_lanapays: commissionLanapays,
           commission_other: commissionOther,
-          buyback_allowed_split_offsets: splitOffsets,
           min_sell_amounts: minSellAmounts,
         }),
       });
@@ -175,7 +164,6 @@ const AdminSettings = () => {
       setInitialCurrencies([...activeCurrencies]);
       setInitialCommissionLanapays(commissionLanapays);
       setInitialCommissionOther(commissionOther);
-      setInitialSplitOffsets(splitOffsets);
       setInitialMinSellAmounts({ ...minSellAmounts });
       toast.success('Settings saved');
     } catch (err) {
@@ -321,29 +309,19 @@ const AdminSettings = () => {
               </div>
             </div>
 
-            {/* Buyback window — which Splits may be sold back */}
+            {/* Buyback window — stated, never editable. The whole settlement
+                model rests on it: only the Split before the current one is
+                bought back. Changing it is a code change, reviewed and
+                deployed, not a click on an admin screen. */}
             <div className="rounded-2xl border-2 border-border bg-card p-6">
               <h2 className="text-lg font-semibold text-foreground mb-1">Buyback Window</h2>
-              <p className="text-sm text-muted-foreground mb-4">
-                Which Splits a wallet may have been registered in for its LANA to be bought back, counted
-                back from the current Split. <span className="font-mono">1</span> means only the Split before
-                the current one — the current Split is still running, and older Splits have passed.
+              <p className="text-sm text-muted-foreground">
+                LANA is bought back from wallets registered in <strong className="text-foreground">the Split before the current one</strong>, and
+                from no other. The current Split is still running, and older Splits have already passed.
               </p>
-              <div className="max-w-xs">
-                <label className="block text-sm font-medium text-foreground mb-1.5">Allowed Splits (offsets)</label>
-                <input
-                  type="text"
-                  value={splitOffsets}
-                  placeholder="1"
-                  onChange={e => setSplitOffsets(e.target.value)}
-                  className="w-full rounded-lg border border-border bg-background px-4 py-3 text-sm font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
-                />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Comma-separated. <span className="font-mono">1</span> = current − 1 only.
-                  <span className="font-mono"> 1,2</span> = the two Splits before this one.
-                  <span className="font-mono"> 0</span> would also admit the Split still running.
-                </p>
-              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                This is fixed and cannot be changed here — the rest of the settlement model depends on it.
+              </p>
             </div>
 
             {/* Minimum Sell Amount per Currency */}
