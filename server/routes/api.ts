@@ -2637,12 +2637,13 @@ router.get('/payouts-daily', (_req: Request, res: Response) => {
 // visible on the page rather than buried inside a sum. See lib/liquidity.ts.
 router.get('/liquidity-daily', (_req: Request, res: Response) => {
   try {
-    // The JOIN is not decoration: it is what makes this line describe the bars
-    // directly above it. /api/payouts-daily joins sale_payouts to
-    // buyback_transactions, so a payout row whose transaction is missing never
-    // reaches that chart. Reading sale_payouts alone here picked up EUR 71.68 of
-    // such orphans and the two panels disagreed by exactly that. One page, one
-    // set of flows — so the same join.
+    // The JOIN mirrors /api/payouts-daily exactly, and that is the point: this
+    // line sits directly beneath those bars and must be built from the same
+    // rows. A payout whose buyback_transaction is missing does not reach the
+    // chart above, so it must not reach the line either — otherwise the two
+    // panels describe the same money and disagree, with no way for a reader to
+    // tell which is right. (No such orphan rows exist today; the join is here
+    // so that if one ever appears, both panels move together.)
     const paidRows = db.prepare(`
       SELECT date(sp.paid_at) AS day, sp.currency AS currency, SUM(sp.amount) AS paid
       FROM sale_payouts sp
