@@ -6,6 +6,7 @@ import { computeBlocker, priorityFor, type QueueSeller } from '../lib/payoutOrde
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore, queryEventsFromRelays } from '../lib/nostr.js';
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
 import { evaluateBuybackSplit } from '../lib/buybackSplit.js';
+import { buildLiquiditySeries, type FlowRow } from '../lib/liquidity.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
 
 // The registrar's freeze answer is read through check.lanapays.us — the same
@@ -2619,6 +2620,53 @@ router.get('/payouts-daily', (_req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[lana-discount] payouts-daily error:', err.message);
     res.json({ currencies: [], totals_by_currency: {}, received_by_currency: {}, count_by_currency: {}, days: [], first_day: null, last_day: null, updated_at: new Date().toISOString() });
+  }
+});
+
+// GET /api/liquidity-daily — PUBLIC. The net FIAT position: what came in from
+// investors minus what went out to LANA sellers, accumulated day by day since
+// the first day of activity, per currency and combined into EUR.
+//
+// Same two source tables as /api/payouts-daily and the same day keys, so the
+// line below the bar chart describes exactly the bars above it.
+//
+// The combined figure converts through the LANA pivot: KIND 38888 quotes how
+// much of each currency one LANA costs, and two such quotes imply a cross rate.
+// The implied rate is RETURNED, not just applied — when the same number is
+// entered for two currencies the pivot silently means 1:1, and that has to be
+// visible on the page rather than buried inside a sum. See lib/liquidity.ts.
+router.get('/liquidity-daily', (_req: Request, res: Response) => {
+  try {
+    const paidRows = db.prepare(`
+      SELECT date(paid_at) AS day, currency, SUM(amount) AS paid
+      FROM sale_payouts
+      GROUP BY date(paid_at), currency
+    `).all() as any[];
+
+    const receivedRows = db.prepare(`
+      SELECT date(created_at) AS day, currency, SUM(total_amount) AS received
+      FROM incoming_batches
+      GROUP BY date(created_at), currency
+    `).all() as any[];
+
+    const flows: FlowRow[] = [
+      ...paidRows.map((r) => ({ day: r.day, currency: r.currency, received: 0, paid: r.paid || 0 })),
+      ...receivedRows.map((r) => ({ day: r.day, currency: r.currency, received: r.received || 0, paid: 0 })),
+    ];
+
+    const rates = getExchangeRatesFromDb();
+    const today = new Date().toISOString().slice(0, 10);
+    const series = buildLiquiditySeries(flows, rates, today);
+
+    res.json({ ...series, rates, updated_at: new Date().toISOString() });
+  } catch (err: any) {
+    console.error('[lana-discount] liquidity-daily error:', err.message);
+    res.json({
+      days: [], balance: { byCur: {}, eur: 0 },
+      totals: { byCur: {}, eur: { in: 0, out: 0, net: 0 } },
+      crossRates: {}, unconvertible: [], firstDay: null, lastDay: null,
+      eurRange: { min: 0, max: 0 }, rates: {}, updated_at: new Date().toISOString(),
+    });
   }
 });
 

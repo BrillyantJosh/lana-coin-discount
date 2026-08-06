@@ -7,6 +7,7 @@ import ObligationsBoard from "@/components/ObligationsBoard";
 import RecentPayouts from "@/components/RecentPayouts";
 import PendingVerification from "@/components/PendingVerification";
 import PayoutStats from "@/components/PayoutStats";
+import LiquidityBalance from "@/components/LiquidityBalance";
 import Footer from "@/components/Footer";
 
 const Index = () => {
@@ -62,6 +63,16 @@ const Index = () => {
             </p>
           </div>
           <PayoutStats />
+
+          {/* Same two flows, accumulated: were we net positive or negative that day? */}
+          <div className="mt-12 mb-8">
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground">Net FIAT position</h2>
+            <p className="mt-2 text-muted-foreground max-w-xl">
+              The same money, added up. Received minus paid out, day by day, since the first day — above the
+              line means more has come in than has gone out by that day.
+            </p>
+          </div>
+          <LiquidityBalance />
         </div>
       </section>
 
