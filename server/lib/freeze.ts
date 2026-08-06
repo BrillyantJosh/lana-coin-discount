@@ -32,6 +32,13 @@ export interface FreezeSignal {
   reachable: boolean;    // did we get an answer at all?
   frozen: boolean;       // does this source say frozen?
   detail?: string;       // e.g. 'frozen_max_cap', 'account status: frozen'
+  /**
+   * The registrar's split_created for this wallet, carried through so the
+   * buyback split gate (lib/buybackSplit.ts) can decide from the SAME answer
+   * instead of asking the registrar a second time. Only ever set by the
+   * registrar signal; undefined means "this source does not know".
+   */
+  splitCreated?: number;
 }
 
 export interface FreezeVerdict {
@@ -88,14 +95,20 @@ export function evaluateFreeze(signals: FreezeSignal[]): FreezeVerdict {
  */
 export function parseRegistrarBody(data: any): FreezeSignal {
   const frozen = (data?.frozen ?? data?.wallet?.frozen) === true;
+  // Same two shapes as `frozen`: flattened by check.lanapays.us, nested by the
+  // mobile proxy.
+  const rawSplit = data?.split_created ?? data?.wallet?.split_created;
+  const splitCreated = Number.isFinite(Number(rawSplit)) && rawSplit !== null && rawSplit !== ''
+    ? Number(rawSplit)
+    : undefined;
 
   // An explicit freeze is definitive on its own and needs no registration
   // status to be believed.
   if (frozen) {
-    return { source: 'registrar', reachable: true, frozen: true, detail: 'registrar: wallet frozen' };
+    return { source: 'registrar', reachable: true, frozen: true, detail: 'registrar: wallet frozen', splitCreated };
   }
   if (data?.registered === true) {
-    return { source: 'registrar', reachable: true, frozen: false };
+    return { source: 'registrar', reachable: true, frozen: false, splitCreated };
   }
 
   // `registered: false` is ALSO what this proxy returns when the registrar API

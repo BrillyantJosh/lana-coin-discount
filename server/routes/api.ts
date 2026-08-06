@@ -5,6 +5,7 @@ import { sendLanaTransaction } from '../lib/transaction.js';
 import { computeBlocker, priorityFor, type QueueSeller } from '../lib/payoutOrder.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore, queryEventsFromRelays } from '../lib/nostr.js';
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
+import { evaluateBuybackSplit, parseAllowedOffsets } from '../lib/buybackSplit.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
 
 // The registrar's freeze answer is read through check.lanapays.us — the same
@@ -1147,6 +1148,18 @@ router.put('/admin/settings', (req: Request, res: Response) => {
       setAppSetting('commission_other', String(val), adminHex);
     }
 
+    // Which Splits may be sold back, as offsets from the current one.
+    // '1' (the default) = only the split immediately before the current one.
+    // '1,2' would widen it; '0' would include the split that is still running.
+    const { buyback_allowed_split_offsets } = req.body;
+    if (buyback_allowed_split_offsets !== undefined) {
+      const raw = String(buyback_allowed_split_offsets).trim();
+      if (!/^\d+(\s*,\s*\d+)*$/.test(raw)) {
+        return res.status(400).json({ error: 'Allowed split offsets must be whole numbers separated by commas, e.g. 1 or 1,2' });
+      }
+      setAppSetting('buyback_allowed_split_offsets', raw.replace(/\s+/g, ''), adminHex);
+    }
+
     // Minimum sell amounts per currency
     const { min_sell_amounts } = req.body;
     if (min_sell_amounts && typeof min_sell_amounts === 'object') {
@@ -1368,6 +1381,43 @@ router.get('/user/:hexId/payment-score', async (req: Request, res: Response) => 
 });
 
 /**
+ * POST /api/sell/split-check
+ * Body: { walletId }
+ *
+ * Is this wallet inside the buyback window? The sell page asks the moment a
+ * wallet is picked, so the answer arrives before anyone types a private key.
+ * Advisory only — /sell/execute decides again, on its own evidence.
+ *
+ * Public: it reveals nothing that check.lanapays.us does not already answer
+ * for any wallet address.
+ */
+router.post('/sell/split-check', async (req: Request, res: Response) => {
+  const walletId = String(req.body?.walletId || '').trim();
+  if (!walletId) return res.status(400).json({ error: 'walletId is required' });
+
+  try {
+    const registrar = await registrarSignal(walletId, WALLET_CHECK_BASE_URL);
+    const verdict = evaluateBuybackSplit({
+      walletSplit: registrar.splitCreated ?? null,
+      currentSplit: parseInt(getSplitFromDb() || '') || null,
+      allowedOffsets: parseAllowedOffsets(getAppSetting('buyback_allowed_split_offsets')),
+      registrarReachable: registrar.reachable,
+    });
+    return res.json(verdict);
+  } catch (error: any) {
+    console.warn('[lana-discount] split-check failed:', error.message);
+    return res.json({
+      allowed: false,
+      code: 'SPLIT_UNVERIFIABLE',
+      reason: 'Buyback eligibility could not be checked right now. Please try again shortly.',
+      walletSplit: null,
+      currentSplit: null,
+      allowedSplits: [],
+    });
+  }
+});
+
+/**
  * POST /api/sell/preview
  * Calculate payout preview before execution.
  */
@@ -1495,6 +1545,29 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
           error: verdict.reason,
           code: verdict.code,
           unfreezeUrl: verdict.code === 'WALLET_FROZEN' ? 'https://unfreeze.lanapays.us' : undefined,
+        });
+      }
+
+      // SPLIT GATE — which Split this wallet was registered in decides whether
+      // its LANA is inside the buyback window at all. Read from the SAME
+      // registrar answer the freeze gate just used, so no second call.
+      const splitVerdict = evaluateBuybackSplit({
+        walletSplit: registrar.splitCreated ?? null,
+        currentSplit: parseInt(getSplitFromDb() || '') || null,
+        allowedOffsets: parseAllowedOffsets(getAppSetting('buyback_allowed_split_offsets')),
+        registrarReachable: registrar.reachable,
+      });
+      if (!splitVerdict.allowed) {
+        console.log(
+          `[lana-discount] Sell blocked (${splitVerdict.code}): wallet ${senderAddress.slice(0, 10)}… ` +
+          `split ${splitVerdict.walletSplit ?? '?'} vs allowed [${splitVerdict.allowedSplits.join(',')}] (current ${splitVerdict.currentSplit ?? '?'})`,
+        );
+        return res.status(403).json({
+          error: splitVerdict.reason,
+          code: splitVerdict.code,
+          walletSplit: splitVerdict.walletSplit,
+          currentSplit: splitVerdict.currentSplit,
+          allowedSplits: splitVerdict.allowedSplits,
         });
       }
     } catch (err: any) {

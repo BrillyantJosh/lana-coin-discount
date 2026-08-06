@@ -22,6 +22,16 @@ interface WalletBalance {
   status: string;
 }
 
+/** Verdict from /api/sell/split-check — mirrors server/lib/buybackSplit.ts. */
+interface SplitCheck {
+  allowed: boolean;
+  code: 'OK' | 'SPLIT_TOO_NEW' | 'SPLIT_TOO_OLD' | 'SPLIT_UNKNOWN' | 'SPLIT_UNVERIFIABLE';
+  reason: string;
+  walletSplit: number | null;
+  currentSplit: number | null;
+  allowedSplits: number[];
+}
+
 interface SystemParams {
   exchangeRates: Record<string, number>;
   split: string | null;
@@ -97,6 +107,9 @@ const SellLana = () => {
   // UTXO check
   const [utxoCount, setUtxoCount] = useState<number | null>(null);
   const [utxoLoading, setUtxoLoading] = useState(false);
+  // Buyback window verdict for the selected wallet (see /api/sell/split-check).
+  const [splitCheck, setSplitCheck] = useState<SplitCheck | null>(null);
+  const [splitChecking, setSplitChecking] = useState(false);
   const MAX_UTXOS = 20;
   const tooManyUtxos = utxoCount !== null && utxoCount > MAX_UTXOS;
 
@@ -223,6 +236,32 @@ const SellLana = () => {
       finally { setUtxoLoading(false); }
     };
     checkUtxos();
+  }, [selectedWallet]);
+
+  // BUYBACK WINDOW — which Split this wallet was registered in decides whether
+  // its LANA is bought back at all. Asked the moment a wallet is picked, so the
+  // seller learns it here and not after typing a private key. The server checks
+  // again in /sell/execute; this is only the courtesy of saying so early.
+  useEffect(() => {
+    if (!selectedWallet) { setSplitCheck(null); return; }
+    let cancelled = false;
+    setSplitChecking(true);
+    fetch('/api/sell/split-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletId: selectedWallet }),
+    })
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setSplitCheck(d); })
+      .catch(() => {
+        if (!cancelled) setSplitCheck({
+          allowed: false, code: 'SPLIT_UNVERIFIABLE',
+          reason: 'Buyback eligibility could not be checked right now. Please try again shortly.',
+          walletSplit: null, currentSplit: null, allowedSplits: [],
+        });
+      })
+      .finally(() => { if (!cancelled) setSplitChecking(false); });
+    return () => { cancelled = true; };
   }, [selectedWallet]);
 
   const getSenderAddress = () => selectedWallet;
@@ -654,20 +693,36 @@ const SellLana = () => {
                   </div>
                 )}
 
+                {/* BUYBACK WINDOW — said here, before a private key is typed */}
+                {selectedWallet && splitCheck && !splitCheck.allowed && (
+                  <div className="rounded-xl border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 p-4 space-y-1">
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                      This wallet is outside the buyback window
+                    </p>
+                    <p className="text-xs text-amber-700 dark:text-amber-400">{splitCheck.reason}</p>
+                    {splitCheck.walletSplit !== null && splitCheck.currentSplit !== null && (
+                      <p className="text-xs text-amber-700/80 dark:text-amber-400/80">
+                        Wallet Split {splitCheck.walletSplit} · current Split {splitCheck.currentSplit}
+                        {splitCheck.allowedSplits.length > 0 && <> · bought back: {splitCheck.allowedSplits.join(', ')}</>}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex justify-between">
                   <Link to="/dashboard" className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                     Cancel
                   </Link>
                   <button
                     onClick={() => setStep(3)}
-                    disabled={!getSenderAddress() || tooManyUtxos || utxoLoading || !selectedCurrency || !getPayoutInfo()}
+                    disabled={!getSenderAddress() || tooManyUtxos || utxoLoading || !selectedCurrency || !getPayoutInfo() || splitChecking || !splitCheck?.allowed}
                     className={`rounded-xl px-6 py-3 font-semibold text-white transition-all ${
-                      getSenderAddress() && !tooManyUtxos && !utxoLoading && selectedCurrency && getPayoutInfo()
+                      getSenderAddress() && !tooManyUtxos && !utxoLoading && selectedCurrency && getPayoutInfo() && !splitChecking && splitCheck?.allowed
                         ? 'bg-primary hover:bg-primary/90 shadow-lg'
                         : 'bg-muted-foreground/30 cursor-not-allowed'
                     }`}
                   >
-                    Next
+                    {splitChecking ? 'Checking…' : 'Next'}
                   </button>
                 </div>
               </div>
