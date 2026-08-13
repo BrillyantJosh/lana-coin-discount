@@ -22,7 +22,7 @@ const steps = [
   {
     icon: Banknote,
     title: "Get Paid in Turn",
-    description: "You join a public payout queue and are paid to your bank account as revenue flows in — financiers first, then everyone else, per currency. Track your exact position anytime.",
+    description: "You join a public payout queue and are paid to your bank account as revenue flows in — financiers first in financing order, then everyone else, per currency. Track your exact position anytime.",
     step: "04",
   },
 ];

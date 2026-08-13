@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { createHash, randomBytes } from 'crypto';
 import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, getSplitApproachingFromDb, getFreezeLanaRetailAccountAboveFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists, getCrowdfundBandSet, getCrowdfundEligibility, getSplitStartedAtFromDb, getPaidByHexCurrencySinceSplit } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
-import { computeBlocker, priorityFor, type QueueSeller } from '../lib/payoutOrder.js';
+import { computeBlocker, financingPriorityOf, priorityFor, type QueueSeller } from '../lib/payoutOrder.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore, queryEventsFromRelays } from '../lib/nostr.js';
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
 import { evaluateBuybackSplit } from '../lib/buybackSplit.js';
@@ -968,8 +968,9 @@ router.post('/admin/payouts', async (req: Request, res: Response) => {
       return res.status(400).json({ error: `Amount exceeds remaining (${remaining.toFixed(2)} ${currency})` });
     }
 
-    // ── Payout-order enforcement: financiers first (strict FIFO rank), then the rest,
-    // evaluated independently per currency. Blocked unless the admin explicitly forces.
+    // ── Payout-order enforcement: financiers first, in the FINANCING order —
+    // rounds ascending, FIFO inside a round — then the rest, evaluated
+    // independently per currency. Blocked unless the admin explicitly forces.
     const orderBlocks = await computeAllBlocks(getAllSalesWithPayouts());
     const orderBlock = orderBlocks.get(`${tx.user_hex_id}|${tx.currency}`);
     if (orderBlock?.blocked) {
@@ -2027,16 +2028,20 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
   }
 });
 
-// Financing order (FIFO) from Direct Fund. Powers BOTH the Payouts display panel
-// (all currencies) and per-currency payout-order ENFORCEMENT. Cached per currency
-// (~30 min) with a stale-fallback so a Direct Fund hiccup never blanks the page or
-// wrongly freezes payouts — enforcement FAILS OPEN (no blocks) on an outage.
-const FINANCING_ORDER_TTL = 1_800_000; // 30 minutes (registration order rarely changes)
+// Financing order from Direct Fund: investment rounds ascending, FIFO inside a
+// round, sweeper last (the `financing_rank` field). Powers BOTH the Payouts
+// display panel (all currencies) and per-currency payout-order ENFORCEMENT.
+// Cached per currency with a stale-fallback so a Direct Fund hiccup never blanks
+// the page or wrongly freezes payouts — enforcement FAILS OPEN on an outage.
+const FINANCING_ORDER_TTL = 300_000; // 5 min — financing_rank is round-aware and MOVES as the
+// allocator spends budgets mid-split (a round-1 budget depleting re-anchors its investor at
+// round 2). 5 min bounds payout-order staleness well inside an admin session while keeping
+// Direct Fund load trivial; the stale-serve fallback below still fails OPEN on an outage.
 interface FinancingCacheEntry { order: any[]; split: number | null; fetchedAt: number }
 const financingCache = new Map<string, FinancingCacheEntry>(); // key '' = all currencies
 const financingFetching = new Set<string>();
 
-/** Fetch (cached) the FIFO financing order for a currency ('' = all). Never throws. */
+/** Fetch (cached) the financing order for a currency ('' = all). Never throws. */
 async function fetchFinancingOrder(currency: string): Promise<{ order: any[]; split: number | null; stale: boolean }> {
   const key = currency || '';
   const now = Date.now();
@@ -2063,14 +2068,19 @@ async function fetchFinancingOrder(currency: string): Promise<{ order: any[]; sp
   return { order: entry.order, split: entry.split, stale: now - entry.fetchedAt >= FINANCING_ORDER_TTL };
 }
 
-/** hex → financier rank (+ display name) for one currency. Every listed investor is a
- * financier; the is_last_budget sweeper is included and ranked last. */
+/** hex → financier rank (+ display name) for ONE currency. Every listed investor
+ * is a financier; the is_last_budget sweeper is included and ranked last.
+ *
+ * THE PAYOUT ORDER: financing_rank (rounds ascending, FIFO inside a round),
+ * falling back to registration `rank` on payloads from an older Direct Fund.
+ * Keyed by hex — call it with a REAL currency only; the '' (all-currencies)
+ * fetch has one row per (hex, currency) and a hex-keyed map would collide. */
 async function getFinancingRankMap(currency: string): Promise<{ rankByHex: Map<string, number>; nameByHex: Map<string, string> }> {
   const { order } = await fetchFinancingOrder(currency);
   const rankByHex = new Map<string, number>();
   const nameByHex = new Map<string, string>();
   for (const o of order) {
-    if (o.nostr_hex_id != null && o.rank != null) rankByHex.set(o.nostr_hex_id, o.rank);
+    if (o.nostr_hex_id != null && o.rank != null) rankByHex.set(o.nostr_hex_id, financingPriorityOf(o));
     if (o.nostr_hex_id != null && o.name) nameByHex.set(o.nostr_hex_id, o.name);
   }
   return { rankByHex, nameByHex };
@@ -2254,9 +2264,10 @@ function outstandingByCurrency(users: any[]): Map<string, Map<string, number>> {
 
 interface PayoutBlock { blocked: boolean; blockedByHex: string | null; blockedByName: string | null }
 
-/** Per-(hex|currency) payout-order block status. Tier 1 financiers (strict FIFO
- * rank) → Tier 2 crowd-funders (flat) → the rest (unordered), independently per
- * currency. Fails OPEN on outage (financing outage or empty crowd set). */
+/** Per-(hex|currency) payout-order block status. Tier 1 financiers (financing
+ * order: rounds ascending, FIFO inside a round, sweeper last) → Tier 2
+ * crowd-funders (flat) → the rest (unordered), independently per currency.
+ * Fails OPEN on outage (financing outage or empty crowd set). */
 async function computeAllBlocks(users: any[]): Promise<Map<string, PayoutBlock>> {
   const oc = outstandingByCurrency(users);
   const nameOf = new Map<string, string>();
@@ -2429,8 +2440,9 @@ async function buildObligations(): Promise<{ currencies: Record<string, any>; to
     const sellers: QueueSeller[] = [...hexMap.entries()].map(([hex, v]) => ({
       hex, remaining: v.outstanding, priority: priorityFor(hex, rankByHex, crowdSet),
     }));
-    // Payout order by priority: Tier 1 financiers (rank) → Tier 2 crowd-funders →
-    // the rest. Ties within a band (crowd-funders / non-financiers) → earliest arrival.
+    // Payout order by priority: Tier 1 financiers (financing rank — rounds first,
+    // FIFO inside a round) → Tier 2 crowd-funders → the rest. Ties within a band
+    // (crowd-funders / non-financiers) → earliest arrival.
     const ordered = [...hexMap.entries()].map(([hex, v]) => ({
       hex, ...v,
       financeRank: rankByHex.get(hex) ?? null,

@@ -9,7 +9,7 @@ const points = [
   {
     icon: Coins,
     title: "Financiers first, then crowd-funding",
-    body: "Those who finance the Lana economy — who fund the budgets that drive spending — are paid first, in the order they committed. Next come crowd-funding project owners who have raised support this cycle. Then all other sellers.",
+    body: "Those who finance the Lana economy — who fund the budgets that drive spending — are paid first, in the order they finance — round 1 before round 2 before round 3, first-come-first-served inside a round. Next come crowd-funding project owners who have raised support this cycle. Then all other sellers.",
   },
   {
     icon: Layers,

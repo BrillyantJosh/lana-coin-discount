@@ -4,7 +4,7 @@ import ObligationsBoard from '@/components/ObligationsBoard';
 
 /**
  * Public transparency board: every UNPAID obligation to LANA sellers and the exact
- * order it will be paid (financiers first by FIFO rank, then the rest), per currency.
+ * order it will be paid (financiers first in financing order — rounds asc, FIFO inside — then the rest), per currency.
  */
 const Obligations = () => (
   <div className="min-h-screen bg-background flex flex-col">
@@ -19,7 +19,7 @@ const Obligations = () => (
       </div>
       <ObligationsBoard />
       <p className="text-center text-xs text-muted-foreground mt-6">
-        Financiers first (by budget registration order), then crowd-funding project owners, then the rest · per currency · updates every 30s
+        Financiers first (in financing order — rounds first, FIFO inside a round), then crowd-funding project owners, then the rest · per currency · updates every 30s · financing order refreshed every 5 min
       </p>
     </main>
     <Footer />

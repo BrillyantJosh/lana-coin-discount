@@ -16,7 +16,7 @@ const HeroSection = () => {
           <p className="text-lg md:text-xl text-muted-foreground max-w-xl mx-auto lg:mx-0 leading-relaxed">
             Selling LANA from your investment keeps 79% of its value (a 21% fee); other LANA keeps 70%
             (a 30% fee). Payouts follow a public, fair queue — not a fixed schedule: those who finance
-            the Lana economy are paid first, then everyone else, separately for each currency.
+            the Lana economy are paid first, in the order they finance, then everyone else, separately for each currency.
           </p>
           <p className="text-sm md:text-base text-muted-foreground max-w-xl mx-auto lg:mx-0 leading-relaxed">
             You're paid as real spending generates revenue — fully transparently. See exactly where you

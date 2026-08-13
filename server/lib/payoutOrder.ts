@@ -1,11 +1,12 @@
 /**
  * Payout-order enforcement (lana.discount) — pure logic, no I/O.
  *
- * Per currency, payouts must follow: financiers first — strictly by their FIFO
- * financing rank — then everyone else. Among non-financiers there is NO enforced
- * order (so one unpayable non-financier can't freeze the rest). This module is
- * pure so it can be unit-tested and reused by both the POST guard and the GET
- * annotation in server/routes/api.ts.
+ * Per currency, payouts must follow the FINANCING order: financiers first —
+ * strictly by their financing rank (investment rounds ascending, FIFO inside a
+ * round, sweeper last) — then everyone else. Among non-financiers there is NO
+ * enforced order (so one unpayable non-financier can't freeze the rest). This
+ * module is pure so it can be unit-tested and reused by both the POST guard and
+ * the GET annotation in server/routes/api.ts.
  *
  * The caller scopes everything to ONE currency: it builds the per-currency seller
  * list and passes the currency's financier ranks. Cross-currency independence is
@@ -26,7 +27,7 @@ export const CROWDFUND_TIER = 1_000_000;
 export interface QueueSeller {
   hex: string;
   remaining: number; // outstanding fiat in THIS currency (completed/paid sales only)
-  priority: number;  // financier: financeRank (1..M, sweeper last); crowd-funder: CROWDFUND_TIER; other: NON_FINANCIER
+  priority: number;  // financier: financing rank (1..M — rounds asc, FIFO inside, sweeper last); crowd-funder: CROWDFUND_TIER; other: NON_FINANCIER
 }
 
 export interface BlockResult {
@@ -41,9 +42,30 @@ export interface BlockResult {
  *   2. crowd-funder (not a financier, but has raised & unpaid donations this split)
  *      → CROWDFUND_TIER (flat)
  *   3. everyone else → NON_FINANCIER
- * Ranks come from Direct Fund's /api/admin/financing-order?currency=C; the crowd
- * set comes from lana.discount's local donation ledger (getCrowdfundBandSet).
+ * Ranks come from Direct Fund's /api/admin/financing-order?currency=C — the
+ * `financing_rank` field via financingPriorityOf below; the crowd set comes from
+ * lana.discount's local donation ledger (getCrowdfundBandSet).
  */
+/**
+ * The priority number for one Direct Fund financing-order row.
+ *
+ * `financing_rank` is the allocator's walk — investment rounds ascending, FIFO
+ * inside a round, sweeper last — the same order the Direct.Fund landing shows.
+ * Payouts follow it since 13 Aug (Brilly's call). Falls back to registration
+ * `rank` when the field is absent: an older Direct Fund during a deploy window,
+ * or stale cached rows. Both are dense 1..N, so CROWDFUND_TIER stays safe.
+ *
+ * Payout nuance, on purpose: financing_rank anchors an investor at the round of
+ * their REMAINING allocatable money; once everything is spent, Direct Fund
+ * re-anchors them at their earliest budget (typically round 1). So at payout
+ * time — end of split, budgets spent — finished financiers rank where they
+ * FIRST financed, while mid-split an investor whose live money sits in round 2
+ * ranks at round 2.
+ */
+export function financingPriorityOf(row: { financing_rank?: number | null; rank: number }): number {
+  return row.financing_rank ?? row.rank;
+}
+
 export function priorityFor(hex: string, rankByHex: Map<string, number>, crowdSet?: Set<string>): number {
   const r = rankByHex.get(hex);
   if (r != null) return r;
@@ -61,7 +83,8 @@ export function priorityFor(hex: string, rankByHex: Map<string, number>, crowdSe
  * Consequences fall out of the priority numbers:
  *   - two non-financiers (both NON_FINANCIER) never block each other;
  *   - any outstanding financier blocks every non-financier;
- *   - financiers block each other strictly by ascending rank (sweeper last).
+ *   - financiers block each other strictly by ascending financing rank
+ *     (rounds first, FIFO inside a round, sweeper last).
  * A seller with nothing outstanding is never blocked.
  */
 export function computeBlocker(sellers: QueueSeller[], targetHex: string): BlockResult {

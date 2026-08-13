@@ -81,10 +81,12 @@ interface UserWithSales {
   crowdfunderCurrencies?: string[];    // currencies where this seller is a crowd-funder (Tier 2)
 }
 
-// One investor's place in the FIFO financing order (from Direct Fund). Used to
-// DISPLAY payout priority — financiers first (by earliest budget), sweeper last.
+// One investor's place in the financing order (from Direct Fund): investment
+// rounds ascending, FIFO inside a round, sweeper last. Payouts follow it.
 interface FinancierRank {
-  rank: number;
+  rank: number;               // registration order — reference/back-compat only
+  financing_rank?: number;    // THE payout order (rounds asc, FIFO inside); absent on old payloads
+  round?: number;             // the round the investor's remaining money sits in
   nostr_hex_id: string;
   name: string | null;
   financed_amount: number;
@@ -121,7 +123,7 @@ const AdminPayouts = () => {
   // Default to financiers-first so the payout order is what you see on open.
   const [sortMode, setSortMode] = useState<'remaining' | 'latest_payment' | 'financing_priority'>('financing_priority');
 
-  // Payout-priority (FIFO financing order) for the SELECTED currency — display
+  // Payout-priority (financing order: rounds asc, FIFO inside) for the SELECTED currency — display
   // only. Each currency is a separate class with its own budget/order, so this
   // holds one currency's order at a time.
   const [financing, setFinancing] = useState<FinancierRank[]>([]);
@@ -130,7 +132,7 @@ const AdminPayouts = () => {
   // ONLY when this matches the active currency — so a slow/failed fetch after a
   // tab switch can never show the previous currency's ranks under the new tab.
   const [financingCurrency, setFinancingCurrency] = useState<string>('');
-  // Collapsed by default (the FIFO financier list). The dedicated "Pay by order"
+  // Collapsed by default (the financing-order financier list). The dedicated "Pay by order"
   // tab is the primary way to see the full payout sequence now.
   const [showPayoutOrder, setShowPayoutOrder] = useState(false);
   // Page view: 'order' (default) = the payout queue (who can be paid, in order)
@@ -159,7 +161,7 @@ const AdminPayouts = () => {
     fetchPayouts();
   }, [session, isAdmin]);
 
-  // Load the FIFO financing order for the SELECTED currency (display-only;
+  // Load the financing order for the SELECTED currency (display-only;
   // failures degrade silently). Re-fetches whenever the operator switches
   // currency, because each currency has its own budget and its own order.
   useEffect(() => {
@@ -306,7 +308,7 @@ const AdminPayouts = () => {
         const who = data.blockedByName || (data.blockedByHex ? data.blockedByHex.slice(0, 8) + '…' : 'a higher-priority recipient');
         const ok = window.confirm(
           `${who} is ahead in the ${data.currency || sale.currency} payout queue and still unpaid.\n\n` +
-          `Financiers must be paid first. Pay out of order anyway?`
+          `Payouts follow the financing order — rounds first, FIFO inside a round. Pay out of order anyway?`
         );
         if (!ok) return;
         ({ res, data } = await post(true));
@@ -412,7 +414,7 @@ const AdminPayouts = () => {
   // (guards the tab-switch race and failed fetches — never show €-ranks under £).
   const financingActive = financingCurrency === activeCurrency ? financing : [];
   const financingStaleActive = financingCurrency === activeCurrency ? financingStale : false;
-  // Financier ranking (FIFO) for the ACTIVE currency, keyed by full seller hex.
+  // Financier ranking (financing order) for the ACTIVE currency, keyed by full seller hex.
   const financingMap = new Map<string, FinancierRank>();
   for (const f of financingActive) financingMap.set(f.nostr_hex_id, f);
   // Tier-2 crowd-funders IN THIS CURRENCY (server-flagged per currency: raised &
@@ -421,20 +423,22 @@ const AdminPayouts = () => {
     users.filter(u => (u.crowdfunderCurrencies || []).includes(activeCurrency)).map(u => u.hexId)
   );
   const NON_FINANCIER_RANK = 1e9, SWEEPER_RANK = 5e8, CROWDFUND_RANK = 7e8;
-  // Effective payout order: Tier 1 financiers first (rank; sweeper last among them),
-  // then Tier 2 crowd-funders, then recipients with no priority last.
+  // Effective payout order: Tier 1 financiers first — in FINANCING order, rounds
+  // ascending and FIFO inside a round (financing_rank; registration rank only as
+  // an old-payload fallback), sweeper last among them — then Tier 2
+  // crowd-funders, then recipients with no priority last.
   const payoutRankOf = (hex: string): number => {
     const f = financingMap.get(hex);
-    if (f) return f.is_last_budget ? SWEEPER_RANK : f.rank;
+    if (f) return f.is_last_budget ? SWEEPER_RANK : (f.financing_rank ?? f.rank);
     if (crowdfunderSet.has(hex)) return CROWDFUND_RANK;
     return NON_FINANCIER_RANK;
   };
   const priorityBadge = (hex: string): { label: string; cls: string; title: string } => {
     const f = financingMap.get(hex);
     if (f && !f.is_last_budget) return {
-      label: `Payout #${f.rank}`,
+      label: `Payout #${f.financing_rank ?? f.rank}${f.round ? ` · R${f.round}` : ''}`,
       cls: 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300',
-      title: `Financier${f.name ? ': ' + f.name : ''}${(f.first_budget_at || f.added_at) ? ' · registered ' + formatDate(f.first_budget_at || f.added_at || '') : ''}`,
+      title: `Financier${f.name ? ': ' + f.name : ''}${f.round ? ` · round ${f.round}` : ''}${(f.first_budget_at || f.added_at) ? ' · registered ' + formatDate(f.first_budget_at || f.added_at || '') : ''}`,
     };
     if (f && f.is_last_budget) return {
       label: 'Sweeper · last',
@@ -490,7 +494,7 @@ const AdminPayouts = () => {
     })
     .sort((a, b) => {
       if (sortMode === 'financing_priority') {
-        // Financiers first (FIFO by earliest budget), sweeper next, non-financiers last.
+        // Financiers first (financing order: rounds asc, FIFO inside a round), sweeper next, non-financiers last.
         const ra = payoutRankOf(a.hexId), rb = payoutRankOf(b.hexId);
         if (ra !== rb) return ra - rb;
         // tie-break within the same priority: unpaid first, then highest remaining
@@ -513,7 +517,7 @@ const AdminPayouts = () => {
 
   // ── "Pay by order" queue for the active currency ──────────────────────────
   // The exact sequence in which outstanding requests may be paid: strictly by
-  // payout priority (financiers by FIFO rank → crowd-funders → the rest), with
+  // payout priority (financiers by financing rank → crowd-funders → the rest), with
   // each recipient marked payable-now or waiting behind a higher-priority one.
   // Uses the server's per-(hex|currency) orderBlocked flag — the same gate the
   // POST guard enforces — so the list matches exactly what will/won't be allowed.
@@ -618,7 +622,7 @@ const AdminPayouts = () => {
           </div>
         )}
 
-        {/* Payout order (FIFO financing) for the ACTIVE currency — display only. Financiers first; sweeper + non-financiers last. */}
+        {/* Payout order (financing order) for the ACTIVE currency — display only. Financiers first; sweeper + non-financiers last. */}
         {pageTab === 'manage' && !loading && financingActive.length > 0 && (
           <div className="mb-4 rounded-2xl border-2 border-border bg-card overflow-hidden">
             <button
@@ -626,9 +630,9 @@ const AdminPayouts = () => {
               className="w-full px-4 sm:px-6 py-3 flex items-center justify-between text-left hover:bg-muted/30 transition-colors"
             >
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold text-foreground">{activeCurrency} payout order — financiers first</span>
+                <span className="font-semibold text-foreground">{activeCurrency} payout order — financing order</span>
                 <span className="text-xs text-muted-foreground">
-                  FIFO · {financingActive.filter(f => !f.is_last_budget).length} financier{financingActive.filter(f => !f.is_last_budget).length !== 1 ? 's' : ''}
+                  Rounds first · {financingActive.filter(f => !f.is_last_budget).length} financier{financingActive.filter(f => !f.is_last_budget).length !== 1 ? 's' : ''}
                 </span>
                 {financingStaleActive && (
                   <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300" title="Cached — Direct Fund was briefly unreachable">cached</span>
@@ -641,15 +645,21 @@ const AdminPayouts = () => {
             {showPayoutOrder && (
               <div className="border-t border-border px-4 sm:px-6 py-3">
                 <p className="text-xs text-muted-foreground mb-3">
-                  Those who finance first have payout priority (earliest-registered budget first; the last-budget sweeper is paid last among financiers). Next come <strong className="text-foreground">crowd-funding project owners</strong> (Tier 2 · <span className="text-teal-600 dark:text-teal-400">Crowdfunding</span> badge). Anyone with no funding budget or crowd-funding is paid last.
+                  Payouts follow the financing order: rounds first — round 1 before round 2 before round 3 — and first-come-first-served inside a round; the last-budget sweeper is paid last among financiers. Next come <strong className="text-foreground">crowd-funding project owners</strong> (Tier 2 · <span className="text-teal-600 dark:text-teal-400">Crowdfunding</span> badge). Anyone with no funding budget or crowd-funding is paid last.
                 </p>
                 <ol className="space-y-1.5">
-                  {financingActive.map(f => (
+                  {/* Sorted by financing_rank — Direct Fund's array order is
+                      registration order, so rendering it as-is would show the
+                      new numbers in the old sequence (#3, #1, #2). */}
+                  {[...financingActive].sort((a, b) => (a.financing_rank ?? a.rank) - (b.financing_rank ?? b.rank)).map(f => (
                     <li key={f.nostr_hex_id} className="flex items-center gap-2 text-sm">
                       <span className={`inline-flex items-center justify-center min-w-[1.75rem] h-6 px-1.5 rounded font-mono text-xs font-bold ${f.is_last_budget ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' : 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300'}`}>
-                        {f.is_last_budget ? '↓' : f.rank}
+                        {f.is_last_budget ? '↓' : (f.financing_rank ?? f.rank)}
                       </span>
                       <span className="font-medium text-foreground truncate">{f.name || 'Anonymous'}</span>
+                      {f.round != null && !f.is_last_budget && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300" title={`Investment round ${f.round}`}>R{f.round}</span>
+                      )}
                       <span className="text-xs text-muted-foreground font-mono">{f.nostr_hex_id.slice(0, 8)}…</span>
                       {f.privileged && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300">VIP</span>
@@ -706,7 +716,7 @@ const AdminPayouts = () => {
               </button>
               <button
                 onClick={() => setSortMode('financing_priority')}
-                title="Order sellers by financing priority: those who finance first are paid first"
+                title="Order sellers by financing priority: rounds first, FIFO inside a round — the financing order is the payout order"
                 className={`px-4 py-2.5 text-sm font-medium transition-colors ${sortMode === 'financing_priority' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
               >
                 Financiers first
@@ -738,7 +748,7 @@ const AdminPayouts = () => {
                   {activeCurrency} — pay in this order
                   <span className="ml-2 text-xs text-muted-foreground font-normal">{payoutQueue.length} waiting · {sym}{queueTotalOwed.toFixed(2)} owed</span>
                 </span>
-                <span className="text-xs text-muted-foreground">Financiers first (FIFO) → crowd-funders → the rest</span>
+                <span className="text-xs text-muted-foreground">Financiers in financing order (rounds first, FIFO inside a round) → crowd-funders → the rest</span>
               </div>
               <ol className="divide-y divide-border/60">
                 {payoutQueue.map((e, i) => {
@@ -1263,7 +1273,7 @@ const AdminPayouts = () => {
                                   <div className="flex items-start gap-2 rounded-lg border border-orange-200 bg-orange-50 px-4 py-2.5">
                                     <span className="text-base leading-none">⛔</span>
                                     <p className="text-xs text-orange-800 font-medium">
-                                      Financiers are paid first. <span className="font-bold">{sale.orderBlockedBy || 'A higher-priority recipient'}</span> is ahead in the {sale.currency} queue and still unpaid. Recording this payout will ask you to confirm an out-of-order override.
+                                      Payouts follow the financing order. <span className="font-bold">{sale.orderBlockedBy || 'A higher-priority recipient'}</span> is ahead in the {sale.currency} queue and still unpaid. Recording this payout will ask you to confirm an out-of-order override.
                                     </p>
                                   </div>
                                 )}
