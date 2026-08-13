@@ -2074,8 +2074,12 @@ async function fetchFinancingOrder(currency: string): Promise<{ order: any[]; sp
  * THE PAYOUT ORDER: financing_rank (rounds ascending, FIFO inside a round),
  * falling back to registration `rank` on payloads from an older Direct Fund.
  * Keyed by hex — call it with a REAL currency only; the '' (all-currencies)
- * fetch has one row per (hex, currency) and a hex-keyed map would collide. */
-async function getFinancingRankMap(currency: string): Promise<{ rankByHex: Map<string, number>; nameByHex: Map<string, string> }> {
+ * fetch has one row per (hex, currency) and a hex-keyed map would collide.
+ *
+ * Exported as a TEST SEAM: payoutOrderIntegration.test.ts drives this and
+ * computeAllBlocks against a stub Direct Fund to prove the whole chain —
+ * payload → rank map → blocker — really orders payouts by round. */
+export async function getFinancingRankMap(currency: string): Promise<{ rankByHex: Map<string, number>; nameByHex: Map<string, string> }> {
   const { order } = await fetchFinancingOrder(currency);
   const rankByHex = new Map<string, number>();
   const nameByHex = new Map<string, string>();
@@ -2267,8 +2271,9 @@ interface PayoutBlock { blocked: boolean; blockedByHex: string | null; blockedBy
 /** Per-(hex|currency) payout-order block status. Tier 1 financiers (financing
  * order: rounds ascending, FIFO inside a round, sweeper last) → Tier 2
  * crowd-funders (flat) → the rest (unordered), independently per currency.
- * Fails OPEN on outage (financing outage or empty crowd set). */
-async function computeAllBlocks(users: any[]): Promise<Map<string, PayoutBlock>> {
+ * Fails OPEN on outage (financing outage or empty crowd set).
+ * Exported as a test seam — see getFinancingRankMap above. */
+export async function computeAllBlocks(users: any[]): Promise<Map<string, PayoutBlock>> {
   const oc = outstandingByCurrency(users);
   const nameOf = new Map<string, string>();
   for (const u of users) nameOf.set(u.hexId, u.displayName || 'Anonymous');
