@@ -201,6 +201,57 @@ db.exec(`
     fetched_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_cf_projects_owner ON crowdfund_projects(owner_hex);
+
+  -- An offer to sell LANA to us, and what we decided about it.
+  --
+  -- This table exists because the decision it records did not exist before:
+  -- a seller used to sign, the coins left, and the obligation was booked in
+  -- one request. Under the Proprietary Treasury Acquisition Framework a
+  -- seller SUBMITS an offer, we review it, and only after we accept — at a
+  -- purchase price we set, with a settlement date we owe — is any LANA moved.
+  --
+  -- Its status vocabulary is deliberately its OWN. The statuses on
+  -- buyback_transactions ('broadcast', 'completed', 'paid', …) are a wire
+  -- protocol: they appear in atomic WHERE clauses, in the public
+  -- /api/external/sale response and as tag values on public Nostr relays
+  -- (KIND 30936). Nothing here may leak into those.
+  CREATE TABLE IF NOT EXISTS acquisition_offers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    offer_ref TEXT NOT NULL UNIQUE,
+    user_hex_id TEXT NOT NULL,
+    sender_wallet_id TEXT NOT NULL,
+    -- Resolved SERVER-side from the signed KIND 30889 and the registrar,
+    -- never taken from the client: it decides both the mandate branch and
+    -- the price.
+    wallet_class TEXT NOT NULL,
+    lana_amount_lanoshis INTEGER NOT NULL,
+    lana_amount_display REAL NOT NULL,
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'submitted',
+    -- What we based the offer on, kept so the decision can be re-read later
+    -- exactly as it was made (framework section 11).
+    reference_rate REAL,
+    discount_percent REAL,
+    purchase_price_fiat REAL,
+    gross_fiat REAL,
+    mandate_code TEXT,
+    eligibility_json TEXT,
+    -- The date by which we owe the purchase price once accepted.
+    settlement_due_at TEXT,
+    -- A purchase offer is not open forever; an unaccepted one lapses.
+    offer_expires_at TEXT,
+    decided_by TEXT,
+    decided_at TEXT,
+    decision_reason TEXT,
+    accepted_at TEXT,
+    terms_version TEXT,
+    transaction_id INTEGER REFERENCES buyback_transactions(id),
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_offers_status ON acquisition_offers(status);
+  CREATE INDEX IF NOT EXISTS idx_offers_user ON acquisition_offers(user_hex_id);
+  CREATE INDEX IF NOT EXISTS idx_offers_tx ON acquisition_offers(transaction_id);
 `);
 
 // --- Safe migrations: add columns to buyback_transactions ---
@@ -214,6 +265,11 @@ const migrationColumns = [
   "ALTER TABLE buyback_transactions ADD COLUMN rpc_verified_at TEXT",
   "ALTER TABLE buyback_transactions ADD COLUMN rpc_block_hash TEXT",
   "ALTER TABLE buyback_transactions ADD COLUMN rpc_block_height INTEGER",
+  // The acquisition this sale came from, and the date we owe its purchase
+  // price by. Nullable: every sale made before the offer model existed has
+  // neither, and must keep working.
+  "ALTER TABLE buyback_transactions ADD COLUMN offer_ref TEXT",
+  "ALTER TABLE buyback_transactions ADD COLUMN settlement_due_at TEXT",
 ];
 for (const sql of migrationColumns) {
   try { db.exec(sql); } catch {}
@@ -815,6 +871,7 @@ export function getAdminPayoutStats(): {
   totalRemaining: number;
   totalTransactions: number;
   usersServed: number;
+  pendingVerificationCount: number;
 } {
   const txStats = db.prepare(`
     SELECT

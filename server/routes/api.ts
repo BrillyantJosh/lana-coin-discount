@@ -236,7 +236,7 @@ router.get('/user/:hexId/wallets', async (req: Request, res: Response) => {
     const trustedSigners = getTrustedSignersFromDb();
     const lanaRegistrar = trustedSigners.LanaRegistrar || [];
 
-    const allWallets = await fetchUserWallets(hexId, relays, lanaRegistrar);
+    const allWallets = await fetchUserWallets(String(hexId), relays, lanaRegistrar);
 
     // Filter out Lana8Wonder and Knights wallet types
     const wallets = allWallets.filter(
@@ -317,7 +317,7 @@ function requireAdmin(req: Request, res: Response): string | null {
  * Public — check if a hex ID is an admin.
  */
 router.get('/admin/check/:hexId', (req: Request, res: Response) => {
-  return res.json({ isAdmin: isAdminUser(req.params.hexId) });
+  return res.json({ isAdmin: isAdminUser(String(req.params.hexId)) });
 });
 
 /**
@@ -861,7 +861,7 @@ router.delete('/admin/users/:hexId', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Cannot remove the last admin' });
     }
 
-    if (!isAdminUser(hexId)) {
+    if (!isAdminUser(String(hexId))) {
       return res.status(404).json({ error: 'Admin not found' });
     }
 
@@ -1042,7 +1042,7 @@ router.get('/user/:hexId/payout-account', async (req: Request, res: Response) =>
   try {
     const hexId = req.params.hexId;
     const relays = getRelaysFromDb();
-    const kind0Event = await fetchKind0(hexId, relays);
+    const kind0Event = await fetchKind0(String(hexId), relays);
 
     let payoutAccount: any = null;
 
@@ -1289,7 +1289,7 @@ router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
       const profile = JSON.parse(user.raw_kind0);
       // Serve cached instantly. If it's older than 1h, kick off a background
       // relay refresh so the next request is up to date — but never block here.
-      if (!cacheFresh) refreshKind0InBackground(hexId);
+      if (!cacheFresh) refreshKind0InBackground(String(hexId));
       return res.json({
         profile,
         displayName: user.display_name || profile.display_name || profile.displayName || null,
@@ -1300,11 +1300,11 @@ router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
 
     // No cache at all (first time we see this pubkey) or fresh forced: query relays.
     const relays = getRelaysFromDb();
-    const kind0Event = await fetchKind0(hexId, relays);
+    const kind0Event = await fetchKind0(String(hexId), relays);
 
     if (kind0Event) {
       const content = JSON.parse(kind0Event.content);
-      upsertKind0(hexId, content);
+      upsertKind0(String(hexId), content);
       return res.json({
         profile: content,
         displayName: content.display_name || content.displayName || content.name || null,
@@ -1327,7 +1327,7 @@ router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
       if (user?.raw_kind0) {
         const profile = JSON.parse(user.raw_kind0);
         // Best-effort background refresh so the stale copy gets renewed.
-        refreshKind0InBackground(hexId);
+        refreshKind0InBackground(String(hexId));
         return res.json({ profile, displayName: user.display_name || profile.display_name || null, fullName: user.full_name || profile.name || null, cached: true });
       }
     } catch {}
@@ -1341,7 +1341,7 @@ router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
  */
 router.get('/user/:hexId/sales', (req: Request, res: Response) => {
   try {
-    const sales = getUserSalesWithPayouts(req.params.hexId);
+    const sales = getUserSalesWithPayouts(String(req.params.hexId));
     return res.json({ sales });
   } catch (err) {
     console.error('Sales fetch error:', err);
@@ -1360,7 +1360,7 @@ router.get('/user/:hexId/payment-score', async (req: Request, res: Response) => 
   }
   try {
     const relays = getRelaysFromDb();
-    const result = await fetchPaymentScore(hexId, relays);
+    const result = await fetchPaymentScore(String(hexId), relays);
     if (!result) {
       return res.json({ score: null, qualifies: false });
     }
@@ -1798,7 +1798,7 @@ router.put('/admin/api-keys/:id', (req: Request, res: Response) => {
   if (!adminHex) return;
 
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(String(req.params.id));
     const { isActive } = req.body;
 
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid key ID' });
@@ -1822,7 +1822,7 @@ router.delete('/admin/api-keys/:id', (req: Request, res: Response) => {
   if (!adminHex) return;
 
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(String(req.params.id));
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid key ID' });
 
     deleteApiKey(id);
@@ -1843,7 +1843,7 @@ router.post('/admin/verify-transaction/:id', (req: Request, res: Response) => {
   if (!adminHex) return;
 
   try {
-    const txId = parseInt(req.params.id);
+    const txId = parseInt(String(req.params.id));
     if (isNaN(txId)) return res.status(400).json({ error: 'Invalid transaction ID' });
 
     const success = verifyTransaction(txId, adminHex);
@@ -1882,7 +1882,7 @@ router.post('/admin/reject-transaction/:id', (req: Request, res: Response) => {
   if (!adminHex) return;
 
   try {
-    const txId = parseInt(req.params.id);
+    const txId = parseInt(String(req.params.id));
     if (isNaN(txId)) return res.status(400).json({ error: 'Invalid transaction ID' });
 
     const { reason } = req.body || {};
@@ -2072,7 +2072,7 @@ async function fetchFinancingOrder(currency: string): Promise<{ order: any[]; sp
       const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/financing-order${qs}`, { signal: controller.signal });
       clearTimeout(t);
       if (!resp.ok) throw new Error(`Direct Fund financing-order ${resp.status}`);
-      const data = await resp.json();
+      const data = await resp.json() as any;
       financingCache.set(key, { order: data.order || [], split: data.split ?? null, fetchedAt: now });
     } catch (err: any) {
       console.warn(`[lana-discount] financing-order(${key || 'all'}) fetch failed:`, err.message); // keep stale cache
@@ -2130,7 +2130,7 @@ async function fetchInvestorsBySplit(split: number): Promise<{ investors: any[];
       });
       clearTimeout(t);
       if (!resp.ok) throw new Error(`investors-by-split ${resp.status}`);
-      const data = await resp.json();
+      const data = await resp.json() as any;
       cohortCache.set(split, { investors: data.investors || [], fetchedAt: now });
     } catch (err: any) {
       console.warn(`[lana-discount] investors-by-split(${split}) fetch failed:`, err.message); // keep stale cache
@@ -2943,7 +2943,7 @@ router.get('/external/sale/:id', (req: Request, res: Response) => {
   if (!auth) return;
 
   try {
-    const txId = parseInt(req.params.id);
+    const txId = parseInt(String(req.params.id));
     if (isNaN(txId)) return res.status(400).json({ error: 'Invalid transaction ID' });
 
     const tx = db.prepare(

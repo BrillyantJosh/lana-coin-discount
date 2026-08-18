@@ -53,7 +53,7 @@ export async function rpcCall(method: string, params: any[] = [], timeoutMs = 10
   // Always try to parse JSON response body
   let data: RpcResponse;
   try {
-    data = await res.json();
+    data = await res.json() as RpcResponse;
   } catch {
     throw new Error(`RPC HTTP error: ${res.status} ${res.statusText} (non-JSON response)`);
   }

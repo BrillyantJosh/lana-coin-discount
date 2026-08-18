@@ -1,0 +1,28 @@
+{
+  "// why this file exists": [
+    "tsconfig.node.json includes ONLY vite.config.ts, so `tsc --noEmit` in this",
+    "repo checked the build config and nothing else — the whole server tree was",
+    "unchecked. That is how lana-crowd shipped a relay indexer referencing an",
+    "undefined variable: it runs under tsx, which strips types without checking",
+    "them, and failed silently in production. `npm run typecheck` uses this file",
+    "so server/ is actually compiled."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "strictNullChecks": false,
+    "noImplicitAny": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["server/**/*.ts"]
+}
