@@ -9,6 +9,7 @@ import PendingVerification from "@/components/PendingVerification";
 import PayoutStats from "@/components/PayoutStats";
 import LiquidityBalance from "@/components/LiquidityBalance";
 import Footer from "@/components/Footer";
+import { LANDING, FRAMEWORK_COPY } from "@/copy";
 
 const Index = () => {
   return (
@@ -16,36 +17,58 @@ const Index = () => {
       <Navbar />
       <HeroSection />
 
-      {/* Live payout queue — every unpaid obligation, in order (right after the header) */}
-      <section id="queue" className="py-16 md:py-20 bg-muted/50">
+      {/* What we are, in the framework's own sentences (§14). It sits above the
+          numbers on purpose: a reader who stops after one section should have
+          read this one, not inferred a service from the lists below. */}
+      <section id="how-we-acquire" className="py-16 md:py-20 border-y border-border bg-card">
+        <div className="container mx-auto px-6 max-w-4xl">
+          <h2 className="text-3xl md:text-4xl font-bold text-foreground">{LANDING.frameworkTitle}</h2>
+          <p className="mt-5 text-lg md:text-xl leading-relaxed text-foreground/90">
+            {FRAMEWORK_COPY.website}
+          </p>
+          <div className="mt-8 grid gap-6 md:grid-cols-2">
+            <div className="min-w-0 rounded-xl border border-border bg-background/60 p-6">
+              <h3 className="text-lg font-semibold text-foreground mb-2 font-sans">
+                {LANDING.frameworkPricingTitle}
+              </h3>
+              <p className="text-muted-foreground leading-relaxed text-[15px]">{FRAMEWORK_COPY.pricing}</p>
+            </div>
+            <div className="min-w-0 rounded-xl border border-border bg-background/60 p-6">
+              <h3 className="text-lg font-semibold text-foreground mb-2 font-sans">
+                {LANDING.frameworkProvenanceTitle}
+              </h3>
+              <p className="text-muted-foreground leading-relaxed text-[15px]">{FRAMEWORK_COPY.provenance}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Live board of every purchase price we owe and have not yet settled */}
+      <section id="settlements" className="py-16 md:py-20 bg-muted/50">
         <div className="container mx-auto px-6 max-w-4xl">
           <div className="flex items-end justify-between gap-4 mb-8 flex-wrap">
-            <div>
-              <h2 className="text-3xl md:text-4xl font-bold text-foreground">Payout Queue</h2>
-              <p className="mt-2 text-muted-foreground max-w-xl">
-                Every unpaid obligation right now, in the exact order it will be paid — financiers first in financing order (rounds first, FIFO inside a round), then crowd-funding, per currency.
-              </p>
+            <div className="min-w-0">
+              <h2 className="text-3xl md:text-4xl font-bold text-foreground">{LANDING.settlementsTitle}</h2>
+              <p className="mt-2 text-muted-foreground max-w-xl">{LANDING.settlementsIntro}</p>
             </div>
             <a href="/obligations" className="text-sm font-semibold text-primary hover:underline whitespace-nowrap">
-              Open full queue →
+              {LANDING.settlementsLink}
             </a>
           </div>
           <ObligationsBoard maxPerCurrency={10} />
         </div>
       </section>
 
-      {/* Recently paid */}
+      {/* Acquisitions we have completed and settled */}
       <section id="history" className="py-16 md:py-20">
         <div className="container mx-auto px-6 max-w-4xl">
           <div className="flex items-end justify-between gap-4 mb-8 flex-wrap">
-            <div>
-              <h2 className="text-3xl md:text-4xl font-bold text-foreground">Recently paid</h2>
-              <p className="mt-2 text-muted-foreground max-w-xl">
-                The latest payouts to LANA sellers. Full transparency of what has already been settled.
-              </p>
+            <div className="min-w-0">
+              <h2 className="text-3xl md:text-4xl font-bold text-foreground">{LANDING.completedTitle}</h2>
+              <p className="mt-2 text-muted-foreground max-w-xl">{LANDING.completedIntro}</p>
             </div>
             <a href="/history" className="text-sm font-semibold text-primary hover:underline whitespace-nowrap">
-              View all 100 →
+              {LANDING.completedLink}
             </a>
           </div>
           <div className="mb-4"><PendingVerification limit={6} /></div>
@@ -53,24 +76,19 @@ const Index = () => {
         </div>
       </section>
 
-      {/* Daily payout stats */}
+      {/* Daily FIAT flows */}
       <section id="stats" className="py-16 md:py-20 bg-muted/50">
         <div className="container mx-auto px-6 max-w-4xl">
           <div className="mb-8">
-            <h2 className="text-3xl md:text-4xl font-bold text-foreground">Daily FIAT flows</h2>
-            <p className="mt-2 text-muted-foreground max-w-xl">
-              FIAT paid out to LANA sellers and received from investors, by day.
-            </p>
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground">{LANDING.flowsTitle}</h2>
+            <p className="mt-2 text-muted-foreground max-w-xl">{LANDING.flowsIntro}</p>
           </div>
           <PayoutStats />
 
           {/* Same two flows, accumulated: were we net positive or negative that day? */}
           <div className="mt-12 mb-8">
-            <h2 className="text-3xl md:text-4xl font-bold text-foreground">Net FIAT position</h2>
-            <p className="mt-2 text-muted-foreground max-w-xl">
-              The same money, added up. Received minus paid out, day by day, since the first day — above the
-              line means more has come in than has gone out by that day.
-            </p>
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground">{LANDING.positionTitle}</h2>
+            <p className="mt-2 text-muted-foreground max-w-xl">{LANDING.positionIntro}</p>
           </div>
           <LiquidityBalance />
         </div>

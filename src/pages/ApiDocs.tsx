@@ -29,7 +29,9 @@ const ApiDocs = () => {
         <div className="mb-8 sm:mb-10 space-y-3">
           <h1 className="text-2xl sm:text-4xl font-bold text-foreground">API Documentation</h1>
           <p className="text-lg text-muted-foreground">
-            Integrate your application with Lana.Discount to submit LanaCoin buyback transactions programmatically.
+            For partners reporting a completed LANA transfer to Lana.discount for treasury review. Every
+            report is reviewed and either accepted or rejected; submitting one creates no obligation on
+            Lana.discount to settle it.
           </p>
         </div>
 
@@ -133,10 +135,10 @@ const ApiDocs = () => {
                   <ParamRow name="sender_wallet_id" type="string" required description="The LanaCoin address that sent the coins (starts with L)." />
                   <ParamRow name="buyback_wallet_id" type="string" required description="The LanaCoin address that received the coins (the buyback wallet)." />
                   <ParamRow name="lana_amount" type="number" required description="Amount of LANA transferred, in whole coins (e.g. 500000 for 500K LANA)." />
-                  <ParamRow name="currency" type="string" required description="The fiat currency for the payout (e.g. EUR, USD, GBP)." />
-                  <ParamRow name="exchange_rate" type="number" required description="The LANA-to-fiat exchange rate used (e.g. 0.000008 means 1 LANA = 0.000008 EUR)." />
-                  <ParamRow name="commission_percent" type="number" description="Commission percentage deducted from gross payout. Defaults to 30 if not provided." />
-                  <ParamRow name="user_hex_id" type="string" description="The Nostr hex public key (64 chars) of the selling user. If omitted, an auto-generated ID is used." />
+                  <ParamRow name="currency" type="string" required description="The fiat currency the acquisition would settle in (e.g. EUR, USD, GBP)." />
+                  <ParamRow name="exchange_rate" type="number" required description="The market reference the partner used, for the review record. Lana.discount is not bound by it." />
+                  <ParamRow name="commission_percent" type="number" description="The discount the partner applied, for the review record. Defaults to 30 if omitted." />
+                  <ParamRow name="user_hex_id" type="string" description="The Nostr hex public key (64 chars) of the counterparty. If omitted, an auto-generated ID is used." />
                   <ParamRow name="tx_fee_lanoshis" type="number" description="Transaction fee in lanoshis (1 LANA = 100,000,000 lanoshis). Defaults to 0." />
                 </tbody>
               </table>
@@ -168,15 +170,13 @@ const ApiDocs = () => {
   "netFiat": 2.80
 }`}</CodeBlock>
 
-            <h4 className="font-semibold text-foreground mt-6 mb-3">Financial Calculation</h4>
+            <h4 className="font-semibold text-foreground mt-6 mb-3">What happens to a report</h4>
             <p className="text-sm text-muted-foreground mb-2">
-              The server calculates financial values from the submitted data:
+              A report is recorded for treasury review, not settled on arrival. Lana.discount reviews it and
+              either accepts the acquisition — at which point it owes the agreed purchase price — or rejects
+              it. The figures a partner submits are inputs to that review, not a price Lana.discount is bound
+              by.
             </p>
-            <div className="rounded-lg bg-muted/30 p-4 font-mono text-sm space-y-1">
-              <p><span className="text-muted-foreground">grossFiat</span> = lana_amount × exchange_rate</p>
-              <p><span className="text-muted-foreground">commissionFiat</span> = grossFiat × (commission_percent / 100)</p>
-              <p><span className="text-muted-foreground">netFiat</span> = grossFiat - commissionFiat</p>
-            </div>
 
             <h4 className="font-semibold text-foreground mt-6 mb-3">Error Responses</h4>
             <div className="rounded-lg border border-border overflow-x-auto">
@@ -250,7 +250,7 @@ const ApiDocs = () => {
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-0">
             <StatusStep label="pending_verification" color="orange" description="Submitted via API, awaiting admin review" />
             <Arrow />
-            <StatusStep label="completed" color="green" description="Verified by admin, eligible for payout" />
+            <StatusStep label="completed" color="green" description="Reviewed and accepted; the purchase price is owed" />
             <Arrow />
             <StatusStep label="paid" color="emerald" description="All payout installments recorded" />
           </div>

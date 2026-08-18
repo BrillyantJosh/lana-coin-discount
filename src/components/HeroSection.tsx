@@ -1,46 +1,47 @@
 import heroImage from "@/assets/hero-illustration.png";
+import { LANDING } from "@/copy";
 
 const HeroSection = () => {
   return (
     <section className="relative overflow-hidden py-20 md:py-32">
       <div className="container mx-auto px-6 flex flex-col lg:flex-row items-center gap-12">
-        <div className="flex-1 space-y-8 text-center lg:text-left">
+        <div className="flex-1 min-w-0 space-y-8 text-center lg:text-left">
           <div className="inline-block rounded-full bg-accent px-4 py-1.5 text-sm font-medium text-accent-foreground">
-            LanaCoin Buyback Program
+            {LANDING.heroEyebrow}
           </div>
           <h1 className="text-4xl md:text-6xl font-bold tracking-tight text-foreground leading-tight">
-            Sell now, get paid in <span className="text-primary">turn</span>,
+            {LANDING.heroTitle}
             <br />
-            support the <span className="text-gold">flow</span>.
+            <span className="text-primary">{LANDING.heroTitleSecond}</span>
           </h1>
           <p className="text-lg md:text-xl text-muted-foreground max-w-xl mx-auto lg:mx-0 leading-relaxed">
-            Selling LANA from your investment keeps 79% of its value (a 21% fee); other LANA keeps 70%
-            (a 30% fee). Payouts follow a public, fair queue — not a fixed schedule: those who finance
-            the Lana economy are paid first, in the order they finance, then everyone else, separately for each currency.
+            {LANDING.heroBody}
           </p>
           <p className="text-sm md:text-base text-muted-foreground max-w-xl mx-auto lg:mx-0 leading-relaxed">
-            You're paid as real spending generates revenue — fully transparently. See exactly where you
-            stand and everything already paid, below.
+            {LANDING.heroBodySecond}
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
+            {/* Straight to the offer page. It sends anyone without a session to
+                the login itself, so the button says what it does rather than
+                making the visitor guess that "Sign in" is how one offers. */}
             <a
-              href="/login"
+              href="/offer"
               className="inline-flex items-center justify-center rounded-lg bg-primary px-8 py-4 text-lg font-semibold text-primary-foreground shadow-lg hover:opacity-90 transition-opacity"
             >
-              Start Selling
+              {LANDING.heroPrimaryCta}
             </a>
             <a
-              href="#queue"
+              href="#settlements"
               className="inline-flex items-center justify-center rounded-lg border-2 border-primary px-8 py-4 text-lg font-semibold text-primary hover:bg-accent transition-colors"
             >
-              See the payout queue
+              {LANDING.heroSecondaryCta}
             </a>
           </div>
         </div>
         <div className="flex-1 flex justify-center">
           <img
             src={heroImage}
-            alt="Sustainable crypto trading illustration"
+            alt="Treasury acquisitions illustration"
             className="w-full max-w-lg animate-float"
           />
         </div>

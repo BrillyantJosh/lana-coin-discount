@@ -34,6 +34,11 @@ interface SaleEntry {
   rpcVerifiedAt: string | null;
   createdAt: string;
   completedAt: string | null;
+  // The acquisition this sale came from and the date we owe its purchase price
+  // by. Both are null on everything sold before the offer model existed, so
+  // every use below has to survive their absence.
+  offerRef?: string | null;
+  settlementDueAt?: string | null;
   totalPaid: number;
   remaining: number;
   payouts: PayoutEntry[];
@@ -100,6 +105,79 @@ interface FinancierRank {
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   EUR: '\u20ac', USD: '$', GBP: '\u00a3', CHF: 'CHF',
+};
+
+/**
+ * The date we promised, and whether we have missed it.
+ *
+ * A purchase offer names the day the price is owed by, so the promise is now a
+ * fact on the row rather than a general intention. Late is measured on the
+ * calendar day \u2014 something due today is not late today \u2014 and a sale from
+ * before the offer model has no date at all, which is a legitimate answer and
+ * not something to invent one for.
+ */
+function settlementState(dueAt: string | null | undefined): { due: Date; overdue: boolean; days: number } | null {
+  if (!dueAt) return null;
+  const due = new Date(dueAt);
+  if (Number.isNaN(due.getTime())) return null;
+  const endOfDay = new Date(due.getFullYear(), due.getMonth(), due.getDate(), 23, 59, 59, 999);
+  const past = Date.now() - endOfDay.getTime();
+  return {
+    due,
+    overdue: past > 0,
+    days: past > 0 ? Math.floor(past / 86_400_000) + 1 : Math.ceil(-past / 86_400_000),
+  };
+}
+
+const dayLabel = (d: Date) =>
+  `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+
+/**
+ * Settlement due, said in one chip. Loud when we are late, quiet when not.
+ *
+ * `quietOnMobile` is for the rows that already carry three or four badges: on
+ * a narrow screen a date we are still going to keep steps aside, but a date we
+ * have missed never does.
+ */
+const SettlementDueChip = ({ dueAt, settled, quietOnMobile = false }: {
+  dueAt?: string | null;
+  settled: boolean;
+  quietOnMobile?: boolean;
+}) => {
+  const state = settlementState(dueAt);
+  if (!state) return null;
+
+  const label = dayLabel(state.due);
+  const display = quietOnMobile && !state.overdue ? 'hidden sm:inline-flex' : 'inline-flex';
+
+  if (settled) {
+    return (
+      <span
+        title={`Purchase price was due ${label}`}
+        className={`${display} items-center px-2 py-0.5 rounded-full text-[10px] font-medium text-muted-foreground bg-muted flex-shrink-0 whitespace-nowrap`}
+      >
+        Due {label}
+      </span>
+    );
+  }
+  if (state.overdue) {
+    return (
+      <span
+        title={`Purchase price settlement was due ${label} \u2014 ${state.days} day(s) late`}
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-red-600 text-white flex-shrink-0 whitespace-nowrap"
+      >
+        \u23f0 {state.days}d overdue
+      </span>
+    );
+  }
+  return (
+    <span
+      title={`Purchase price settlement due ${label}`}
+      className={`${display} items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-700 flex-shrink-0 whitespace-nowrap`}
+    >
+      Due {label}
+    </span>
+  );
 };
 
 const AdminPayouts = () => {
@@ -754,6 +832,13 @@ const AdminPayouts = () => {
                 {payoutQueue.map((e, i) => {
                   const rowOpen = queueOpenHex === e.hexId;
                   const canPay = e.payableSales.length > 0;
+                  // The nearest promise this recipient is owed. Sorted as text
+                  // because the stored timestamps are fixed-width and already
+                  // sort chronologically.
+                  const soonestDue = e.payableSales
+                    .map(s => s.settlementDueAt)
+                    .filter(Boolean)
+                    .sort()[0] || null;
                   return (
                   <li key={e.hexId} className={`px-4 sm:px-6 py-3 ${e.orderBlocked && !rowOpen ? 'opacity-70' : ''}`}>
                     <div className="flex items-center gap-3 sm:gap-4">
@@ -764,6 +849,7 @@ const AdminPayouts = () => {
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-semibold text-foreground truncate">{e.name}</span>
                           <span title={e.badge.title} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${e.badge.cls}`}>{e.badge.label}</span>
+                          <SettlementDueChip dueAt={soonestDue} settled={false} quietOnMobile />
                         </div>
                         {e.orderBlocked ? (
                           <div className="text-xs text-orange-700 dark:text-orange-400 mt-0.5">⛔ Waiting behind {e.orderBlockedBy || 'a higher-priority recipient'}</div>
@@ -844,10 +930,11 @@ const AdminPayouts = () => {
                               </div>
                             </div>
                           ) : (
-                            <div key={s.id} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm">
+                            <div key={s.id} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm min-w-0">
                               <span className="text-muted-foreground text-xs w-20 flex-shrink-0">{formatDate(s.createdAt)}</span>
                               <span className="font-mono flex-1 min-w-0 truncate">{s.lanaAmount.toLocaleString()} LANA</span>
-                              <span className="font-mono font-bold text-amber-600">{sym}{s.remaining.toFixed(2)}</span>
+                              <SettlementDueChip dueAt={s.settlementDueAt} settled={false} quietOnMobile />
+                              <span className="font-mono font-bold text-amber-600 flex-shrink-0 whitespace-nowrap">{sym}{s.remaining.toFixed(2)}</span>
                               <button onClick={() => openPayoutForm(s, e.user)}
                                 className="inline-flex items-center gap-1 rounded-lg bg-green-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-green-700 transition-colors flex-shrink-0">Pay</button>
                             </div>
@@ -1063,6 +1150,10 @@ const AdminPayouts = () => {
                                   {isBroadcast ? 'Broadcast' : isFullyPaid ? 'Paid' : sale.totalPaid > 0 ? 'Partial' : 'Unpaid'}
                                 </span>
 
+                                {/* The date we promised on the purchase offer.
+                                    A promise nobody can see is not kept. */}
+                                <SettlementDueChip dueAt={sale.settlementDueAt} settled={isFullyPaid} quietOnMobile />
+
                                 {/* Payout-order block — a higher-priority recipient (same currency) is still unpaid */}
                                 {sale.orderBlocked && !isFullyPaid && !isBroadcast && (
                                   <span
@@ -1201,6 +1292,21 @@ const AdminPayouts = () => {
                                     </div>
                                   );
                                 })()}
+
+                                {/* Purchase price settlement — the date, and the
+                                    acquisition offer it was agreed on. */}
+                                {sale.settlementDueAt && (
+                                  <div className="flex items-center gap-2 flex-wrap text-xs min-w-0">
+                                    <span className="text-muted-foreground flex-shrink-0">Purchase price settlement due:</span>
+                                    <span className="font-medium text-foreground flex-shrink-0 whitespace-nowrap">
+                                      {formatDate(sale.settlementDueAt)}
+                                    </span>
+                                    <SettlementDueChip dueAt={sale.settlementDueAt} settled={isFullyPaid} />
+                                    {sale.offerRef && (
+                                      <span className="font-mono text-muted-foreground truncate min-w-0">· {sale.offerRef}</span>
+                                    )}
+                                  </div>
+                                )}
 
                                 {/* TX Hash link */}
                                 {sale.txHash && (

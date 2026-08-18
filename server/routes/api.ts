@@ -977,7 +977,7 @@ router.post('/admin/payouts', async (req: Request, res: Response) => {
       const aheadLabel = orderBlock.blockedByName || (orderBlock.blockedByHex ? orderBlock.blockedByHex.slice(0, 8) + '…' : 'a higher-priority recipient');
       if (force !== true) {
         return res.status(409).json({
-          error: `Payout order: ${aheadLabel} is ahead in the ${tx.currency} queue and still unpaid — pay them first or override.`,
+          error: `Settlement order: ${aheadLabel} is ahead in the ${tx.currency} order and still unpaid — settle them first or override.`,
           code: 'PAYOUT_ORDER_BLOCKED',
           blockedByName: orderBlock.blockedByName,
           blockedByHex: orderBlock.blockedByHex,
@@ -1133,6 +1133,50 @@ router.put('/admin/settings', (req: Request, res: Response) => {
       setAppSetting('active_currencies', JSON.stringify(active_currencies), adminHex);
     }
 
+    // ── Treasury mandate ────────────────────────────────────────────
+    // What we acquire, per currency and per class of wallet, and by when we
+    // owe the purchase price. Validated key by key rather than written
+    // wholesale: these settings decide whether money moves, and a typo that
+    // silently removed a ceiling would be the worst kind of quiet failure.
+    const { mandate_settings } = req.body;
+    if (mandate_settings !== undefined) {
+      if (typeof mandate_settings !== 'object' || mandate_settings === null) {
+        return res.status(400).json({ error: 'mandate_settings must be an object' });
+      }
+      const CLASSES = ['lanapays', 'crowdfund', 'other'];
+      for (const [key, raw] of Object.entries(mandate_settings as Record<string, unknown>)) {
+        const value = String(raw ?? '');
+        const enabled = key.match(/^acq_([A-Z]{3})_enabled$/);
+        const classEnabled = key.match(/^acq_([A-Z]{3})_([a-z]+)_enabled$/);
+        const cap = key.match(/^acq_([A-Z]{3})_([a-z]+)_auto_cap$/);
+        const due = key.match(/^acq_([A-Z]{3})_([a-z]+)_due_days$/);
+
+        const badClass = (m: RegExpMatchArray | null) => m && !CLASSES.includes(m[2]);
+        if (badClass(classEnabled) || badClass(cap) || badClass(due)) {
+          return res.status(400).json({ error: `Unknown wallet class in ${key}` });
+        }
+        if (enabled || classEnabled) {
+          if (value !== 'true' && value !== 'false') {
+            return res.status(400).json({ error: `${key} must be true or false` });
+          }
+        } else if (cap) {
+          // '' means no ceiling and '0' means nothing is automatic — opposite
+          // instructions, so only these two shapes are accepted.
+          if (value !== '' && !(Number.isFinite(Number(value)) && Number(value) >= 0)) {
+            return res.status(400).json({ error: `${key} must be empty (no ceiling) or a number of 0 or more` });
+          }
+        } else if (due) {
+          const n = Number(value);
+          if (!Number.isInteger(n) || n < 1 || n > 90) {
+            return res.status(400).json({ error: `${key} must be a whole number of days between 1 and 90` });
+          }
+        } else {
+          return res.status(400).json({ error: `Unknown mandate setting: ${key}` });
+        }
+        setAppSetting(key, value, adminHex);
+      }
+    }
+
     // Commission rates
     const { commission_lanapays, commission_other } = req.body;
     if (commission_lanapays !== undefined) {
@@ -1206,26 +1250,44 @@ router.put('/admin/bank-accounts', (req: Request, res: Response) => {
 
 /**
  * GET /api/system-params
- * Public — exchange rates, active currencies, buyback wallet, commission.
+ * Public — the system parameters a client genuinely needs, and no more.
+ *
+ * It used to serve `exchangeRates` and a `commissionPercent` alongside them.
+ * Together those two are a standing formula: anyone could multiply and
+ * subtract and know their proceeds before proposing anything, as of right —
+ * exactly what section 6 of the acquisition framework says not to publish.
+ * A price is now something Lana.discount offers on a specific proposal, after
+ * reviewing it, and it lives on the offer.
+ *
+ * The admin screens that legitimately need a rate read it from the admin
+ * endpoints, which are authenticated.
  */
 router.get('/system-params', (_req: Request, res: Response) => {
-  const exchangeRates = getExchangeRatesFromDb();
   const split = getSplitFromDb();
   let activeCurrencies: string[] = ['EUR'];
   try {
     activeCurrencies = JSON.parse(getAppSetting('active_currencies') || '["EUR"]');
   } catch {}
-  const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
 
   return res.json({
-    exchangeRates,
     split,
     activeCurrencies,
-    buybackWalletId,
-    commissionPercent: 30,
+    // Where an accepted acquisition is transferred to. An address, not a price.
+    buybackWalletId: getAppSetting('buyback_wallet_id') || '',
     splitApproaching: getSplitApproachingFromDb(),
     freezeLanaRetailAccountAbove: getFreezeLanaRetailAccountAboveFromDb(),
   });
+});
+
+/**
+ * GET /api/admin/reference-rates
+ * The KIND 38888 market reference, for the admin screens that reconcile in
+ * fiat. Authenticated, because published alongside a discount percentage it
+ * becomes the standing formula the public endpoint no longer serves.
+ */
+router.get('/admin/reference-rates', (req: Request, res: Response) => {
+  if (!requireAdmin(req, res)) return;
+  return res.json({ exchangeRates: getExchangeRatesFromDb() });
 });
 
 /**
@@ -1410,306 +1472,49 @@ router.post('/sell/split-check', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /api/sell/preview
- * Calculate payout preview before execution.
- */
-router.post('/sell/preview', (req: Request, res: Response) => {
-  try {
-    const { lanaAmount, currency, walletType } = req.body;
-
-    if (!lanaAmount || lanaAmount <= 0) {
-      return res.status(400).json({ error: 'Invalid LANA amount' });
-    }
-    if (!currency) {
-      return res.status(400).json({ error: 'Currency is required' });
-    }
-
-    // Check currency is active
-    let activeCurrencies: string[] = ['EUR'];
-    try { activeCurrencies = JSON.parse(getAppSetting('active_currencies') || '["EUR"]'); } catch {}
-    if (!activeCurrencies.includes(currency)) {
-      return res.status(400).json({ error: `Currency ${currency} is not active` });
-    }
-
-    // Check buyback wallet configured
-    const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
-    if (!buybackWalletId) {
-      return res.status(400).json({ error: 'Buyback wallet not configured. Contact admin.' });
-    }
-
-    // Get exchange rate
-    const exchangeRates = getExchangeRatesFromDb();
-    const exchangeRate = exchangeRates[currency];
-    if (!exchangeRate) {
-      return res.status(400).json({ error: `No exchange rate available for ${currency}` });
-    }
-
-    // Minimum sell amount in FIAT per currency
-    const minSellAmountFiat = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
-
-    const split = getSplitFromDb();
-    const lanaAmountLanoshis = Math.floor(lanaAmount * 100000000);
-    const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
-
-    // Dynamic commission based on wallet type
-    const commissionPercent = walletType === 'LanaPays.Us'
-      ? parseFloat(getAppSetting('commission_lanapays') || '30')
-      : parseFloat(getAppSetting('commission_other') || '21');
-    const commissionFiat = Math.round(grossFiat * commissionPercent / 100 * 100) / 100;
-    const netFiat = Math.round((grossFiat - commissionFiat) * 100) / 100;
-
-    // Estimate fee (1 input, 2 outputs is typical)
-    const estimatedFee = Math.floor((1 * 180 + 2 * 34 + 10) * 100 * 1.5);
-
-    return res.json({
-      lanaAmount,
-      lanaAmountLanoshis,
-      currency,
-      exchangeRate,
-      split,
-      grossFiat,
-      commissionPercent,
-      commissionFiat,
-      netFiat,
-      buybackWalletId,
-      estimatedFee,
-      minSellAmountFiat,
-    });
-  } catch (error) {
-    console.error('Sell preview error:', error);
-    return res.status(500).json({ error: 'Failed to calculate preview' });
-  }
-});
 
 /**
  * POST /api/sell/execute
  * Execute the buyback transaction.
  */
-router.post('/sell/execute', async (req: Request, res: Response) => {
-  try {
-    const { hexId, senderAddress, lanaAmount, currency, privateKey, emptyWallet, walletType } = req.body;
-
-    if (!hexId || !senderAddress || !lanaAmount || !currency || !privateKey) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    if (lanaAmount <= 0) {
-      return res.status(400).json({ error: 'Invalid LANA amount' });
-    }
-
-    // Validate payment rating (must be 10 — no open obligations)
-    try {
-      const relays = getRelaysFromDb();
-      const ratingResult = await fetchPaymentScore(hexId, relays);
-      if (!ratingResult || !ratingResult.qualifies) {
-        const score = ratingResult?.score ?? 'none';
-        console.log(`[lana-discount] Sell blocked: user ${hexId.slice(0, 12)}... rating ${score} (open obligations)`);
-        return res.status(403).json({
-          error: 'Selling is only available to users with no open obligations.',
-          rating: score,
-        });
-      }
-    } catch (err: any) {
-      console.warn('[lana-discount] Rating check failed, blocking sale:', err.message);
-      return res.status(403).json({ error: 'Unable to verify payment rating. Please try again.' });
-    }
-
-    // FREEZE GATE — a frozen account must not be able to sell its funds out.
-    // Checked here, on the server, before anything moves: the sell page can be
-    // bypassed, and until now nothing behind it looked at freeze status at all.
-    // Two independent sources (registrar per wallet + KIND 30889 account/wallet
-    // status); see server/lib/freeze.ts for why the verdict is conservative.
-    try {
-      const relays = getRelaysFromDb();
-      const trusted = getTrustedSignersFromDb();
-      // The wallet list is kept whole here, not just its freeze verdict: the
-      // buyback window below needs the wallet's TYPE, and the signed KIND
-      // 30889 is a second place that knows it.
-      const [registrar, listedWallets] = await Promise.all([
-        registrarSignal(senderAddress, WALLET_CHECK_BASE_URL),
-        fetchUserWallets(hexId, relays, trusted.LanaRegistrar || [])
-          .catch(() => [] as Awaited<ReturnType<typeof fetchUserWallets>>),
-      ]);
-      const walletList = walletListSignal(listedWallets, senderAddress);
-      const verdict = evaluateFreeze([registrar, walletList]);
-      if (verdict.blocked) {
-        console.log(
-          `[lana-discount] Sell blocked (${verdict.code}): ${hexId.slice(0, 12)}… wallet ${senderAddress.slice(0, 10)}… — ` +
-          verdict.signals.map(s => `${s.source}:${s.reachable ? (s.frozen ? 'FROZEN' : 'ok') : 'unreachable'}`).join(' '),
-        );
-        return res.status(403).json({
-          error: verdict.reason,
-          code: verdict.code,
-          unfreezeUrl: verdict.code === 'WALLET_FROZEN' ? 'https://unfreeze.lanapays.us' : undefined,
-        });
-      }
-
-      // SPLIT GATE — which Split this wallet was registered in decides whether
-      // its LANA is inside the buyback window at all. Read from the SAME
-      // registrar answer the freeze gate just used, so no second call.
-      // Take the type from EITHER source. Being in scope is the stricter
-      // reading, so a wallet only escapes the window when neither the
-      // registrar nor its own signed wallet list calls it a LanaPays.Us one.
-      const listedType = listedWallets.find(
-        w => String(w.walletId || '').trim().toLowerCase() === senderAddress.trim().toLowerCase(),
-      )?.walletType;
-      const scopedType = [registrar.walletType, listedType].find(isScopedWalletType) ?? null;
-
-      const splitVerdict = evaluateBuybackSplit({
-        walletSplit: registrar.splitCreated ?? null,
-        currentSplit: parseInt(getSplitFromDb() || '') || null,
-        registrarReachable: registrar.reachable,
-        walletType: scopedType,
-      });
-      if (!splitVerdict.allowed) {
-        console.log(
-          `[lana-discount] Sell blocked (${splitVerdict.code}): wallet ${senderAddress.slice(0, 10)}… ` +
-          `split ${splitVerdict.walletSplit ?? '?'} vs allowed [${splitVerdict.allowedSplits.join(',')}] (current ${splitVerdict.currentSplit ?? '?'})`,
-        );
-        return res.status(403).json({
-          error: splitVerdict.reason,
-          code: splitVerdict.code,
-          walletSplit: splitVerdict.walletSplit,
-          currentSplit: splitVerdict.currentSplit,
-          allowedSplits: splitVerdict.allowedSplits,
-        });
-      }
-    } catch (err: any) {
-      // A crash in the gate itself must not become an open door.
-      console.warn('[lana-discount] Freeze check failed, blocking sale:', err.message);
-      return res.status(403).json({
-        error: 'Freeze status could not be verified right now. Please try again shortly.',
-        code: 'FREEZE_UNVERIFIABLE',
-      });
-    }
-
-    // Validate currency
-    let activeCurrencies: string[] = ['EUR'];
-    try { activeCurrencies = JSON.parse(getAppSetting('active_currencies') || '["EUR"]'); } catch {}
-    if (!activeCurrencies.includes(currency)) {
-      return res.status(400).json({ error: `Currency ${currency} is not active` });
-    }
-
-    // Validate buyback wallet
-    const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
-    if (!buybackWalletId) {
-      return res.status(400).json({ error: 'Buyback wallet not configured' });
-    }
-
-    // Get exchange rate
-    const exchangeRates = getExchangeRatesFromDb();
-    const exchangeRate = exchangeRates[currency];
-    if (!exchangeRate) {
-      return res.status(400).json({ error: `No exchange rate for ${currency}` });
-    }
-
-    const split = getSplitFromDb();
-    const lanaAmountLanoshis = Math.floor(lanaAmount * 100000000);
-    const grossFiat = Math.round(lanaAmount * exchangeRate * 100) / 100;
-
-    // Dynamic commission based on wallet type
-    const commissionPercent = walletType === 'LanaPays.Us'
-      ? parseFloat(getAppSetting('commission_lanapays') || '30')
-      : parseFloat(getAppSetting('commission_other') || '21');
-    const commissionFiat = Math.round(grossFiat * commissionPercent / 100 * 100) / 100;
-    const netFiat = Math.round((grossFiat - commissionFiat) * 100) / 100;
-
-    // Minimum sell amount check (FIAT)
-    const minSellAmountFiat = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
-    if (minSellAmountFiat > 0 && grossFiat < minSellAmountFiat) {
-      return res.status(400).json({ error: `Minimum sell value is ${minSellAmountFiat} ${currency}` });
-    }
-
-    // Get Electrum servers
-    const electrumServers = getElectrumServersFromDb();
-
-    console.log(`[lana-discount] Sell execute: ${lanaAmount} LANA from ${senderAddress} to ${buybackWalletId}`);
-
-    // Execute transaction
-    const txResult = await sendLanaTransaction({
-      senderAddress,
-      recipientAddress: buybackWalletId,
-      amount: emptyWallet ? undefined : lanaAmount,
-      privateKey,
-      emptyWallet: !!emptyWallet,
-      electrumServers,
-    });
-
-    if (txResult.success) {
-      // Record successful transaction
-      const txId = insertBuybackTransaction({
-        user_hex_id: hexId,
-        sender_wallet_id: senderAddress,
-        buyback_wallet_id: buybackWalletId,
-        lana_amount_lanoshis: lanaAmountLanoshis,
-        lana_amount_display: lanaAmount,
-        currency,
-        exchange_rate: exchangeRate,
-        split,
-        gross_fiat: grossFiat,
-        commission_percent: commissionPercent,
-        commission_fiat: commissionFiat,
-        net_fiat: netFiat,
-        tx_hash: txResult.txHash,
-        tx_fee_lanoshis: txResult.fee,
-        status: 'broadcast',
-      });
-
-      console.log(`[lana-discount] Sell broadcast: TX ${txResult.txHash}, ID ${txId} — awaiting RPC verification`);
-
-      // Publish KIND 30936 to Nostr
-      publishBuybackEvent({
-        id: txId, tx_hash: txResult.txHash, user_hex_id: hexId,
-        sender_wallet_id: senderAddress, buyback_wallet_id: buybackWalletId,
-        lana_amount_lanoshis: lanaAmountLanoshis, lana_amount_display: lanaAmount,
-        currency, exchange_rate: exchangeRate, gross_fiat: grossFiat,
-        commission_percent: commissionPercent, commission_fiat: commissionFiat,
-        net_fiat: netFiat, split, source: 'internal', status: 'broadcast',
-      }).catch(err => console.error('[lana-discount] Nostr publish failed:', err.message));
-
-      return res.json({
-        success: true,
-        txHash: txResult.txHash,
-        lanaAmount,
-        currency,
-        grossFiat,
-        commissionFiat,
-        netFiat,
-        fee: txResult.fee,
-        transactionId: txId,
-      });
-    } else {
-      // Record failed transaction
-      const txId = insertBuybackTransaction({
-        user_hex_id: hexId,
-        sender_wallet_id: senderAddress,
-        buyback_wallet_id: buybackWalletId,
-        lana_amount_lanoshis: lanaAmountLanoshis,
-        lana_amount_display: lanaAmount,
-        currency,
-        exchange_rate: exchangeRate,
-        split,
-        gross_fiat: grossFiat,
-        commission_percent: commissionPercent,
-        commission_fiat: commissionFiat,
-        net_fiat: netFiat,
-        status: 'failed',
-        error_message: txResult.error,
-      });
-
-      console.error(`[lana-discount] Sell failed: ${txResult.error}, ID ${txId}`);
-
-      return res.status(400).json({
-        success: false,
-        error: txResult.error,
-        transactionId: txId,
-      });
-    }
-  } catch (error) {
-    console.error('Sell execute error:', error);
-    return res.status(500).json({ error: 'Failed to execute transaction' });
-  }
+/**
+ * POST /api/sell/execute — REMOVED.
+ *
+ * This endpoint used to sign and broadcast the counterparty's LANA and book
+ * the obligation in one request, with no moment at which Lana.discount decided
+ * whether it wanted the asset. Leaving it reachable would leave the whole
+ * acquisition model bypassable by anyone willing to POST to it directly: our
+ * decision comes first, or there is no decision at all.
+ *
+ * The replacement is POST /api/acquisitions/:ref/transfer, which moves nothing
+ * without an offer we accepted, that has not lapsed and carries a price.
+ *
+ * 410 rather than 404 so an old cached bundle says something true to its user
+ * instead of looking like an outage.
+ */
+router.post('/sell/execute', (_req: Request, res: Response) => {
+  return res.status(410).json({
+    error: 'This page is out of date. Please reload and submit an offer — Lana.discount now reviews each '
+      + 'proposed acquisition and makes a purchase offer before any LANA is transferred.',
+    code: 'FLOW_REPLACED',
+  });
 });
+
+/**
+ * POST /api/sell/preview — REMOVED, for the same reason in a quieter form.
+ *
+ * It computed a payout from a published rate and a fixed percentage, which is
+ * exactly the standing formula section 6 says not to offer: it let any holder
+ * work out their proceeds in advance, as of right. A price is now something we
+ * offer on a specific proposal, after reviewing it.
+ */
+router.post('/sell/preview', (_req: Request, res: Response) => {
+  return res.status(410).json({
+    error: 'This page is out of date. Please reload and submit an offer.',
+    code: 'FLOW_REPLACED',
+  });
+});
+
 
 // ---------------------------------------------------------------------------
 // API Key Management + External API
@@ -2428,7 +2233,8 @@ router.get('/admin/crowdfund-cashout', async (req: Request, res: Response) => {
 });
 
 /**
- * Public payout queue — all UNPAID obligations to LANA sellers, in payout order,
+ * Public settlement list — every purchase price we have agreed and not yet
+ * paid, in the order we settle them,
  * grouped per currency (financiers first by FIFO rank, then the rest). Transparency
  * only: display name + amount owed + queue position + payable/waiting. No payment
  * details, no full hex, no per-sale breakdown.
@@ -2475,11 +2281,11 @@ async function buildObligations(): Promise<{ currencies: Record<string, any>; to
         ? a.priority - b.priority
         : a.earliestAt < b.earliestAt ? -1 : a.earliestAt > b.earliestAt ? 1 : 0
     );
-    const queue = ordered.map((e, i) => {
+    const settlements = ordered.map((e, i) => {
       const { blocked } = computeBlocker(sellers, e.hex);
       const name = (e.financeRank != null ? (nameByHex.get(e.hex) || nameOf.get(e.hex)) : nameOf.get(e.hex)) || 'Anonymous';
       // Freeze status is already public (KIND 30889); surfaced here so a reader
-      // can see that someone in the queue cannot be settled the usual way.
+      // can see that someone on the list cannot be settled the usual way.
       // null = we have not resolved them yet, which is NOT "clean".
       const fz = freezeOf(e.hex);
       return {
@@ -2500,10 +2306,13 @@ async function buildObligations(): Promise<{ currencies: Record<string, any>; to
     });
     currencies[currency] = {
       total_outstanding: Math.round([...hexMap.values()].reduce((s, v) => s + v.outstanding, 0) * 100) / 100,
-      count: queue.length,
-      financier_count: queue.filter((q: any) => q.is_financier).length,
-      crowdfunder_count: queue.filter((q: any) => q.is_crowdfunder).length,
-      queue,
+      count: settlements.length,
+      financier_count: settlements.filter((q: any) => q.is_financier).length,
+      crowdfunder_count: settlements.filter((q: any) => q.is_crowdfunder).length,
+      settlements,
+      // Kept for one release so anything already reading this public feed does
+      // not break on the rename. New readers should use `settlements`.
+      queue: settlements,
     };
   }
   return { currencies, total_currencies: Object.keys(currencies).length };
@@ -2511,7 +2320,7 @@ async function buildObligations(): Promise<{ currencies: Record<string, any>; to
 
 /**
  * Refresh freeze status for exactly the people the public board names — the
- * unpaid payout queue plus the recipients of the last 100 payouts. Three
+ * unpaid settlement list plus the recipients of the last 100 settlements. Three
  * batched relay queries cover all of them (~1s), rather than three per person.
  * Exported for the heartbeat; safe to call on a schedule.
  */

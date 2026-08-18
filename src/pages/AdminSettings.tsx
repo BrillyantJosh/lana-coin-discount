@@ -3,6 +3,11 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
+import {
+  WALLET_CLASSES, CLASS_LABELS, DEFAULT_DUE_DAYS,
+  currencyEnabledKey, classEnabledKey, autoCapKey, dueDaysKey,
+  type WalletClass,
+} from '../../server/lib/treasuryMandate';
 
 const CURRENCY_LABELS: Record<string, string> = {
   EUR: 'Euro (EUR)',
@@ -16,6 +21,68 @@ const CURRENCY_LABELS: Record<string, string> = {
   HUF: 'Hungarian Forint (HUF)',
   BAM: 'Bosnian Mark (BAM)',
 };
+
+/**
+ * What the auto-cap field currently means, in the words of the person who has
+ * to live with it. Kept in exact step with `readCap` in treasuryMandate.ts —
+ * including its cautious reading of a typo as 0 — because the gap between
+ * empty and zero is where this screen can do real damage: empty removes the
+ * ceiling, zero removes the automation, and they look almost the same.
+ */
+function capMeaning(raw: string, currency: string): { text: string; tone: string } {
+  const trimmed = raw.trim();
+  if (trimmed === '') {
+    return {
+      text: 'No ceiling — every offer of this class is priced and offered automatically, whatever its size.',
+      tone: 'text-amber-700 dark:text-amber-400',
+    };
+  }
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0) {
+    return {
+      text: 'Not a number — the server reads this as 0, so nothing would be automatic.',
+      tone: 'text-red-600',
+    };
+  }
+  if (n === 0) {
+    return {
+      text: 'Never automatic — every offer of this class goes to a person to decide.',
+      tone: 'text-muted-foreground',
+    };
+  }
+  return {
+    text: `Automatic up to ${n} ${currency}. Anything larger goes to a person to decide.`,
+    tone: 'text-muted-foreground',
+  };
+}
+
+/** A yes/no the size of a word, in the visual language of the currency grid. */
+const MandateToggle = ({ on, onChange, labelOn, labelOff }: {
+  on: boolean;
+  onChange: (next: boolean) => void;
+  labelOn: string;
+  labelOff: string;
+}) => (
+  <button
+    onClick={() => onChange(!on)}
+    className={`inline-flex items-center gap-2 rounded-lg border-2 px-3 py-1.5 text-xs font-bold transition-all flex-shrink-0 whitespace-nowrap ${
+      on
+        ? 'border-primary bg-primary/5 text-primary'
+        : 'border-border bg-background text-muted-foreground hover:border-muted-foreground/30'
+    }`}
+  >
+    <span className={`h-3.5 w-3.5 flex-shrink-0 rounded border-2 flex items-center justify-center transition-colors ${
+      on ? 'bg-primary border-primary' : 'border-muted-foreground/40'
+    }`}>
+      {on && (
+        <svg className="h-2 w-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+      )}
+    </span>
+    {on ? labelOn : labelOff}
+  </button>
+);
 
 const AdminSettings = () => {
   const { session, isLoading: authLoading, isAdmin } = useAuth();
@@ -43,6 +110,12 @@ const AdminSettings = () => {
   // Minimum sell amounts per currency
   const [minSellAmounts, setMinSellAmounts] = useState<Record<string, string>>({});
   const [initialMinSellAmounts, setInitialMinSellAmounts] = useState<Record<string, string>>({});
+
+  // Treasury mandate — the raw `acq_*` app_settings, held as the flat map the
+  // server stores rather than a shaped object, so the key builders in
+  // treasuryMandate.ts stay the single definition of what a setting is called.
+  const [mandate, setMandate] = useState<Record<string, string>>({});
+  const [initialMandate, setInitialMandate] = useState<Record<string, string>>({});
 
   // Track initial values for dirty check
   const [initialWalletId, setInitialWalletId] = useState('');
@@ -95,6 +168,17 @@ const AdminSettings = () => {
       setMinSellAmounts(mins);
       setInitialMinSellAmounts({ ...mins });
 
+      // Every acquisition setting the server actually has. Keys it does not
+      // have are left absent on purpose: the fallbacks below reproduce what
+      // the mandate would do with a missing row, so the screen shows the
+      // behaviour rather than a guess at it.
+      const acq: Record<string, string> = {};
+      for (const key of Object.keys(data.settings)) {
+        if (key.startsWith('acq_')) acq[key] = data.settings[key] ?? '';
+      }
+      setMandate(acq);
+      setInitialMandate({ ...acq });
+
       // Fetch bank accounts
       try {
         const bankRes = await fetch('/api/admin/bank-accounts', {
@@ -117,6 +201,42 @@ const AdminSettings = () => {
     );
   };
 
+  // ─── treasury mandate helpers ───────────────────────────────────────────
+  // The fallbacks are not house preferences; they are what readMandateSettings
+  // does with an absent row: closed unless told otherwise, no ceiling on an
+  // unset cap, and the framework's outer horizon for an unset due date.
+
+  const mandateValue = (key: string, fallback: string) =>
+    mandate[key] !== undefined ? mandate[key] : fallback;
+
+  const setMandateValue = (key: string, value: string) =>
+    setMandate(prev => ({ ...prev, [key]: value }));
+
+  const currencyOpen = (currency: string) =>
+    mandateValue(currencyEnabledKey(currency), 'false') === 'true';
+
+  const classOpen = (currency: string, cls: WalletClass) =>
+    mandateValue(classEnabledKey(currency, cls), 'false') === 'true';
+
+  /**
+   * The full mandate for every active currency, including the rows the server
+   * has never had. Saving the effective state (rather than only the fields
+   * that were touched) means a currency switched on today gets a real mandate
+   * written for it instead of inheriting whatever an absent row means.
+   */
+  const mandatePayload = (): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const currency of activeCurrencies) {
+      out[currencyEnabledKey(currency)] = mandateValue(currencyEnabledKey(currency), 'false');
+      for (const cls of WALLET_CLASSES) {
+        out[classEnabledKey(currency, cls)] = mandateValue(classEnabledKey(currency, cls), 'false');
+        out[autoCapKey(currency, cls)] = mandateValue(autoCapKey(currency, cls), '').trim();
+        out[dueDaysKey(currency, cls)] = mandateValue(dueDaysKey(currency, cls), String(DEFAULT_DUE_DAYS));
+      }
+    }
+    return out;
+  };
+
   const hasChanges = (() => {
     if (walletId !== initialWalletId) return true;
     if (activeCurrencies.length !== initialCurrencies.length) return true;
@@ -125,6 +245,11 @@ const AdminSettings = () => {
     if (commissionOther !== initialCommissionOther) return true;
     for (const curr of activeCurrencies) {
       if ((minSellAmounts[curr] || '0') !== (initialMinSellAmounts[curr] || '0')) return true;
+    }
+    // A mandate row the server has never had counts as a change too — writing
+    // it is what turns an implied default into a decision someone made.
+    for (const [key, value] of Object.entries(mandatePayload())) {
+      if ((initialMandate[key] ?? '') !== value) return true;
     }
     return false;
   })();
@@ -139,6 +264,7 @@ const AdminSettings = () => {
 
     setSaving(true);
     try {
+      const acq = mandatePayload();
       const res = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: {
@@ -151,6 +277,7 @@ const AdminSettings = () => {
           commission_lanapays: commissionLanapays,
           commission_other: commissionOther,
           min_sell_amounts: minSellAmounts,
+          mandate_settings: acq,
         }),
       });
 
@@ -160,11 +287,29 @@ const AdminSettings = () => {
         return;
       }
 
+      // The endpoint answers with the whole settings map, so we can check that
+      // the mandate actually landed instead of trusting a 200. An endpoint
+      // that quietly ignores a field it does not know would otherwise leave
+      // this screen showing a green "Saved" over a treasury mandate that never
+      // changed — the one lie a settings page must never tell. Absent and ''
+      // are compared as equal because the mandate reads them the same way.
+      const dropped = Object.entries(acq)
+        .filter(([key, value]) => (data.settings?.[key] ?? '') !== value)
+        .map(([key]) => key);
+      if (dropped.length > 0) {
+        console.error('Mandate settings not persisted:', dropped);
+        toast.error(
+          `Treasury mandate NOT saved — the server ignored ${dropped.length} setting(s). Everything else was saved.`,
+        );
+        return;
+      }
+
       setInitialWalletId(walletId.trim());
       setInitialCurrencies([...activeCurrencies]);
       setInitialCommissionLanapays(commissionLanapays);
       setInitialCommissionOther(commissionOther);
       setInitialMinSellAmounts({ ...minSellAmounts });
+      setInitialMandate({ ...mandate, ...acq });
       toast.success('Settings saved');
     } catch (err) {
       console.error('Save settings error:', err);
@@ -307,6 +452,142 @@ const AdminSettings = () => {
                   </p>
                 </div>
               </div>
+            </div>
+
+            {/* Treasury mandate — the decision to buy, made before anyone
+                offers. Commission above says what we pay; this says whether
+                we are buying at all, from whom, and how large an acquisition
+                goes through without a person looking at it. */}
+            <div className="rounded-2xl border-2 border-border bg-card p-6">
+              <h2 className="text-lg font-semibold text-foreground mb-1">Treasury Mandate</h2>
+              <p className="text-sm text-muted-foreground mb-4">
+                What Lana.discount acquires, per currency and per wallet class, and how large an acquisition
+                is priced automatically. Anything above the ceiling waits for a person on the Offers screen.
+              </p>
+
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 mb-5">
+                <p className="text-xs text-amber-800 leading-relaxed">
+                  <strong className="font-bold">An empty ceiling is not a ceiling of 0.</strong> Leave the field
+                  empty and there is <strong className="font-bold">no limit</strong> — every offer of that class is
+                  priced and offered automatically, however large. Type <span className="font-mono font-bold">0</span> and
+                  <strong className="font-bold"> nothing is automatic</strong> — every offer waits for a person.
+                  Getting these two the wrong way round either removes the limit or stops the business.
+                </p>
+              </div>
+
+              {activeCurrencies.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No active currencies. Enable currencies above first.</p>
+              ) : (
+                <div className="space-y-4">
+                  {activeCurrencies.map(currency => {
+                    const open = currencyOpen(currency);
+                    // A currency switched on since the last deploy has no rows
+                    // of its own yet; the fields below show what the mandate
+                    // would do meanwhile, and saving makes it a real decision.
+                    const unwritten = initialMandate[currencyEnabledKey(currency)] === undefined;
+
+                    return (
+                      <div key={currency} className="rounded-xl border border-border p-4 space-y-3">
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <span className="text-sm font-bold text-foreground flex-shrink-0">{currency}</span>
+                          <span className="text-xs text-muted-foreground min-w-0 truncate">
+                            {CURRENCY_LABELS[currency]?.replace(` (${currency})`, '') || currency}
+                          </span>
+                          {unwritten && (
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 flex-shrink-0 whitespace-nowrap">
+                              Not written yet
+                            </span>
+                          )}
+                          <div className="ml-auto flex-shrink-0">
+                            <MandateToggle
+                              on={open}
+                              onChange={next => setMandateValue(currencyEnabledKey(currency), next ? 'true' : 'false')}
+                              labelOn={`Acquiring in ${currency}`}
+                              labelOff={`Closed in ${currency}`}
+                            />
+                          </div>
+                        </div>
+
+                        {!open && (
+                          <p className="text-xs text-muted-foreground">
+                            Every offer settled in {currency} is declined, whatever the classes below say.
+                          </p>
+                        )}
+
+                        <div className={`space-y-3 ${open ? '' : 'opacity-50'}`}>
+                          {WALLET_CLASSES.map(cls => {
+                            const capRaw = mandateValue(autoCapKey(currency, cls), '');
+                            const meaning = capMeaning(capRaw, currency);
+                            const classIsOpen = classOpen(currency, cls);
+
+                            return (
+                              <div key={cls} className="rounded-lg border border-border/70 bg-background/40 p-3 space-y-2">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-sm font-semibold text-foreground min-w-0 truncate">
+                                    {CLASS_LABELS[cls]}
+                                  </span>
+                                  <div className="ml-auto flex-shrink-0">
+                                    <MandateToggle
+                                      on={classIsOpen}
+                                      onChange={next => setMandateValue(classEnabledKey(currency, cls), next ? 'true' : 'false')}
+                                      labelOn="Acquiring"
+                                      labelOff="Not acquiring"
+                                    />
+                                  </div>
+                                </div>
+
+                                {!classIsOpen ? (
+                                  <p className="text-xs text-muted-foreground">
+                                    Offers of {CLASS_LABELS[cls]} LANA settled in {currency} are declined.
+                                  </p>
+                                ) : (
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="min-w-0">
+                                      <label className="block text-xs font-medium text-foreground mb-1">
+                                        Automatic up to ({currency})
+                                      </label>
+                                      {/* Text, not number: an empty number input is
+                                          easy to produce by accident, and here empty
+                                          means the opposite of zero. */}
+                                      <input
+                                        type="text"
+                                        inputMode="decimal"
+                                        value={capRaw}
+                                        onChange={e => setMandateValue(autoCapKey(currency, cls), e.target.value)}
+                                        placeholder="empty = no ceiling"
+                                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                                      />
+                                      <p className={`mt-1 text-[11px] leading-snug ${meaning.tone}`}>{meaning.text}</p>
+                                    </div>
+
+                                    <div className="min-w-0">
+                                      <label className="block text-xs font-medium text-foreground mb-1">
+                                        Settle within (days)
+                                      </label>
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        value={mandateValue(dueDaysKey(currency, cls), String(DEFAULT_DUE_DAYS))}
+                                        onChange={e => setMandateValue(dueDaysKey(currency, cls), e.target.value)}
+                                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors"
+                                      />
+                                      <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+                                        Days from acceptance by which we owe the purchase price. Blank or 0 falls back
+                                        to {DEFAULT_DUE_DAYS}.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Buyback window — stated, never editable. The whole settlement

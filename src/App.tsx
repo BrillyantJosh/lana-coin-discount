@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import Index from "./pages/Index";
@@ -18,7 +18,8 @@ import AdminIncomingPayments from "./pages/AdminIncomingPayments";
 import AdminAnalytics from "./pages/AdminAnalytics";
 import AdminOverview from "./pages/AdminOverview";
 import ExpectingCashout from "./pages/ExpectingCashout";
-import SellLana from "./pages/SellLana";
+import SubmitOffer from "./pages/SubmitOffer";
+import AdminOffers from "./pages/AdminOffers";
 import ApiDocs from "./pages/ApiDocs";
 import Obligations from "./pages/Obligations";
 import PayoutHistory from "./pages/PayoutHistory";
@@ -40,9 +41,13 @@ const App = () => (
             <Route path="/history" element={<PayoutHistory />} />
             <Route path="/login" element={<Login />} />
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/sell" element={<SellLana />} />
+            <Route path="/offer" element={<SubmitOffer />} />
+            {/* Kept so old links and bookmarks land somewhere true rather than
+                on a 404 — the page they point at no longer exists. */}
+            <Route path="/sell" element={<Navigate to="/offer" replace />} />
             <Route path="/docs/api" element={<ApiDocs />} />
             <Route path="/admin" element={<AdminDashboard />} />
+            <Route path="/admin/offers" element={<AdminOffers />} />
             <Route path="/admin/verify-tx" element={<AdminVerifyTx />} />
             <Route path="/admin/payouts" element={<AdminPayouts />} />
             <Route path="/admin/expecting-cashout" element={<ExpectingCashout />} />

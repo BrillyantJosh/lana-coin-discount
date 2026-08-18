@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -9,11 +10,18 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 
+/** The one screen that carries a count, so the badge knows where it belongs. */
+const OFFERS_PATH = '/admin/offers';
+
+/** How that screen tells the nav what it just saw, without a second request. */
+export const OFFERS_COUNT_EVENT = 'lana:offers-awaiting';
+
 const sections = [
   {
-    label: 'BuyOuts',
+    label: 'Treasury Acquisitions',
     items: [
       { to: '/admin', label: 'Dashboard', desc: 'Stats & recent transactions' },
+      { to: OFFERS_PATH, label: 'Offers', desc: 'Acquisitions awaiting a decision' },
       { to: '/admin/verify-tx', label: 'Verify TX', desc: 'Pending verifications' },
       { to: '/admin/payouts', label: 'Payouts', desc: 'Record & manage payouts' },
     ],
@@ -43,9 +51,55 @@ const sections = [
 ];
 
 const AdminNav = () => {
-  const { logout } = useAuth();
+  const { session, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+
+  // How many acquisitions a person still has to decide. This app has no
+  // notification channel of any kind, and an offer that nobody looks at is a
+  // counterparty left waiting — so the nav asks, cheaply: one small request a
+  // minute, only while the tab is actually being looked at, and silent on
+  // failure (a missing badge must never interrupt the work on the page).
+  const [awaitingDecision, setAwaitingDecision] = useState(0);
+
+  useEffect(() => {
+    const hexId = session?.nostrHexId;
+    if (!hexId) return;
+
+    let alive = true;
+    const load = async () => {
+      if (document.visibilityState === 'hidden') return;
+      try {
+        const res = await fetch('/api/acquisitions/admin/queue', {
+          headers: { 'x-admin-hex-id': hexId },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (alive && Array.isArray(data.offers)) setAwaitingDecision(data.offers.length);
+      } catch {
+        // A badge is not worth a toast.
+      }
+    };
+
+    // The Offers screen already knows the count after every decision, and it
+    // says so — a decided offer must not sit in the badge for another minute.
+    const onCount = (event: Event) => {
+      const count = (event as CustomEvent<number>).detail;
+      if (typeof count === 'number') setAwaitingDecision(count);
+    };
+
+    load();
+    const timer = setInterval(load, 60_000);
+    // Coming back to the tab is the moment the count is most likely stale.
+    document.addEventListener('visibilitychange', load);
+    window.addEventListener(OFFERS_COUNT_EVENT, onCount);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', load);
+      window.removeEventListener(OFFERS_COUNT_EVENT, onCount);
+    };
+  }, [session?.nostrHexId]);
 
   return (
     <nav className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
@@ -80,6 +134,14 @@ const AdminNav = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
                 </svg>
                 <span className="hidden sm:inline">Menu</span>
+                {awaitingDecision > 0 && (
+                  <span
+                    title={`${awaitingDecision} acquisition offer${awaitingDecision !== 1 ? 's' : ''} awaiting a decision`}
+                    className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-amber-500 text-[10px] font-bold text-white flex-shrink-0 whitespace-nowrap"
+                  >
+                    {awaitingDecision}
+                  </span>
+                )}
                 <svg className="h-3 w-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
                 </svg>
@@ -100,8 +162,13 @@ const AdminNav = () => {
                           to={item.to}
                           className={`flex flex-col gap-0 cursor-pointer ${isActive ? 'bg-primary/5' : ''}`}
                         >
-                          <span className={`text-sm ${isActive ? 'font-semibold text-primary' : 'font-medium'}`}>
-                            {item.label}
+                          <span className={`flex items-center gap-2 min-w-0 text-sm ${isActive ? 'font-semibold text-primary' : 'font-medium'}`}>
+                            <span className="truncate">{item.label}</span>
+                            {item.to === OFFERS_PATH && awaitingDecision > 0 && (
+                              <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-amber-500 text-[10px] font-bold text-white flex-shrink-0 whitespace-nowrap">
+                                {awaitingDecision}
+                              </span>
+                            )}
                           </span>
                           <span className="text-[11px] text-muted-foreground leading-tight">{item.desc}</span>
                         </Link>

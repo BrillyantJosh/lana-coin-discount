@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 
-/** Public daily FIAT flows: per day, FIAT paid out (to LANA sellers, with the
- * recipient breakdown) and FIAT received (from investors), as two bars per day.
+/** Public daily FIAT flows: per day, purchase prices we settled (with the
+ * counterparty breakdown) and FIAT received from investors, as two bars per day.
+ * Both are our own money moving; neither is a balance held for anyone.
  * Reads the open /api/payouts-daily endpoint. */
 interface Person { name: string; hex_short: string | null; amount: number; }
 interface DayCur { total: number; count: number; payouts: number; people: Person[]; received: number; receivedCount: number; }
@@ -117,10 +118,10 @@ const PayoutStats = () => {
         <div className="flex items-start gap-8 flex-wrap">
           <div>
             <p className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <span className="inline-block h-2.5 w-2.5 rounded-sm bg-primary" /> Paid out ({cur})
+              <span className="inline-block h-2.5 w-2.5 rounded-sm bg-primary" /> Settled ({cur})
             </p>
             <p className="text-2xl sm:text-3xl font-bold text-foreground tabular-nums">{fmt(totalPaid, cur)}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">{payoutCount} payout{payoutCount !== 1 ? 's' : ''} · all-time</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{payoutCount} settlement{payoutCount !== 1 ? 's' : ''} · all-time</p>
           </div>
           <div>
             <p className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
@@ -157,7 +158,7 @@ const PayoutStats = () => {
           >
             <div className="text-xs font-semibold text-foreground mb-1.5">{fmtDayFull(active.day)}</div>
             <div className="flex items-center justify-between gap-2 text-xs">
-              <span className="flex items-center gap-1.5 text-muted-foreground"><span className="inline-block h-2 w-2 rounded-sm bg-primary" /> Paid out</span>
+              <span className="flex items-center gap-1.5 text-muted-foreground"><span className="inline-block h-2 w-2 rounded-sm bg-primary" /> Settled</span>
               <span className="font-semibold text-foreground tabular-nums">{fmt(active.paid, cur)}</span>
             </div>
             <div className="flex items-center justify-between gap-2 text-xs mb-1.5">
@@ -166,7 +167,7 @@ const PayoutStats = () => {
             </div>
             {active.people.length > 0 && (
               <>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/70 mt-1">Paid to {active.paidCount} {active.paidCount === 1 ? 'person' : 'people'}</div>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/70 mt-1">Settled to {active.paidCount} {active.paidCount === 1 ? 'counterparty' : 'counterparties'}</div>
                 <ul className="space-y-0.5 mt-0.5">
                   {active.people.slice(0, 6).map((p, i) => (
                     <li key={i} className="flex justify-between gap-2 text-[11px]">
@@ -188,7 +189,7 @@ const PayoutStats = () => {
               className="flex-1 h-full flex items-end justify-center gap-[1px] min-w-0 cursor-default"
               onMouseEnter={() => setHover(i)}
               onMouseLeave={() => setHover((h) => (h === i ? null : h))}
-              title={`${fmtDay(s.day)} — paid ${fmt(s.paid, cur)} · received ${fmt(s.received, cur)}`}
+              title={`${fmtDay(s.day)} — settled ${fmt(s.paid, cur)} · received ${fmt(s.received, cur)}`}
             >
               <div
                 className={`w-1/2 max-w-[7px] rounded-t transition-colors ${s.paid > 0 ? (hover === i ? 'bg-primary/70' : 'bg-primary') : ''}`}
@@ -217,7 +218,7 @@ const PayoutStats = () => {
 
       <div className="flex items-center justify-between flex-wrap gap-2 mt-3">
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
-          <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-primary" /> Paid out</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-primary" /> Settled</span>
           <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-sky-500" /> Received</span>
         </div>
         <p className="text-[10px] text-muted-foreground text-right">
@@ -228,7 +229,7 @@ const PayoutStats = () => {
   );
 };
 
-/** Currency with the largest paid-out total gets shown first. */
+/** Currency with the largest settled total gets shown first. */
 function pickDefaultCurrency(d: DailyData): string | null {
   const curs = d.currencies || [];
   if (curs.length === 0) return null;

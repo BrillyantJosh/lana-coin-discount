@@ -1,3 +1,5 @@
+import { BRAND } from "@/copy";
+
 const Footer = () => {
   return (
     <footer className="py-12 border-t border-border">
@@ -6,7 +8,7 @@ const Footer = () => {
           <span>Lana<span className="text-gold">.Discount</span></span>
         </p>
         <p className="text-muted-foreground text-sm mb-2">
-          © {new Date().getFullYear()} Lana.Discount — Supporting sustainable commerce.
+          © {new Date().getFullYear()} {BRAND} — proprietary treasury acquisitions, made with our own capital.
         </p>
         <a href="/docs/api" className="text-sm text-muted-foreground/70 hover:text-foreground transition-colors">
           API Documentation

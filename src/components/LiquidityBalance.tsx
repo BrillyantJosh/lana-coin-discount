@@ -3,10 +3,10 @@ import { useEffect, useMemo, useState } from 'react';
 /**
  * NET FIAT POSITION — the line under the Daily FIAT flows bars.
  *
- * Same two flows as the chart above (FIAT in from investors, FIAT out to LANA
- * sellers), but accumulated: every point is the running sum since the first day
- * of activity, so the question it answers is "on that day, had we taken in more
- * than we had paid out, or less?".
+ * Same two flows as the chart above (FIAT in from investors, purchase prices
+ * settled out), but accumulated: every point is the running sum since the first
+ * day of activity, so the question it answers is "on that day, had we taken in
+ * more than we had settled, or less?".
  *
  * The combined figure converts through the LANA pivot — KIND 38888 quotes how
  * much of each currency one LANA costs, and two quotes imply a cross rate. The
@@ -136,7 +136,7 @@ const LiquidityBalance = () => {
             {fmtSigned(balance, 'EUR')}
           </p>
           <p className="text-xs text-muted-foreground mt-1">
-            received {fmt(data.totals.eur.in, 'EUR')} · paid out {fmt(data.totals.eur.out, 'EUR')}
+            received {fmt(data.totals.eur.in, 'EUR')} · settled {fmt(data.totals.eur.out, 'EUR')}
             {crossNote && <> · combined at {crossNote}</>}
           </p>
         </div>
@@ -279,11 +279,11 @@ const LiquidityBalance = () => {
       </div>
 
       <p className="mt-3 text-[10px] leading-relaxed text-muted-foreground">
-        The running total of FIAT received from investors minus FIAT paid out to LANA sellers, since{' '}
+        The running total of FIAT received from investors minus purchase prices we have settled, since{' '}
         {data.firstDay ? fmtDayFull(data.firstDay) : '—'}. Above the line means more has come in than has gone out
         by that day; below it means the opposite. {daysBelow > 0 && <>{daysBelow} of the {view.length} days shown are below zero. </>}
-        It is a flow difference, not a bank balance: LANA held, LANA still to be delivered and payouts not yet made are
-        not in it. Updates every 60s.
+        It is a flow difference, not a bank balance: LANA we hold, LANA still to be transferred to us and purchase
+        prices not yet settled are not in it. Updates every 60s.
       </p>
     </div>
   );

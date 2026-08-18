@@ -827,6 +827,11 @@ export function getUserSalesWithPayouts(hexId: string): any[] {
       completedAt: sale.completed_at,
       senderWallet: sale.sender_wallet_id,
       buybackWallet: sale.buyback_wallet_id,
+      // The acquisition this came from and the date we owe its purchase price
+      // by. Null on every sale made before the offer model existed, so the
+      // client must treat them as optional rather than assume.
+      offerRef: sale.offer_ref ?? null,
+      settlementDueAt: sale.settlement_due_at ?? null,
       totalPaid: Math.round(totalPaid * 100) / 100,
       remaining: remaining <= 0 ? 0 : remaining,
       payouts: payouts.map(p => ({

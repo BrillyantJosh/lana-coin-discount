@@ -208,9 +208,13 @@ const AdminIncomingPayments = () => {
       setLocalBatches(data.localBatches || []);
       hasLoadedRef.current = true;
       try {
-        const spRes = await fetch('/api/system-params');
+        // The reference rate moved behind admin auth: published next to a
+        // discount percentage it was a standing formula anyone could use.
+        const spRes = await fetch('/api/admin/reference-rates', {
+          headers: session?.nostrHexId ? { 'x-admin-hex-id': session.nostrHexId } : {},
+        });
         const spData = await spRes.json();
-        const rates = spData.exchangeRates || spData.exchange_rates;
+        const rates = spData.exchangeRates;
         if (rates?.EUR) setExchangeRate(rates.EUR);
       } catch {}
 

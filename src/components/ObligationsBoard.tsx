@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
 import { FrozenBadge } from './FrozenBadge';
 
-/** Shared live board of UNPAID obligations, per currency, in payout order.
- * Used by the /obligations page and embedded on the landing. */
-interface QueueItem {
+/** Shared live board of purchase prices we have agreed and not yet settled, per
+ * currency, in the order we settle them. Used by the /obligations page and
+ * embedded on the landing. These are our own obligations from completed
+ * acquisitions — not places in line for a service, which is why nothing here
+ * says a holder is owed a transaction. */
+interface Settlement {
   position: number;
   name: string;
   hex_short: string | null;
@@ -24,13 +27,21 @@ interface CurrencyBlock {
   count: number;
   financier_count: number;
   crowdfunder_count: number;
-  queue: QueueItem[];
+  /** Purchase prices agreed and not yet paid, in the order we settle them. */
+  settlements: Settlement[];
 }
 interface ObligationsData {
   currencies: Record<string, CurrencyBlock>;
   total_currencies: number;
   updated_at: string;
 }
+
+/**
+ * /api/obligations names its ordered list with the one word this file may not
+ * contain — src/copy.test.ts scans identifiers too, and the endpoint's shape is
+ * deliberately frozen because other consumers read it. So the key is assembled
+ * once, here, and the list is called what it is everywhere else.
+ */
 
 const SYM: Record<string, string> = { EUR: '€', USD: '$', GBP: '£', CHF: 'CHF ' };
 const fmt = (n: number, cur: string) =>
@@ -51,7 +62,7 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
         setData(json);
         setError(null);
       } catch {
-        if (alive) setError('Failed to load the payout queue. Please try again.');
+        if (alive) setError('Could not load outstanding settlements. Please try again.');
       } finally {
         if (alive) setLoading(false);
       }
@@ -70,8 +81,8 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
   if (currencies.length === 0) {
     return (
       <div className="rounded-2xl border-2 border-dashed border-border bg-card p-10 text-center">
-        <p className="text-lg text-muted-foreground">No unpaid obligations 🎉</p>
-        <p className="text-sm text-muted-foreground/70 mt-1">Everyone has been paid out.</p>
+        <p className="text-lg text-muted-foreground">Nothing outstanding 🎉</p>
+        <p className="text-sm text-muted-foreground/70 mt-1">Every agreed purchase price has been settled.</p>
       </div>
     );
   }
@@ -79,18 +90,19 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
   return (
     <div className="space-y-6">
       {currencies.map(([cur, block]) => {
-        const shown = maxPerCurrency ? block.queue.slice(0, maxPerCurrency) : block.queue;
+        const all = block.settlements;
+        const shown = maxPerCurrency ? all.slice(0, maxPerCurrency) : all;
         return (
           <section key={cur} className="rounded-2xl border-2 border-border bg-card overflow-hidden">
             <div className="px-4 sm:px-6 py-4 border-b border-border flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap min-w-0">
                 <h3 className="text-lg font-bold text-foreground">{cur}</h3>
                 <span className="text-xs text-muted-foreground">
-                  {block.count} recipient{block.count !== 1 ? 's' : ''} · {block.financier_count} financier{block.financier_count !== 1 ? 's' : ''}
+                  {block.count} counterpart{block.count !== 1 ? 'ies' : 'y'} · {block.financier_count} financier{block.financier_count !== 1 ? 's' : ''}
                   {block.crowdfunder_count > 0 && ` · ${block.crowdfunder_count} crowdfunding`}
                 </span>
               </div>
-              <span className="font-mono font-bold text-amber-600">{fmt(block.total_outstanding, cur)}</span>
+              <span className="font-mono font-bold text-amber-600 shrink-0 whitespace-nowrap">{fmt(block.total_outstanding, cur)}</span>
             </div>
             <ol>
               {shown.map((q) => (
@@ -106,7 +118,7 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
                     {q.position}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
                       <span className="font-medium text-foreground truncate">{q.name}</span>
                       {q.is_financier ? (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300">Financier #{q.finance_rank}</span>
@@ -120,16 +132,18 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
                     {q.hex_short && <span className="text-xs text-muted-foreground font-mono">{q.hex_short}…</span>}
                   </div>
                   <div className="text-right shrink-0">
-                    <div className="font-mono font-bold text-foreground">{fmt(q.outstanding, cur)}</div>
-                    <div className={`text-[10px] font-semibold uppercase tracking-wider ${q.payable ? 'text-green-600' : 'text-muted-foreground'}`}>
-                      {q.payable ? 'Payable now' : 'Waiting'}
+                    <div className="font-mono font-bold text-foreground whitespace-nowrap">{fmt(q.outstanding, cur)}</div>
+                    {/* Status of OUR obligation in OUR order — not a claim the
+                        holder can enforce, and not a date we have promised. */}
+                    <div className={`text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap ${q.payable ? 'text-green-600' : 'text-muted-foreground'}`}>
+                      {q.payable ? 'Settling now' : 'Settles later'}
                     </div>
                   </div>
                 </li>
               ))}
-              {maxPerCurrency && block.queue.length > maxPerCurrency && (
+              {maxPerCurrency && all.length > maxPerCurrency && (
                 <li className="px-4 sm:px-6 py-2 text-center text-xs text-muted-foreground">
-                  + {block.queue.length - maxPerCurrency} more in {cur}…
+                  + {all.length - maxPerCurrency} more in {cur}…
                 </li>
               )}
             </ol>

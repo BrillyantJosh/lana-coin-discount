@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { FrozenBadge } from './FrozenBadge';
 
-/** Shared live list of recent payouts. Used by the /history page (full 100) and
- * embedded on the landing (pass `limit`). */
+/** Shared live list of acquisitions whose purchase price we have already
+ * settled. Used by the /history page (full 100) and embedded on the landing
+ * (pass `limit`). It is a record of what we have done — never a balance held
+ * for anyone. */
 interface PayoutItem {
   payout_id: string;
   name: string;
@@ -54,7 +56,7 @@ export default function RecentPayouts({ limit }: { limit?: number }) {
         setData(json);
         setError(null);
       } catch {
-        if (alive) setError('Failed to load payout history. Please try again.');
+        if (alive) setError('Could not load completed acquisitions. Please try again.');
       } finally {
         if (alive) setLoading(false);
       }
@@ -72,7 +74,7 @@ export default function RecentPayouts({ limit }: { limit?: number }) {
   if (payouts.length === 0) {
     return (
       <div className="rounded-2xl border-2 border-dashed border-border bg-card p-10 text-center">
-        <p className="text-lg text-muted-foreground">No payouts recorded yet.</p>
+        <p className="text-lg text-muted-foreground">No completed acquisitions yet.</p>
       </div>
     );
   }
@@ -85,9 +87,9 @@ export default function RecentPayouts({ limit }: { limit?: number }) {
           <thead>
             <tr className="text-xs uppercase tracking-wider text-muted-foreground border-b border-border">
               <th className="px-4 py-3 font-medium text-left">Date</th>
-              <th className="px-4 py-3 font-medium text-left">Recipient</th>
-              <th className="px-4 py-3 font-medium text-right">Amount</th>
-              <th className="px-4 py-3 font-medium text-left">Payout ID</th>
+              <th className="px-4 py-3 font-medium text-left">Counterparty</th>
+              <th className="px-4 py-3 font-medium text-right">Purchase price</th>
+              <th className="px-4 py-3 font-medium text-left">Settlement ID</th>
             </tr>
           </thead>
           <tbody>
@@ -111,8 +113,8 @@ export default function RecentPayouts({ limit }: { limit?: number }) {
       <div className="sm:hidden space-y-3">
         {payouts.map((p, i) => (
           <div key={`${p.payout_id}-${i}`} className="rounded-xl border border-border bg-card p-4">
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-medium text-foreground truncate">{p.name}</span>
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <span className="font-medium text-foreground truncate min-w-0">{p.name}</span>
               <FrozenBadge info={p} />
               <span className="font-mono font-bold text-foreground whitespace-nowrap">{fmt(p.amount, p.currency)}</span>
             </div>

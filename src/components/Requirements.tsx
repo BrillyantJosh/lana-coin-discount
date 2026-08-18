@@ -1,4 +1,13 @@
-import { ShieldCheck, Star, Coins } from "lucide-react";
+import { ShieldCheck, ListChecks, Gauge } from "lucide-react";
+import { ELIGIBILITY } from "@/copy";
+
+/**
+ * These are OUR criteria for OUR treasury, not conditions a holder satisfies to
+ * become entitled to something. The card this replaces published the 79/70 %
+ * rates as a requirement, which read as a standing price anyone could rely on —
+ * §6 says a concrete price is shown only after review, per proposal.
+ */
+const ICONS = [ShieldCheck, ListChecks, Gauge];
 
 const Requirements = () => {
   return (
@@ -6,37 +15,26 @@ const Requirements = () => {
       <div className="container mx-auto px-6">
         <div className="max-w-4xl mx-auto text-center mb-16">
           <h2 className="text-3xl md:text-5xl font-bold text-foreground mb-4">
-            Requirements
+            {ELIGIBILITY.title}
           </h2>
           <p className="text-lg text-muted-foreground">
-            We keep it simple. Here's what you need to get started.
+            {ELIGIBILITY.intro}
           </p>
         </div>
 
         <div className="grid md:grid-cols-3 gap-8 max-w-4xl mx-auto">
-          <div className="text-center p-8 rounded-xl bg-accent/50 border border-border">
-            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
-              <Star className="w-8 h-8 text-primary" />
-            </div>
-            <h3 className="text-xl font-semibold text-foreground mb-2 font-sans">Rating 9–10</h3>
-            <p className="text-muted-foreground">Your account must have a rating between 9 and 10 to qualify.</p>
-          </div>
-
-          <div className="text-center p-8 rounded-xl bg-accent/50 border border-border">
-            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
-              <Coins className="w-8 h-8 text-primary" />
-            </div>
-            <h3 className="text-xl font-semibold text-foreground mb-2 font-sans">Any Amount</h3>
-            <p className="text-muted-foreground">We buy any amount of LanaCoins — no minimum, no maximum.</p>
-          </div>
-
-          <div className="text-center p-8 rounded-xl bg-accent/50 border border-border">
-            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
-              <ShieldCheck className="w-8 h-8 text-primary" />
-            </div>
-            <h3 className="text-xl font-semibold text-foreground mb-2 font-sans">79% or 70% Payout</h3>
-            <p className="text-muted-foreground">Keep 79% when selling LANA from your investment (21% fee), or 70% for other LANA (30% fee) — paid directly to your account.</p>
-          </div>
+          {ELIGIBILITY.cards.map((card, index) => {
+            const Icon = ICONS[index % ICONS.length];
+            return (
+              <div key={card.title} className="text-center p-8 rounded-xl bg-accent/50 border border-border">
+                <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
+                  <Icon className="w-8 h-8 text-primary" />
+                </div>
+                <h3 className="text-xl font-semibold text-foreground mb-2 font-sans">{card.title}</h3>
+                <p className="text-muted-foreground">{card.body}</p>
+              </div>
+            );
+          })}
         </div>
       </div>
     </section>

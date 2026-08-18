@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 
-/** Sales that are submitted but still awaiting on-chain (RPC) verification before
- * they enter the payout queue. Renders a self-contained amber "In verification"
- * card, or null when there are none. Reads the open /api/pending-verification. */
+/** Accepted acquisitions whose LANA transfer is still awaiting on-chain (RPC)
+ * verification. Until the chain confirms it, the acquisition is not complete and
+ * no purchase price is owed on it — which is why these are shown apart from the
+ * settlements board rather than inside it. Renders a self-contained amber
+ * "In verification" card, or null when there are none. Reads the open
+ * /api/pending-verification. */
 interface PendingItem {
   name: string;
   hex_short: string | null;
@@ -63,7 +66,7 @@ export default function PendingVerification({ limit }: { limit?: number }) {
         <span className="h-2.5 w-2.5 rounded-full bg-amber-500 animate-pulse" />
         <span className="font-semibold text-amber-800 dark:text-amber-300">In verification</span>
         <span className="text-xs text-amber-700/80 dark:text-amber-400/70">
-          {items.length} transaction{items.length !== 1 ? 's' : ''} awaiting on-chain confirmation before payout
+          {items.length} transfer{items.length !== 1 ? 's' : ''} awaiting on-chain confirmation before the acquisition completes
         </span>
       </div>
       <ul>
@@ -73,7 +76,7 @@ export default function PendingVerification({ limit }: { limit?: number }) {
               <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" /> Verifying
             </span>
             <div className="min-w-0 flex-1">
-              <span className="font-medium text-foreground truncate">{p.name}</span>
+              <span className="font-medium text-foreground truncate min-w-0">{p.name}</span>
               {p.hex_short && <span className="ml-2 text-xs text-muted-foreground font-mono">{p.hex_short}…</span>}
             </div>
             <div className="text-right shrink-0">

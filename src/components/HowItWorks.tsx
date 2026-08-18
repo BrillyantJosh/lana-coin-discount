@@ -1,31 +1,14 @@
-import { Wallet, ArrowRightLeft, MessageCircle, Banknote } from "lucide-react";
+import { Wallet, ScanSearch, BadgeCheck, Banknote } from "lucide-react";
+import { HOW_IT_WORKS } from "@/copy";
 
-const steps = [
-  {
-    icon: Wallet,
-    title: "Sign In & Select",
-    description: "Sign in with your LanaCoin wallet and choose how many coins you want to sell.",
-    step: "01",
-  },
-  {
-    icon: ArrowRightLeft,
-    title: "Transfer Your LanaCoins",
-    description: "Send your LanaCoins to our buyback wallet. The transaction is verified on the blockchain automatically.",
-    step: "02",
-  },
-  {
-    icon: MessageCircle,
-    title: "We Sell Into Spending",
-    description: "We channel your coins into real consumer purchases through the LanaPays network — no effort on your part.",
-    step: "03",
-  },
-  {
-    icon: Banknote,
-    title: "Get Paid in Turn",
-    description: "You join a public payout queue and are paid to your bank account as revenue flows in — financiers first in financing order, then everyone else, per currency. Track your exact position anytime.",
-    step: "04",
-  },
-];
+/**
+ * The old third step, "We Sell Into Spending", said we channel the
+ * counterparty's coins onward for them — selling on someone's behalf, which
+ * §4 and §10 name as the red flag that turns this into a service to clients.
+ * The steps now describe what actually happens: a proposal, our decision, an
+ * acceptance, and only then a transfer.
+ */
+const ICONS = [Wallet, ScanSearch, BadgeCheck, Banknote];
 
 const HowItWorks = () => {
   return (
@@ -33,34 +16,37 @@ const HowItWorks = () => {
       <div className="container mx-auto px-6">
         <div className="text-center mb-16">
           <h2 className="text-3xl md:text-5xl font-bold text-foreground mb-4">
-            How It Works
+            {HOW_IT_WORKS.title}
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Four simple steps — sell once, get paid transparently and in turn as the network grows.
+            {HOW_IT_WORKS.intro}
           </p>
         </div>
 
         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
-          {steps.map((step, index) => (
-            <div
-              key={index}
-              className="relative bg-card rounded-xl p-8 shadow-sm border border-border hover:shadow-md transition-shadow group"
-              style={{ animationDelay: `${index * 150}ms` }}
-            >
-              <span className="absolute -top-3 -left-3 w-10 h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold shadow">
-                {step.step}
-              </span>
-              <div className="w-14 h-14 rounded-xl bg-accent flex items-center justify-center mb-5 group-hover:bg-primary group-hover:text-primary-foreground transition-colors text-accent-foreground">
-                <step.icon className="w-7 h-7" />
+          {HOW_IT_WORKS.steps.map((step, index) => {
+            const Icon = ICONS[index % ICONS.length];
+            return (
+              <div
+                key={step.title}
+                className="relative bg-card rounded-xl p-8 shadow-sm border border-border hover:shadow-md transition-shadow group"
+                style={{ animationDelay: `${index * 150}ms` }}
+              >
+                <span className="absolute -top-3 -left-3 w-10 h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold shadow">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <div className="w-14 h-14 rounded-xl bg-accent flex items-center justify-center mb-5 group-hover:bg-primary group-hover:text-primary-foreground transition-colors text-accent-foreground">
+                  <Icon className="w-7 h-7" />
+                </div>
+                <h3 className="text-xl font-semibold text-foreground mb-2 font-sans">
+                  {step.title}
+                </h3>
+                <p className="text-muted-foreground leading-relaxed">
+                  {step.body}
+                </p>
               </div>
-              <h3 className="text-xl font-semibold text-foreground mb-2 font-sans">
-                {step.title}
-              </h3>
-              <p className="text-muted-foreground leading-relaxed">
-                {step.description}
-              </p>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </section>
