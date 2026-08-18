@@ -39,6 +39,12 @@ export interface FreezeSignal {
    * registrar signal; undefined means "this source does not know".
    */
   splitCreated?: number;
+  /**
+   * The registrar's wallet_type, carried through for the same reason: the
+   * buyback window applies to LanaPays.Us wallets only, and this is the
+   * answer that says which kind this is.
+   */
+  walletType?: string;
 }
 
 export interface FreezeVerdict {
@@ -98,6 +104,8 @@ export function parseRegistrarBody(data: any): FreezeSignal {
   // Same two shapes as `frozen`: flattened by check.lanapays.us, nested by the
   // mobile proxy.
   const rawSplit = data?.split_created ?? data?.wallet?.split_created;
+  const rawType = data?.wallet_type ?? data?.wallet?.wallet_type;
+  const walletType = typeof rawType === 'string' && rawType.trim() ? rawType.trim() : undefined;
   const splitCreated = Number.isFinite(Number(rawSplit)) && rawSplit !== null && rawSplit !== ''
     ? Number(rawSplit)
     : undefined;
@@ -105,10 +113,10 @@ export function parseRegistrarBody(data: any): FreezeSignal {
   // An explicit freeze is definitive on its own and needs no registration
   // status to be believed.
   if (frozen) {
-    return { source: 'registrar', reachable: true, frozen: true, detail: 'registrar: wallet frozen', splitCreated };
+    return { source: 'registrar', reachable: true, frozen: true, detail: 'registrar: wallet frozen', splitCreated, walletType };
   }
   if (data?.registered === true) {
-    return { source: 'registrar', reachable: true, frozen: false, splitCreated };
+    return { source: 'registrar', reachable: true, frozen: false, splitCreated, walletType };
   }
 
   // `registered: false` is ALSO what this proxy returns when the registrar API

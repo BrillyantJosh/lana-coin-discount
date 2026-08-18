@@ -5,7 +5,7 @@ import { sendLanaTransaction } from '../lib/transaction.js';
 import { computeBlocker, financingPriorityOf, priorityFor, type QueueSeller } from '../lib/payoutOrder.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore, queryEventsFromRelays } from '../lib/nostr.js';
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
-import { evaluateBuybackSplit } from '../lib/buybackSplit.js';
+import { evaluateBuybackSplit, isScopedWalletType } from '../lib/buybackSplit.js';
 import { buildLiquiditySeries, type FlowRow } from '../lib/liquidity.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
 
@@ -1391,6 +1391,10 @@ router.post('/sell/split-check', async (req: Request, res: Response) => {
       walletSplit: registrar.splitCreated ?? null,
       currentSplit: parseInt(getSplitFromDb() || '') || null,
       registrarReachable: registrar.reachable,
+      // The window is about LanaPays.Us wallets only. This endpoint knows just
+      // the wallet id, so the registrar's own answer is the type we have;
+      // /sell/execute additionally consults the signed wallet list.
+      walletType: registrar.walletType ?? null,
     });
     return res.json(verdict);
   } catch (error: any) {
@@ -1518,12 +1522,15 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
     try {
       const relays = getRelaysFromDb();
       const trusted = getTrustedSignersFromDb();
-      const [registrar, walletList] = await Promise.all([
+      // The wallet list is kept whole here, not just its freeze verdict: the
+      // buyback window below needs the wallet's TYPE, and the signed KIND
+      // 30889 is a second place that knows it.
+      const [registrar, listedWallets] = await Promise.all([
         registrarSignal(senderAddress, WALLET_CHECK_BASE_URL),
         fetchUserWallets(hexId, relays, trusted.LanaRegistrar || [])
-          .then(ws => walletListSignal(ws, senderAddress))
-          .catch(() => ({ source: 'wallet-list', reachable: false, frozen: false })),
+          .catch(() => [] as Awaited<ReturnType<typeof fetchUserWallets>>),
       ]);
+      const walletList = walletListSignal(listedWallets, senderAddress);
       const verdict = evaluateFreeze([registrar, walletList]);
       if (verdict.blocked) {
         console.log(
@@ -1540,10 +1547,19 @@ router.post('/sell/execute', async (req: Request, res: Response) => {
       // SPLIT GATE — which Split this wallet was registered in decides whether
       // its LANA is inside the buyback window at all. Read from the SAME
       // registrar answer the freeze gate just used, so no second call.
+      // Take the type from EITHER source. Being in scope is the stricter
+      // reading, so a wallet only escapes the window when neither the
+      // registrar nor its own signed wallet list calls it a LanaPays.Us one.
+      const listedType = listedWallets.find(
+        w => String(w.walletId || '').trim().toLowerCase() === senderAddress.trim().toLowerCase(),
+      )?.walletType;
+      const scopedType = [registrar.walletType, listedType].find(isScopedWalletType) ?? null;
+
       const splitVerdict = evaluateBuybackSplit({
         walletSplit: registrar.splitCreated ?? null,
         currentSplit: parseInt(getSplitFromDb() || '') || null,
         registrarReachable: registrar.reachable,
+        walletType: scopedType,
       });
       if (!splitVerdict.allowed) {
         console.log(

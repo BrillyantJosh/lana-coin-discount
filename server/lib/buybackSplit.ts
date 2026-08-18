@@ -2,9 +2,22 @@
  * SPLIT GATE — which Split a wallet was registered in decides whether its LANA
  * may be sold back.
  *
- * The LANA Registrar records `split_created` for every LanaPays.Us wallet, and
- * lana.discount only ever offers registered wallets on the sell page. The
- * buyback window is exactly ONE split wide: the one immediately before the
+ * IT APPLIES TO LanaPays.Us WALLETS AND NOTHING ELSE (owner, 18 Aug 2026).
+ *
+ * That is where the question even means something. A LanaPays.Us wallet is
+ * created at issue time, so the split it was registered in genuinely describes
+ * the LANA inside it. A person's own Main Wallet is not like that: they may
+ * have held it for a year and kept receiving into it, so its registration date
+ * says nothing about the coins it holds today.
+ *
+ * The measurement agrees. Across the last 60 wallets that actually sold, all
+ * 15 LanaPays.Us wallets carried a split stamp and every one of them read 7;
+ * of 40 Main Wallets, 35 had no stamp at all. Treating "the registrar never
+ * recorded a split" as a disqualification refused half of the honest sellers
+ * for a fact nobody had ever written down — including wallets that had sold
+ * without trouble days earlier.
+ *
+ * The buyback window is exactly ONE split wide: the one immediately before the
  * current one.
  *
  *   - the CURRENT split is still in play — its LANA has not finished its round;
@@ -17,9 +30,10 @@
  * admin screen — moving it has to be a considered change to the code, reviewed
  * and deployed like any other change to how money settles.
  *
- * FAIL-CLOSED, for the same reason the freeze gate is: we are not deciding
- * whether to SHOW something, we are deciding whether to let money leave. "We
- * could not establish which split this wallet belongs to" is not permission.
+ * FAIL-CLOSED WITHIN ITS SCOPE, for the same reason the freeze gate is: we
+ * are not deciding whether to SHOW something, we are deciding whether to let
+ * money leave. For a LanaPays.Us wallet, "we could not establish which split
+ * this belongs to" is still not permission.
  */
 
 /**
@@ -28,9 +42,21 @@
  */
 export const BUYBACK_SPLIT_OFFSET = 1;
 
+/**
+ * Wallet types the window applies to. Matched on a lowercase prefix because
+ * the registrar also issues sub-types such as "LanaPays.Us Investors", and a
+ * new sub-type must not fall out of scope by being unlisted.
+ */
+const SCOPED_TYPE_PREFIX = 'lanapays';
+
+/** Is this wallet the kind the buyback window is about? */
+export function isScopedWalletType(walletType: string | null | undefined): boolean {
+  return String(walletType || '').trim().toLowerCase().startsWith(SCOPED_TYPE_PREFIX);
+}
+
 export interface SplitVerdict {
   allowed: boolean;
-  code: 'OK' | 'SPLIT_TOO_NEW' | 'SPLIT_TOO_OLD' | 'SPLIT_UNKNOWN' | 'SPLIT_UNVERIFIABLE';
+  code: 'OK' | 'OUT_OF_SCOPE' | 'SPLIT_TOO_NEW' | 'SPLIT_TOO_OLD' | 'SPLIT_UNKNOWN' | 'SPLIT_UNVERIFIABLE';
   reason: string;
   walletSplit: number | null;
   currentSplit: number | null;
@@ -45,6 +71,12 @@ export function evaluateBuybackSplit(input: {
   currentSplit: number | null | undefined;
   /** Did the registrar actually answer? An outage is not a clearance. */
   registrarReachable: boolean;
+  /**
+   * The wallet's type, from any source that knows it — the registrar's own
+   * answer or the signed KIND 30889 list. Only LanaPays.Us wallets are in
+   * scope; everything else passes straight through.
+   */
+  walletType?: string | null;
 }): SplitVerdict {
   const currentSplit = Number.isFinite(input.currentSplit as number) ? Number(input.currentSplit) : null;
   const walletSplit = Number.isFinite(input.walletSplit as number) ? Number(input.walletSplit) : null;
@@ -52,6 +84,14 @@ export function evaluateBuybackSplit(input: {
   const buybackSplit = currentSplit === null ? null : currentSplit - BUYBACK_SPLIT_OFFSET;
   const allowedSplits = buybackSplit !== null && buybackSplit >= 0 ? [buybackSplit] : [];
   const base = { walletSplit, currentSplit, allowedSplits };
+
+  // Scope first, and before any of the fail-closed arms below: a wallet this
+  // rule was never about must not be refused because we could not answer a
+  // question we were not asking. A wallet whose type nobody records is not a
+  // LanaPays.Us wallet — the issuer is exactly who stamps that type.
+  if (!isScopedWalletType(input.walletType)) {
+    return { ...base, allowed: true, code: 'OUT_OF_SCOPE', reason: '' };
+  }
 
   if (currentSplit === null) {
     return {
