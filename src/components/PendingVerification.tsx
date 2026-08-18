@@ -75,9 +75,15 @@ export default function PendingVerification({ limit }: { limit?: number }) {
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 shrink-0">
               <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" /> Verifying
             </span>
-            <div className="min-w-0 flex-1">
-              <span className="font-medium text-foreground truncate min-w-0">{p.name}</span>
-              {p.hex_short && <span className="ml-2 text-xs text-muted-foreground font-mono">{p.hex_short}…</span>}
+            {/* min-w-0 has to be repeated on the row AND on the name itself: a
+                flex item defaults to min-width:auto, so without it the name keeps
+                its intrinsic width and rides over the amount on a narrow phone.
+                `truncate` on a bare inline span does nothing at all. */}
+            <div className="min-w-0 flex-1 flex items-baseline gap-2">
+              <span className="min-w-0 truncate font-medium text-foreground">{p.name}</span>
+              {p.hex_short && (
+                <span className="hidden sm:inline shrink-0 text-xs text-muted-foreground font-mono">{p.hex_short}…</span>
+              )}
             </div>
             <div className="text-right shrink-0">
               <div className="font-mono font-bold text-foreground whitespace-nowrap">{fmt(p.amount, p.currency)}</div>
