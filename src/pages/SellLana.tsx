@@ -423,18 +423,21 @@ const SellLana = () => {
     <div className="min-h-screen bg-background flex flex-col">
       {/* Nav */}
       <nav className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
-        <div className="container mx-auto px-6 flex items-center justify-between h-16">
-          <Link to="/dashboard" className="flex items-center gap-2 text-xl font-display font-bold text-primary">
-            <img src="/lana-logo.png" alt="Lana" className="h-8 w-8 dark:invert" />
-            <span>Lana<span className="text-gold">.Discount</span></span>
+        <div className="container mx-auto px-4 sm:px-6 flex items-center justify-between gap-3 h-16">
+          {/* The wordmark is the part that gives way on a narrow phone: it may
+              shrink and truncate, while the actions keep their full width. Left
+              to grow, it pushed straight through "Dashboard" and "Sign Out". */}
+          <Link to="/dashboard" className="flex min-w-0 items-center gap-2 text-lg sm:text-xl font-display font-bold text-primary">
+            <img src="/lana-logo.png" alt="Lana" className="h-8 w-8 shrink-0 dark:invert" />
+            <span className="truncate">Lana<span className="text-gold">.Discount</span></span>
           </Link>
-          <div className="flex items-center gap-4">
-            <Link to="/dashboard" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <div className="flex shrink-0 items-center gap-2 sm:gap-4">
+            <Link to="/dashboard" className="hidden sm:inline text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
               Dashboard
             </Link>
             <button
               onClick={() => { logout(); navigate('/'); }}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              className="rounded-lg border border-border px-3 sm:px-4 py-1.5 sm:py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors whitespace-nowrap"
             >
               Sign Out
             </button>
@@ -544,11 +547,16 @@ const SellLana = () => {
                                 : 'border-border hover:border-muted-foreground/30'
                             } ${isFrozen ? 'opacity-60 cursor-not-allowed hover:border-border' : ''}`}
                           >
-                            <div className="flex items-start gap-4">
+                            <div className="flex items-start gap-3 sm:gap-4">
                               {/* Wallet info */}
                               <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="font-mono text-sm font-medium text-foreground">{shortAddr}</span>
+                                {/* min-w-0 has to repeat on EVERY level of the
+                                    chain: without it here the inner row keeps
+                                    its intrinsic width, the address refuses to
+                                    shrink, and on a phone it runs underneath
+                                    the balance. */}
+                                <div className="flex min-w-0 items-center gap-2 mb-1">
+                                  <span className="font-mono text-sm font-medium text-foreground truncate">{shortAddr}</span>
                                   {isFrozen && (
                                     <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
                                       Frozen
@@ -584,8 +592,8 @@ const SellLana = () => {
                                 </div>
                               </div>
 
-                              {/* Balance */}
-                              <div className="text-right flex-shrink-0">
+                              {/* Balance — never shrinks, never wraps. */}
+                              <div className="text-right flex-shrink-0 whitespace-nowrap">
                                 {balancesLoading && balances[w.walletId] === undefined ? (
                                   <div className="h-4 w-20 animate-pulse bg-muted rounded" />
                                 ) : balances[w.walletId] !== undefined ? (
