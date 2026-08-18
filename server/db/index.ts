@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { defaultMandateRows } from '../lib/treasuryMandate.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -12,6 +13,15 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 db.pragma('busy_timeout = 5000');
+
+/**
+ * The raw handle, for modules that need statements this file does not wrap —
+ * the acquisition workflow writes its own table. Everything money-related
+ * still goes through the helpers below, which is where the invariants live.
+ */
+export function getDbHandle(): Database.Database {
+  return db;
+}
 
 // --- Schema ---
 
@@ -273,6 +283,25 @@ const migrationColumns = [
 ];
 for (const sql of migrationColumns) {
   try { db.exec(sql); } catch {}
+}
+
+// --- Seed the treasury mandate for the active currencies -------------------
+// INSERT OR IGNORE only: a row that exists is an owner's decision and must
+// never be reset by a deploy. Runs for the currencies we actually settle in.
+try {
+  const activeRow = db.prepare("SELECT value FROM app_settings WHERE key = 'active_currencies'").get() as any;
+  let currencies: string[] = ['EUR'];
+  try { currencies = JSON.parse(activeRow?.value || '["EUR"]'); } catch { /* keep default */ }
+  const put = db.prepare('INSERT OR IGNORE INTO app_settings (key, value, updated_by) VALUES (?, ?, ?)');
+  let written = 0;
+  for (const cur of currencies) {
+    for (const row of defaultMandateRows(cur)) {
+      written += put.run(row.key, row.value, 'migration').changes;
+    }
+  }
+  if (written > 0) console.log(`Seeded treasury mandate defaults (${written} settings)`);
+} catch (err: any) {
+  console.warn('Treasury mandate seeding skipped:', err?.message);
 }
 
 // --- Safe migration: KIND 38888 v3 fields (split_approaching + retail wallet freeze threshold) ---

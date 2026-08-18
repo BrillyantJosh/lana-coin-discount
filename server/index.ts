@@ -6,6 +6,7 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './routes/api.js';
+import { createAcquisitionsRouter } from './routes/acquisitions.js';
 import {
   fetchKind38888, fetchKind0, Kind38888Data,
   queryEventsFromRelays, parseDonation60200, parseProject31234, parseVisibility31235,
@@ -58,6 +59,17 @@ app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1500, standardHeaders: true, 
 
 // API routes
 app.use('/api', apiRouter);
+
+// The acquisition workflow — a seller proposes, the treasury decides, and only
+// then does LANA move. Mounted alongside the existing API rather than inside
+// it: /api/sell/* stays exactly as it is until the client has moved over.
+app.use('/api/acquisitions', createAcquisitionsRouter({
+  walletCheckBaseUrl: process.env.WALLET_CHECK_BASE_URL || 'https://check.lanapays.us',
+  publishBuybackEvent: async (tx) => {
+    const { publishBuybackEvent } = await import('./routes/api.js');
+    return publishBuybackEvent(tx as any);
+  },
+}));
 app.use('/health', (_req, res) => res.redirect('/api/health'));
 
 // Serve static frontend in production
@@ -691,6 +703,16 @@ async function heartbeatLoop() {
       // RPC transaction verification every 10 heartbeats (= every 10 minutes)
       if (heartbeatCount % 10 === 0) {
         await withTimeout(() => verifyUnconfirmedTransactions(), 'RPC verification', 30000);
+      }
+
+      // A purchase offer nobody accepted stops standing. Cheap, so every beat.
+      try {
+        const { expireStaleOffers } = await import('./lib/acquisitionOffer.js');
+        const { getDbHandle } = await import('./db/index.js');
+        const lapsed = expireStaleOffers(getDbHandle());
+        if (lapsed > 0) console.log(`[lana-discount] ${lapsed} purchase offer(s) lapsed`);
+      } catch (err: any) {
+        console.warn('[lana-discount] Offer expiry sweep failed:', err.message);
       }
 
       // Sync KIND 0 profiles for users without names every 30 heartbeats (= every 30 min)
