@@ -419,7 +419,10 @@ export async function broadcastEvent(event: NostrEvent, relays?: string[]): Prom
         } catch {}
       });
       ws.on('error', () => { clearTimeout(timer); resolve(false); });
-      ws.on('close', () => { clearTimeout(timer); });
+      // A relay may close without ever sending OK (NIP-42 auth-required, or a
+      // restart mid-publish). This must answer too: the timeout guard is already
+      // cleared by then, so nothing else would ever settle this promise.
+      ws.on('close', () => { clearTimeout(timer); resolve(false); });
     });
   };
 
