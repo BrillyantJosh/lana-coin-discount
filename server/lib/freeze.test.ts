@@ -133,11 +133,40 @@ describe('walletListSignal', () => {
     expect(s.detail).toContain('frozen_max_cap');
   });
 
-  it("another wallet's freeze does not block this one", () => {
+  it("another wallet's freeze DOES block this one", () => {
+    // Reversed deliberately on 2026-08-28 at the owner's instruction. The
+    // registrar freezes a wallet when it finds unregistered LANA on it — that
+    // is a finding about the holder, not about one address, so selling from a
+    // clean sibling wallet would walk straight past it.
     const s = walletListSignal(
       [
         { walletId: W, status: 'active' },
         { walletId: 'LOther', status: 'active', freezeStatus: 'frozen_too_wild' },
+      ],
+      W,
+    );
+    expect(s.frozen).toBe(true);
+    expect(s.detail).toContain('another wallet');
+    expect(s.detail).toContain('frozen_too_wild');
+  });
+
+  it('names which sibling is frozen, so the seller can act on it', () => {
+    const s = walletListSignal(
+      [
+        { walletId: W, status: 'active' },
+        { walletId: 'LSiblingWallet123', status: 'active', freezeStatus: 'frozen_unreg_Lanas' },
+      ],
+      W,
+    );
+    expect(s.detail).toContain('LSiblingW');
+  });
+
+  it('a clean account with several wallets still sells', () => {
+    const s = walletListSignal(
+      [
+        { walletId: W, status: 'active' },
+        { walletId: 'LOther', status: 'active' },
+        { walletId: 'LThird', status: 'active', freezeStatus: '' },
       ],
       W,
     );

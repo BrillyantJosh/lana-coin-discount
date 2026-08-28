@@ -23,6 +23,7 @@
  */
 import { evaluateFreeze, registrarSignal, walletListSignal } from './freeze.js';
 import { evaluateBuybackSplit, isScopedWalletType } from './buybackSplit.js';
+import { isSellableWalletType } from './sellableWallet.js';
 import { fetchPaymentScore, fetchUserWallets } from './nostr.js';
 import type { WalletClass } from './treasuryMandate.js';
 
@@ -144,6 +145,22 @@ export async function checkSellerEligibility(
     // The type for pricing and for the mandate: prefer whichever source
     // actually named it, registrar first.
     const walletType = registrar.walletType ?? listedType ?? null;
+
+    // The offer page only lists sellable types, but a list is a courtesy and
+    // not a gate: the type is checked here, against what the REGISTRAR says,
+    // so a hand-made request naming a Retail card gets the same refusal the
+    // page would have given.
+    if (!isSellableWalletType(walletType)) {
+      console.log(`[lana-discount] Blocked (WALLET_TYPE_NOT_SELLABLE): ${senderAddress.slice(0, 10)}… is ${walletType ?? 'untyped'}`);
+      return {
+        ok: false, httpStatus: 403, code: 'WALLET_TYPE_NOT_SELLABLE',
+        error: walletType
+          ? `A ${walletType} wallet cannot be offered. Offers are made from a Main Wallet, a Wallet or a LanaPays.Us wallet.`
+          : 'This wallet is not registered under a type that can be offered.',
+        detail: { walletType },
+      };
+    }
+
     return {
       ok: true,
       walletType,

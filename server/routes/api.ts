@@ -6,6 +6,7 @@ import { computeBlocker, financingPriorityOf, priorityFor, type QueueSeller } fr
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore, queryEventsFromRelays } from '../lib/nostr.js';
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
 import { evaluateBuybackSplit, isScopedWalletType } from '../lib/buybackSplit.js';
+import { isSellableWalletType } from '../lib/sellableWallet.js';
 import { buildLiquiditySeries, type FlowRow } from '../lib/liquidity.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
 
@@ -227,7 +228,10 @@ router.post('/sync-kind-38888', async (_req: Request, res: Response) => {
 
 /**
  * GET /api/user/:hexId/wallets
- * Fetch user's registered wallets from KIND 30889, excluding Lana8Wonder and Knights.
+ * The user's registered wallets from KIND 30889, narrowed to the types that
+ * may actually be offered to the treasury: Main Wallet, Wallet and
+ * LanaPays.Us. This was a blocklist until a Retail card appeared on the offer
+ * page — see server/lib/sellableWallet.ts for why it is stated positively now.
  */
 router.get('/user/:hexId/wallets', async (req: Request, res: Response) => {
   try {
@@ -238,10 +242,7 @@ router.get('/user/:hexId/wallets', async (req: Request, res: Response) => {
 
     const allWallets = await fetchUserWallets(String(hexId), relays, lanaRegistrar);
 
-    // Filter out Lana8Wonder and Knights wallet types
-    const wallets = allWallets.filter(
-      w => w.walletType !== 'Lana8Wonder' && w.walletType !== 'Knights'
-    );
+    const wallets = allWallets.filter(w => isSellableWalletType(w.walletType));
 
     return res.json({ wallets });
   } catch (error) {

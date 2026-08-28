@@ -173,6 +173,21 @@ export function walletListSignal(
     return { source: 'wallet-list', reachable: true, frozen: true, detail: `wallet: ${mine.freezeStatus}` };
   }
 
+  // A freeze on ANY wallet of the account stops the sale, not only one on the
+  // wallet being sold from. The registrar freezes a wallet when it finds
+  // unregistered LANA on it, and that is a statement about the holder, not
+  // about one address: selling from a clean sibling wallet would walk straight
+  // past the finding. The owner asked for this explicitly on 2026-08-28.
+  const frozenSibling = wallets.find(w => w.freezeStatus);
+  if (frozenSibling) {
+    return {
+      source: 'wallet-list',
+      reachable: true,
+      frozen: true,
+      detail: `another wallet on this account is frozen (${String(frozenSibling.walletId || '').slice(0, 10)}…: ${frozenSibling.freezeStatus})`,
+    };
+  }
+
   // The account is demonstrably not frozen. If the wallet itself isn't on the
   // list we say so, but that is still a valid account-level clearance.
   return {
