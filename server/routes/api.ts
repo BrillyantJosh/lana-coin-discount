@@ -7,6 +7,7 @@ import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetc
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
 import { evaluateBuybackSplit, isScopedWalletType } from '../lib/buybackSplit.js';
 import { isSellableWalletType } from '../lib/sellableWallet.js';
+import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from '../lib/sendLock.js';
 import { buildLiquiditySeries, type FlowRow } from '../lib/liquidity.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
 
@@ -3213,6 +3214,28 @@ router.get('/brain/buyback-balance', async (req: Request, res: Response) => {
 });
 
 /**
+ * Report a broadcast to the brain: the transaction refs it touched, the hash,
+ * and the exact order ids that were IN it. The brain stamps only those ids, so
+ * a purchase whose other legs go out in a later broadcast keeps a correct hash
+ * per leg. Fire-and-forget: the brain's heartbeat poll is the fallback.
+ */
+function notifyBrainLanaSent(orders: Array<{ id: string; transaction_ref?: string | null }>, txHash: string): void {
+  const refs = [...new Set(orders.map(o => o.transaction_ref).filter(Boolean))];
+  if (refs.length === 0) return;
+  const brainUrl = process.env.BRAIN_CALLBACK_URL || process.env.BRAIN_API_URL;
+  const brainKey = process.env.BRAIN_CALLBACK_KEY || process.env.LANA_DISCOUNT_API_KEY;
+  if (!brainUrl) return;
+  fetch(`${brainUrl}/api/callbacks/lana-sent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-callback-key': brainKey || '' },
+    body: JSON.stringify({ transaction_refs: refs, tx_hash: txHash, order_ids: orders.map(o => o.id) }),
+  }).then(r => {
+    if (r.ok) console.log(`[lana-discount] Brain callback lana-sent (manual batch): ${refs.length} txs, ${orders.length} orders`);
+    else console.warn(`[lana-discount] Brain callback failed (manual batch): HTTP ${r.status}`);
+  }).catch(err => console.warn('[lana-discount] Brain callback error (manual batch):', err.message));
+}
+
+/**
  * POST /api/admin/send-batch-lana
  * Send LANA from buyback wallet to all recipients in pending brain_lana_orders
  * for a given set of transaction_refs (linked to a Direct.Fund batch)
@@ -3224,6 +3247,15 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
   }
 
   try {
+    // One broadcast at a time, shared with the auto-sender: both read
+    // status='pending' and both broadcast, so overlapping runs can pay the
+    // same orders twice. Released whatever way this request ends.
+    if (!tryAcquireSendLock('manual-batch')) {
+      const h = sendLockHolder();
+      return res.status(409).json({ error: `A LANA send is already in flight (${h?.who ?? 'auto-send'}, ${Math.round((h?.heldForMs ?? 0) / 1000)}s) — try again in a minute`, code: 'SEND_IN_FLIGHT' });
+    }
+    res.once('finish', () => releaseSendLock('manual-batch'));
+    res.once('close', () => releaseSendLock('manual-batch'));
     const { transaction_refs } = req.body;
     if (!Array.isArray(transaction_refs) || transaction_refs.length === 0) {
       return res.status(400).json({ error: 'transaction_refs must be a non-empty array' });
@@ -3353,11 +3385,18 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
 
     // Update all orders
     const updateOrder = db.prepare(`
-      UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ?
+      UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ? AND status = 'pending'
     `);
     for (const o of orders) {
-      updateOrder.run(txHash, o.id);
+      if (updateOrder.run(txHash, o.id).changes !== 1) {
+        console.error(`[lana-discount] send-batch-lana: order ${o.id} (${o.transaction_ref}) was paid in ${txHash} but is no longer pending — needs a look`);
+      }
     }
+
+    // Tell the brain which orders went out under this hash — the same callback
+    // the auto-sender makes. Until 2026-09-03 this route told the brain nothing
+    // and left it to a later poll, and the poll only fills an EMPTY hash.
+    notifyBrainLanaSent(orders, txHash);
 
     return res.json({
       status: 'sent',

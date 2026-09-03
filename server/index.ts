@@ -16,6 +16,8 @@ import db, {
   closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb,
   insertCrowdfundDonation, upsertCrowdfundProject, setCrowdfundProjectVisibility,
 } from './db/index.js';
+import { selectWholeGroups } from './lib/autoSendSelection.js';
+import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from './lib/sendLock.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -154,13 +156,20 @@ function sleep(ms: number): Promise<void> {
 // ---------------------------------------------------------------------------
 
 const HEARTBEAT_INTERVAL = 60 * 1000; // 1 minute
+// One broadcast carries at most this many recipient outputs. The window of
+// pending rows we read is wider so that whole purchases can be chosen from it;
+// see selectWholeGroups for why the cap is applied to purchases, not rows.
+const AUTO_SEND_MAX_OUTPUTS = 100;
+const AUTO_SEND_WINDOW_ROWS = 1000;
 const AUTO_SEND_CYCLE = 5; // every 5 heartbeats = 5 min
 const AUTO_SEND_OFFSET = 3;
 let heartbeatCount = 0;
 let lastAutoSendAt: string | null = null;
 let nextAutoSendIn = AUTO_SEND_CYCLE - AUTO_SEND_OFFSET; // initial countdown
 let autoSendSkipUntil = 0; // timestamp — skip auto-send until this time (insufficient balance cooldown)
-let autoSendRunning = false; // prevent concurrent auto-send runs
+// Concurrency between the auto-sender and the admin's manual batch is a
+// shared lock in ./lib/sendLock.ts — both read status='pending' and both
+// broadcast, so only one may be in flight.
 let lastKnownBalance = 0; // LANA balance from last Electrum fetch (for quick pre-check)
 // UTXOs that produced a -22 "TX rejected" broadcast. The buyback wallet is SHARED
 // with other services, and electrum1 has no mempool tracking — so listunspent can
@@ -247,8 +256,9 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
 
 async function autoSendPendingLana(): Promise<void> {
   // Prevent concurrent runs
-  if (autoSendRunning) {
-    console.log('[lana-discount] Auto-send already running — skipping');
+  if (!tryAcquireSendLock('auto-send')) {
+    const h = sendLockHolder();
+    console.log(`[lana-discount] Auto-send: skipped — ${h?.who ?? 'another sender'} holds the send lock (${Math.round((h?.heldForMs ?? 0) / 1000)}s)`);
     return;
   }
 
@@ -259,7 +269,6 @@ async function autoSendPendingLana(): Promise<void> {
     return;
   }
 
-  autoSendRunning = true;
   try {
     const buybackWif = process.env.BUYBACK_WIF;
     if (!buybackWif) return;
@@ -267,14 +276,26 @@ async function autoSendPendingLana(): Promise<void> {
     // Send LANA orders that are either:
     // 1. Explicitly authorized by Brain (brain_authorized=1), OR
     // 2. In a batch with incoming_batches.status = 'lana_bought' (admin confirmed receipt)
-    let pendingOrders = db.prepare(`
+    // Read a WIDE window of authorized rows, then pick whole purchases from it.
+    // The old query took the first 100 ROWS, which could end in the middle of a
+    // purchase (its last legs being rows 101-103) — the legs then went out in
+    // two broadcasts and the brain recorded one hash for all of them.
+    const windowRows = db.prepare(`
       SELECT DISTINCT blo.* FROM brain_lana_orders blo
       LEFT JOIN incoming_batches ib ON blo.batch_ref = ib.batch_ref
       WHERE blo.status = 'pending'
         AND (blo.brain_authorized = 1 OR ib.status = 'lana_bought')
-      ORDER BY blo.created_at ASC
-      LIMIT 100
-    `).all() as any[];
+      ORDER BY blo.created_at ASC, blo.transaction_ref ASC, blo.id ASC
+      LIMIT ?
+    `).all(AUTO_SEND_WINDOW_ROWS) as any[];
+    const selection = selectWholeGroups(windowRows, {
+      maxOutputs: AUTO_SEND_MAX_OUTPUTS,
+      windowTruncated: windowRows.length >= AUTO_SEND_WINDOW_ROWS,
+    });
+    if (selection.droppedTail) console.log(`[lana-discount] Auto-send: window full (${windowRows.length} rows) — purchase ${selection.droppedTail} waits for the next run so it is not sent in part`);
+    if (selection.groups[0] && selection.groups[0].length > AUTO_SEND_MAX_OUTPUTS) console.error(`[lana-discount] Auto-send: purchase ${selection.groups[0][0].transaction_ref} has ${selection.groups[0].length} legs — more than one broadcast normally carries; sending it whole, alone`);
+    if (selection.deferredOversized.length) console.warn(`[lana-discount] Auto-send: ${selection.deferredOversized.length} purchase(s) larger than ${AUTO_SEND_MAX_OUTPUTS} outputs deferred: ${selection.deferredOversized.join(', ')}`);
+    let pendingOrders = selection.orders;
 
     if (pendingOrders.length === 0) {
       // Even with no pending orders, check if any stuck batches should be marked as lana_sent
@@ -316,15 +337,9 @@ async function autoSendPendingLana(): Promise<void> {
       return;
     }
 
-    // Group orders by transaction_ref — all orders in same tx_ref must be sent together (whole batch or nothing)
-    const groupMap = new Map<string, any[]>();
-    for (const o of pendingOrders) {
-      const ref = o.transaction_ref || o.id; // fallback to id if no ref
-      const group = groupMap.get(ref) || [];
-      group.push(o);
-      groupMap.set(ref, group);
-    }
-    const txGroups = Array.from(groupMap.values()).sort((a, b) => {
+    // Whole purchases only (selectWholeGroups already grouped them); the
+    // insufficient-balance branch below picks affordable groups smallest-first.
+    const txGroups = selection.groups.slice().sort((a, b) => {
       const sumA = a.reduce((s: number, o: any) => s + o.lana_amount, 0);
       const sumB = b.reduce((s: number, o: any) => s + o.lana_amount, 0);
       return sumA - sumB; // smallest groups first
@@ -500,9 +515,14 @@ async function autoSendPendingLana(): Promise<void> {
     console.log(`[lana-discount] Auto-send LANA TX: ${txHash} (${pendingOrders.length} recipients, ${sentLana.toFixed(3)} LANA)`);
 
     // Update all orders to 'sent'
-    const updateStmt = db.prepare("UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ?");
+    const updateStmt = db.prepare("UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ? AND status = 'pending'");
     for (const o of pendingOrders) {
-      updateStmt.run(txHash, o.id);
+      if (updateStmt.run(txHash, o.id).changes !== 1) {
+        // The row left 'pending' while we were building the tx (a cancel, or
+        // another sender). The LANA has moved regardless — say so where an
+        // operator will see it instead of overwriting whatever is there now.
+        console.error(`[lana-discount] Auto-send: order ${o.id} (${o.transaction_ref}) was paid in ${txHash} but is no longer pending — needs a look`);
+      }
     }
 
     // Notify Brain that LANA was sent (callback)
@@ -514,9 +534,11 @@ async function autoSendPendingLana(): Promise<void> {
         fetch(`${brainUrl}/api/callbacks/lana-sent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-callback-key': brainKey || '' },
-          body: JSON.stringify({ transaction_refs: sentTxRefs, tx_hash: txHash }),
+          // order_ids: the brain stamps exactly these — a purchase's other legs
+          // may go out in a later broadcast and must keep their own hash.
+          body: JSON.stringify({ transaction_refs: sentTxRefs, tx_hash: txHash, order_ids: pendingOrders.map((o: any) => o.id) }),
         }).then(r => {
-          if (r.ok) console.log(`[lana-discount] Brain callback lana-sent: ${sentTxRefs.length} txs`);
+          if (r.ok) console.log(`[lana-discount] Brain callback lana-sent: ${sentTxRefs.length} txs, ${pendingOrders.length} orders`);
           else console.warn(`[lana-discount] Brain callback failed: HTTP ${r.status}`);
         }).catch(err => console.warn('[lana-discount] Brain callback error:', err.message));
       }
@@ -578,7 +600,7 @@ async function autoSendPendingLana(): Promise<void> {
   } catch (err: any) {
     console.error('[lana-discount] Auto-send LANA error:', err.message);
   } finally {
-    autoSendRunning = false;
+    releaseSendLock('auto-send');
   }
 }
 
