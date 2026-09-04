@@ -71,7 +71,6 @@ interface Acquisition {
   createdAt: string;
   completedAt: string | null;
   senderWallet: string;
-  buybackWallet: string;
   /** Null on everything acquired before the offer model existed. */
   offerRef: string | null;
   settlementDueAt: string | null;

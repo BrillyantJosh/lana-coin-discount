@@ -67,7 +67,7 @@ interface SplitCheck {
 interface SystemParams {
   split: string | null;
   activeCurrencies: string[];
-  buybackWalletId: string;
+  treasuryWalletId: string;
 }
 
 interface PaymentMethod {
@@ -1339,10 +1339,10 @@ const SubmitOffer = () => {
                       <span className="text-muted-foreground">From</span>
                       <span className="font-mono text-foreground truncate">{shortAddress(offer.senderWallet)}</span>
                     </div>
-                    {systemParams?.buybackWalletId && (
+                    {systemParams?.treasuryWalletId && (
                       <div className="flex min-w-0 items-center justify-between gap-3">
                         <span className="text-muted-foreground">Treasury wallet</span>
-                        <span className="font-mono text-foreground truncate">{shortAddress(systemParams.buybackWalletId)}</span>
+                        <span className="font-mono text-foreground truncate">{shortAddress(systemParams.treasuryWalletId)}</span>
                       </div>
                     )}
                     <div className="flex min-w-0 items-center justify-between gap-3">

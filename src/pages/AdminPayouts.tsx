@@ -39,11 +39,16 @@ interface SaleEntry {
   // every use below has to survive their absence.
   offerRef?: string | null;
   settlementDueAt?: string | null;
+  // The financing round of the offer this sale came from, the Split its
+  // mandate was published for, and when the purchase offer was accepted.
+  // All null on a legacy sale or one outside a round. Display and sort only:
+  // the settlement due date governs, nothing here blocks a payout.
+  round?: number | null;
+  mandateSplit?: number | null;
+  acceptedAt?: string | null;
   totalPaid: number;
   remaining: number;
   payouts: PayoutEntry[];
-  orderBlocked?: boolean;         // a higher-priority recipient (same currency) is still unpaid
-  orderBlockedBy?: string | null; // that recipient's display name (or null → short hex)
 }
 
 interface PaymentMethod {
@@ -82,26 +87,35 @@ interface UserWithSales {
   sales: SaleEntry[];
   profile?: UserProfile | null;
   paymentMethods?: PaymentMethod[];
-  crowdfunder?: boolean;               // any-currency crowd-funder (back-compat)
-  crowdfunderCurrencies?: string[];    // currencies where this seller is a crowd-funder (Tier 2)
 }
 
-// One investor's place in the financing order (from Direct Fund): investment
-// rounds ascending, FIFO inside a round, sweeper last. Payouts follow it.
-interface FinancierRank {
-  rank: number;               // registration order — reference/back-compat only
-  financing_rank?: number;    // THE payout order (rounds asc, FIFO inside); absent on old payloads
-  round?: number;             // the round the investor's remaining money sits in
-  nostr_hex_id: string;
-  name: string | null;
-  financed_amount: number;
-  invested_amount: number;
-  currency: string | null;
-  is_last_budget: boolean;
-  privileged: boolean;
-  added_at: string | null;
-  first_budget_at: string | null; // when the earliest budget was registered (FIFO order)
-}
+/**
+ * The one settlement order (owner, 4 Sep 2026): financing round 1, then 2,
+ * then 3, then acquisitions outside a round; inside each, the earlier
+ * acceptance first. The same comparison the public board uses
+ * (server/lib/obligations.ts). Display and default sort only — the T+15 due
+ * date on the offer governs, and no payout is ever blocked by the order.
+ */
+const roundRank = (round: number | null | undefined) => (round == null ? Number.POSITIVE_INFINITY : round);
+const compareRoundOrder = (
+  a: { round: number | null; earliestAt: string },
+  b: { round: number | null; earliestAt: string },
+): number => {
+  const ra = roundRank(a.round), rb = roundRank(b.round);
+  if (ra !== rb) return ra < rb ? -1 : 1;
+  return a.earliestAt < b.earliestAt ? -1 : a.earliestAt > b.earliestAt ? 1 : 0;
+};
+/** When this sale enters the order: acceptance of its offer, or the sale itself on a legacy row. */
+const saleOrderedAt = (sale: SaleEntry) => sale.acceptedAt || sale.createdAt || '';
+
+/** `R1 · Split 8` for a sale from a round mandate; null outside a round. */
+const roundBadge = (sale: SaleEntry): { label: string; title: string } | null => {
+  if (sale.round == null) return null;
+  return {
+    label: `R${sale.round}${sale.mandateSplit != null ? ` · Split ${sale.mandateSplit}` : ''}`,
+    title: `Financing round ${sale.round}${sale.mandateSplit != null ? ` of Split ${sale.mandateSplit}` : ''}${sale.acceptedAt ? ` · offer accepted ${sale.acceptedAt}` : ''}`,
+  };
+};
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   EUR: '\u20ac', USD: '$', GBP: '\u00a3', CHF: 'CHF',
@@ -198,26 +212,8 @@ const AdminPayouts = () => {
   const [submitting, setSubmitting] = useState(false);
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  // Default to financiers-first so the payout order is what you see on open.
-  const [sortMode, setSortMode] = useState<'remaining' | 'latest_payment' | 'financing_priority'>('financing_priority');
-
-  // Payout-priority (financing order: rounds asc, FIFO inside) for the SELECTED currency — display
-  // only. Each currency is a separate class with its own budget/order, so this
-  // holds one currency's order at a time.
-  const [financing, setFinancing] = useState<FinancierRank[]>([]);
-  const [financingStale, setFinancingStale] = useState(false);
-  // Which currency the loaded `financing` order belongs to. The order is applied
-  // ONLY when this matches the active currency — so a slow/failed fetch after a
-  // tab switch can never show the previous currency's ranks under the new tab.
-  const [financingCurrency, setFinancingCurrency] = useState<string>('');
-  // Collapsed by default (the financing-order financier list). The dedicated "Pay by order"
-  // tab is the primary way to see the full payout sequence now.
-  const [showPayoutOrder, setShowPayoutOrder] = useState(false);
-  // Page view: 'order' (default) = the payout queue (who can be paid, in order)
-  // with inline pay; 'manage' = the full per-seller cards + forms.
-  const [pageTab, setPageTab] = useState<'manage' | 'order'>('order');
-  // Which queue row is expanded for paying (seller hex).
-  const [queueOpenHex, setQueueOpenHex] = useState<string | null>(null);
+  // Default to the round order so the settlement order is what you see on open.
+  const [sortMode, setSortMode] = useState<'remaining' | 'latest_payment' | 'round_order'>('round_order');
   // GBP and EUR are separate budgets → separate payout classes. The operator
   // views (and pays out) one currency at a time; ordering never crosses currencies.
   const [selectedCurrency, setSelectedCurrency] = useState<string>('');
@@ -239,32 +235,8 @@ const AdminPayouts = () => {
     fetchPayouts();
   }, [session, isAdmin]);
 
-  // Load the financing order for the SELECTED currency (display-only;
-  // failures degrade silently). Re-fetches whenever the operator switches
-  // currency, because each currency has its own budget and its own order.
-  useEffect(() => {
-    if (!session || !isAdmin || !selectedCurrency) return;
-    let alive = true;
-    (async () => {
-      try {
-        const res = await fetch(`/api/admin/financing-order?currency=${encodeURIComponent(selectedCurrency)}`, {
-          headers: { 'x-admin-hex-id': session.nostrHexId },
-        });
-        const data = await res.json();
-        if (!alive) return;
-        setFinancing(data.order || []);
-        setFinancingStale(!!data.stale);
-        setFinancingCurrency(selectedCurrency);
-      } catch {
-        /* display-only — on error the order simply won't match the active
-           currency (see financingActive), so no stale ranks are shown. */
-      }
-    })();
-    return () => { alive = false; };
-  }, [session, isAdmin, selectedCurrency]);
-
   // Pick a default currency once payouts load, and keep the selection valid if the
-  // set of present currencies changes. Setting it triggers the financing fetch above.
+  // set of present currencies changes.
   useEffect(() => {
     const present = Array.from(
       new Set(users.flatMap(u => (u.sales || []).map(s => s.currency)).filter(Boolean))
@@ -358,7 +330,10 @@ const AdminPayouts = () => {
       return;
     }
 
-    const post = async (force: boolean) => {
+    setSubmitting(true);
+    try {
+      // No order guard: the round order is shown, never enforced. The date on
+      // the offer is what governs a settlement.
       const res = await fetch('/api/admin/payouts', {
         method: 'POST',
         headers: {
@@ -371,27 +346,9 @@ const AdminPayouts = () => {
           currency: sale.currency,
           paidToAccount: payoutAccount || null,
           note: payoutNote || null,
-          ...(force ? { force: true } : {}),
         }),
       });
-      return { res, data: await res.json() };
-    };
-
-    setSubmitting(true);
-    try {
-      let { res, data } = await post(false);
-
-      // Payout-order guard tripped → let the admin explicitly override (financiers first).
-      if (res.status === 409 && data.code === 'PAYOUT_ORDER_BLOCKED') {
-        const who = data.blockedByName || (data.blockedByHex ? data.blockedByHex.slice(0, 8) + '…' : 'a higher-priority recipient');
-        const ok = window.confirm(
-          `${who} is ahead in the ${data.currency || sale.currency} payout queue and still unpaid.\n\n` +
-          `Payouts follow the financing order — rounds first, FIFO inside a round. Pay out of order anyway?`
-        );
-        if (!ok) return;
-        ({ res, data } = await post(true));
-      }
-
+      const data = await res.json();
       if (data.error) throw new Error(data.error);
 
       toast.success(`Payout ${data.payout.payoutId} recorded successfully!`);
@@ -488,52 +445,31 @@ const AdminPayouts = () => {
     ? selectedCurrency
     : (presentCurrencies[0] || '');
 
-  // Apply the loaded financing order ONLY if it belongs to the active currency
-  // (guards the tab-switch race and failed fetches — never show €-ranks under £).
-  const financingActive = financingCurrency === activeCurrency ? financing : [];
-  const financingStaleActive = financingCurrency === activeCurrency ? financingStale : false;
-  // Financier ranking (financing order) for the ACTIVE currency, keyed by full seller hex.
-  const financingMap = new Map<string, FinancierRank>();
-  for (const f of financingActive) financingMap.set(f.nostr_hex_id, f);
-  // Tier-2 crowd-funders IN THIS CURRENCY (server-flagged per currency: raised &
-  // unpaid LanaCrowd donations this split, in the active currency's budget).
-  const crowdfunderSet = new Set<string>(
-    users.filter(u => (u.crowdfunderCurrencies || []).includes(activeCurrency)).map(u => u.hexId)
-  );
-  const NON_FINANCIER_RANK = 1e9, SWEEPER_RANK = 5e8, CROWDFUND_RANK = 7e8;
-  // Effective payout order: Tier 1 financiers first — in FINANCING order, rounds
-  // ascending and FIFO inside a round (financing_rank; registration rank only as
-  // an old-payload fallback), sweeper last among them — then Tier 2
-  // crowd-funders, then recipients with no priority last.
-  const payoutRankOf = (hex: string): number => {
-    const f = financingMap.get(hex);
-    if (f) return f.is_last_budget ? SWEEPER_RANK : (f.financing_rank ?? f.rank);
-    if (crowdfunderSet.has(hex)) return CROWDFUND_RANK;
-    return NON_FINANCIER_RANK;
+  // Where a seller stands in the round order for the ACTIVE currency: the
+  // earliest round among their unpaid sales (null = all outside a round), and
+  // the earliest acceptance inside it. Sales already settled do not place them.
+  const roundPlaceOf = (sales: SaleEntry[]): { round: number | null; earliestAt: string } => {
+    const open = sales.filter(s => s.remaining > 0 && s.status !== 'paid');
+    const pool = open.length > 0 ? open : sales;
+    let best: { round: number | null; earliestAt: string } | null = null;
+    for (const sale of pool) {
+      const cand = { round: sale.round ?? null, earliestAt: saleOrderedAt(sale) };
+      if (!best || compareRoundOrder(cand, best) < 0) best = cand;
+    }
+    return best || { round: null, earliestAt: '' };
   };
-  const priorityBadge = (hex: string): { label: string; cls: string; title: string } => {
-    const f = financingMap.get(hex);
-    if (f && !f.is_last_budget) return {
-      label: `Payout #${f.financing_rank ?? f.rank}${f.round ? ` · R${f.round}` : ''}`,
-      cls: 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300',
-      title: `Financier${f.name ? ': ' + f.name : ''}${f.round ? ` · round ${f.round}` : ''}${(f.first_budget_at || f.added_at) ? ' · registered ' + formatDate(f.first_budget_at || f.added_at || '') : ''}`,
-    };
-    if (f && f.is_last_budget) return {
-      label: 'Sweeper · last',
-      cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
-      title: 'Last-budget sweeper — paid last among financiers',
-    };
-    if (crowdfunderSet.has(hex)) return {
-      label: 'Crowdfunding',
-      cls: 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300',
-      title: 'Tier 2 — crowd-funding project owner, paid right after investors',
-    };
-    return {
-      label: 'Non-financier · last',
-      cls: 'bg-muted text-muted-foreground',
-      title: 'No current-split funding budget or crowd-funding — paid last',
-    };
-  };
+  const roundChip = (place: { round: number | null }): { label: string; cls: string; title: string } =>
+    place.round != null
+      ? {
+          label: `Round ${place.round}`,
+          cls: 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300',
+          title: `Settled in financing round ${place.round} — round 1, then 2, then 3; the offer date governs`,
+        }
+      : {
+          label: 'Outside a round',
+          cls: 'bg-muted text-muted-foreground',
+          title: 'No financing-round mandate — settled after the rounds; the offer date governs',
+        };
 
   const sortedUsers = users
     // Scope every seller card to the ACTIVE currency only — its sales, its totals,
@@ -566,18 +502,21 @@ const AdminPayouts = () => {
         sales: [...user.sales].sort((a, b) => {
           if (a.status === 'paid' && b.status !== 'paid') return 1;
           if (a.status !== 'paid' && b.status === 'paid') return -1;
-          return b.remaining - a.remaining;
+          return compareRoundOrder(
+            { round: a.round ?? null, earliestAt: saleOrderedAt(a) },
+            { round: b.round ?? null, earliestAt: saleOrderedAt(b) },
+          ) || (b.remaining - a.remaining);
         }),
       };
     })
     .sort((a, b) => {
-      if (sortMode === 'financing_priority') {
-        // Financiers first (financing order: rounds asc, FIFO inside a round), sweeper next, non-financiers last.
-        const ra = payoutRankOf(a.hexId), rb = payoutRankOf(b.hexId);
-        if (ra !== rb) return ra - rb;
-        // tie-break within the same priority: unpaid first, then highest remaining
+      if (sortMode === 'round_order') {
+        // Unpaid first; then round 1 → 2 → 3 → outside a round; then the
+        // earlier acceptance. Display only — nothing here blocks a payout.
         if (a._remaining > 0 && b._remaining <= 0) return -1;
         if (a._remaining <= 0 && b._remaining > 0) return 1;
+        const c = compareRoundOrder(roundPlaceOf(a.sales), roundPlaceOf(b.sales));
+        if (c !== 0) return c;
         return b._remaining - a._remaining;
       }
       if (sortMode === 'latest_payment') {
@@ -593,44 +532,6 @@ const AdminPayouts = () => {
       return b._remaining - a._remaining;
     });
 
-  // ── "Pay by order" queue for the active currency ──────────────────────────
-  // The exact sequence in which outstanding requests may be paid: strictly by
-  // payout priority (financiers by financing rank → crowd-funders → the rest), with
-  // each recipient marked payable-now or waiting behind a higher-priority one.
-  // Uses the server's per-(hex|currency) orderBlocked flag — the same gate the
-  // POST guard enforces — so the list matches exactly what will/won't be allowed.
-  const sym = CURRENCY_SYMBOLS[activeCurrency] || activeCurrency;
-  const payoutQueue = users
-    // scope to active currency (userForCur carries the currency's payment method + profile)
-    .map(u => ({ userForCur: { ...u, sales: (u.sales || []).filter(s => s.currency === activeCurrency) } }))
-    .filter(x => x.userForCur.sales.length > 0)
-    .map(({ userForCur }) => {
-      const sales = userForCur.sales;
-      const remaining = Math.round((sales.reduce((s, x) => s + x.netFiat, 0) - sales.reduce((s, x) => s + x.totalPaid, 0)) * 100) / 100;
-      const blockedSale = sales.find(s => s.orderBlocked && s.remaining > 0);
-      // Still-payable sales (unpaid, not broadcast) — what "Pay" can act on.
-      const payableSales = sales.filter(s => s.remaining > 0 && s.status !== 'paid' && s.status !== 'broadcast');
-      return {
-        hexId: userForCur.hexId,
-        user: userForCur,
-        name: resolveDisplayName(userForCur),
-        nickname: getNickname(userForCur),
-        remaining,
-        payableSales,
-        rank: payoutRankOf(userForCur.hexId),
-        badge: priorityBadge(userForCur.hexId),
-        orderBlocked: !!blockedSale,
-        orderBlockedBy: blockedSale?.orderBlockedBy || null,
-      };
-    })
-    .filter(x => x.remaining > 0) // worklist = still-owed only
-    .filter(x => {
-      if (!q) return true;
-      return x.name.toLowerCase().includes(q) || (x.nickname || '').toLowerCase().includes(q) || x.hexId.toLowerCase().includes(q);
-    })
-    .sort((a, b) => (a.rank - b.rank) || (b.remaining - a.remaining));
-  const queueTotalOwed = Math.round(payoutQueue.reduce((s, x) => s + x.remaining, 0) * 100) / 100;
-
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <AdminNav />
@@ -640,7 +541,7 @@ const AdminPayouts = () => {
         <div className="mb-8 space-y-2">
           <h1 className="text-3xl font-bold text-foreground">Payout Management</h1>
           <p className="text-muted-foreground">
-            Record FIAT payout installments for verified transactions. Unpaid transactions appear first.
+            Record FIAT payout installments for verified transactions. Sorted by financing round — round 1, then 2, then 3, acquisitions outside a round last; the date on each offer governs, nothing here blocks a payout.
           </p>
         </div>
 
@@ -681,88 +582,8 @@ const AdminPayouts = () => {
           </div>
         )}
 
-        {/* Page tabs: record payouts vs. see the payout order (per active currency). */}
-        {!loading && presentCurrencies.length > 0 && (
-          <div className="mb-5 flex rounded-xl border border-border bg-card overflow-hidden w-fit">
-            <button
-              onClick={() => setPageTab('manage')}
-              className={`px-5 py-2.5 text-sm font-semibold transition-colors ${pageTab === 'manage' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              Payouts
-            </button>
-            <button
-              onClick={() => setPageTab('order')}
-              title="See exactly in which order the outstanding requests may be paid"
-              className={`px-5 py-2.5 text-sm font-semibold transition-colors ${pageTab === 'order' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              Pay by order
-            </button>
-          </div>
-        )}
-
-        {/* Payout order (financing order) for the ACTIVE currency — display only. Financiers first; sweeper + non-financiers last. */}
-        {pageTab === 'manage' && !loading && financingActive.length > 0 && (
-          <div className="mb-4 rounded-2xl border-2 border-border bg-card overflow-hidden">
-            <button
-              onClick={() => setShowPayoutOrder(v => !v)}
-              className="w-full px-4 sm:px-6 py-3 flex items-center justify-between text-left hover:bg-muted/30 transition-colors"
-            >
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold text-foreground">{activeCurrency} payout order — financing order</span>
-                <span className="text-xs text-muted-foreground">
-                  Rounds first · {financingActive.filter(f => !f.is_last_budget).length} financier{financingActive.filter(f => !f.is_last_budget).length !== 1 ? 's' : ''}
-                </span>
-                {financingStaleActive && (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300" title="Cached — Direct Fund was briefly unreachable">cached</span>
-                )}
-              </div>
-              <svg className={`h-4 w-4 text-muted-foreground flex-shrink-0 transition-transform ${showPayoutOrder ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-            {showPayoutOrder && (
-              <div className="border-t border-border px-4 sm:px-6 py-3">
-                <p className="text-xs text-muted-foreground mb-3">
-                  Payouts follow the financing order: rounds first — round 1 before round 2 before round 3 — and first-come-first-served inside a round; the last-budget sweeper is paid last among financiers. Next come <strong className="text-foreground">crowd-funding project owners</strong> (Tier 2 · <span className="text-teal-600 dark:text-teal-400">Crowdfunding</span> badge). Anyone with no funding budget or crowd-funding is paid last.
-                </p>
-                <ol className="space-y-1.5">
-                  {/* Sorted by financing_rank — Direct Fund's array order is
-                      registration order, so rendering it as-is would show the
-                      new numbers in the old sequence (#3, #1, #2). */}
-                  {[...financingActive].sort((a, b) => (a.financing_rank ?? a.rank) - (b.financing_rank ?? b.rank)).map(f => (
-                    <li key={f.nostr_hex_id} className="flex items-center gap-2 text-sm">
-                      <span className={`inline-flex items-center justify-center min-w-[1.75rem] h-6 px-1.5 rounded font-mono text-xs font-bold ${f.is_last_budget ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' : 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300'}`}>
-                        {f.is_last_budget ? '↓' : (f.financing_rank ?? f.rank)}
-                      </span>
-                      <span className="font-medium text-foreground truncate">{f.name || 'Anonymous'}</span>
-                      {f.round != null && !f.is_last_budget && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300" title={`Investment round ${f.round}`}>R{f.round}</span>
-                      )}
-                      <span className="text-xs text-muted-foreground font-mono">{f.nostr_hex_id.slice(0, 8)}…</span>
-                      {f.privileged && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300">VIP</span>
-                      )}
-                      {f.is_last_budget && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">Sweeper · last</span>
-                      )}
-                      <span className="ml-auto text-xs text-muted-foreground tabular-nums whitespace-nowrap">
-                        {(CURRENCY_SYMBOLS[f.currency || ''] || (f.currency ? f.currency + ' ' : ''))}{(f.financed_amount || 0).toLocaleString()}
-                      </span>
-                      {(f.first_budget_at || f.added_at) && (
-                        <span className="text-[11px] text-muted-foreground whitespace-nowrap" title="Budget registration date">
-                          📅 {formatDate(f.first_budget_at || f.added_at || '')}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Search + Sort bar */}
-        {pageTab === 'manage' && !loading && (
+        {!loading && (
           <div className="mb-4 flex flex-col sm:flex-row gap-2">
             <div className="relative flex-1">
               <svg className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -793,11 +614,11 @@ const AdminPayouts = () => {
                 Latest payments
               </button>
               <button
-                onClick={() => setSortMode('financing_priority')}
-                title="Order sellers by financing priority: rounds first, FIFO inside a round — the financing order is the payout order"
-                className={`px-4 py-2.5 text-sm font-medium transition-colors ${sortMode === 'financing_priority' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                onClick={() => setSortMode('round_order')}
+                title="Round 1, then 2, then 3, then acquisitions outside a round; earlier acceptance first — display only"
+                className={`px-4 py-2.5 text-sm font-medium transition-colors ${sortMode === 'round_order' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
               >
-                Financiers first
+                Round order
               </button>
             </div>
           </div>
@@ -810,152 +631,6 @@ const AdminPayouts = () => {
               <p className="text-muted-foreground">Loading payouts data...</p>
             </div>
           </div>
-        ) : pageTab === 'order' ? (
-          /* ── Pay by order: the payout sequence for the active currency ── */
-          payoutQueue.length === 0 ? (
-            <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
-              <p className="text-lg text-muted-foreground">Nothing outstanding to pay{activeCurrency ? ` in ${activeCurrency}` : ''}.</p>
-              {presentCurrencies.length > 1 && (
-                <p className="text-sm text-muted-foreground/70 mt-1">Try another currency above.</p>
-              )}
-            </div>
-          ) : (
-            <div className="rounded-2xl border-2 border-border bg-card overflow-hidden">
-              <div className="px-4 sm:px-6 py-3 border-b border-border flex items-center justify-between gap-2 flex-wrap">
-                <span className="font-semibold text-foreground">
-                  {activeCurrency} — pay in this order
-                  <span className="ml-2 text-xs text-muted-foreground font-normal">{payoutQueue.length} waiting · {sym}{queueTotalOwed.toFixed(2)} owed</span>
-                </span>
-                <span className="text-xs text-muted-foreground">Financiers in financing order (rounds first, FIFO inside a round) → crowd-funders → the rest</span>
-              </div>
-              <ol className="divide-y divide-border/60">
-                {payoutQueue.map((e, i) => {
-                  const rowOpen = queueOpenHex === e.hexId;
-                  const canPay = e.payableSales.length > 0;
-                  // The nearest promise this recipient is owed. Sorted as text
-                  // because the stored timestamps are fixed-width and already
-                  // sort chronologically.
-                  const soonestDue = e.payableSales
-                    .map(s => s.settlementDueAt)
-                    .filter(Boolean)
-                    .sort()[0] || null;
-                  return (
-                  <li key={e.hexId} className={`px-4 sm:px-6 py-3 ${e.orderBlocked && !rowOpen ? 'opacity-70' : ''}`}>
-                    <div className="flex items-center gap-3 sm:gap-4">
-                      <span className={`inline-flex items-center justify-center min-w-[2rem] h-8 px-2 rounded-lg font-mono text-sm font-bold flex-shrink-0 ${
-                        !e.orderBlocked ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300' : 'bg-muted text-muted-foreground'
-                      }`}>{i + 1}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-semibold text-foreground truncate">{e.name}</span>
-                          <span title={e.badge.title} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${e.badge.cls}`}>{e.badge.label}</span>
-                          <SettlementDueChip dueAt={soonestDue} settled={false} quietOnMobile />
-                        </div>
-                        {e.orderBlocked ? (
-                          <div className="text-xs text-orange-700 dark:text-orange-400 mt-0.5">⛔ Waiting behind {e.orderBlockedBy || 'a higher-priority recipient'}</div>
-                        ) : (
-                          <div className="text-xs text-green-700 dark:text-green-400 mt-0.5 font-medium">✅ Payable now</div>
-                        )}
-                      </div>
-                      <div className="text-right flex-shrink-0">
-                        <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Owed</div>
-                        <div className="font-mono text-base font-bold text-amber-600">{sym}{e.remaining.toFixed(2)}</div>
-                      </div>
-                      {/* Pay right here. Blocked rows still allow paying — the POST guard
-                          asks the admin to confirm paying out of order (financiers first). */}
-                      {canPay && (
-                        <button
-                          onClick={() => {
-                            if (rowOpen) { setQueueOpenHex(null); setPayoutFormSaleId(null); setNextPayoutId(null); }
-                            else if (e.payableSales.length === 1) { setQueueOpenHex(e.hexId); openPayoutForm(e.payableSales[0], e.user); }
-                            else { setQueueOpenHex(e.hexId); }
-                          }}
-                          className={`flex-shrink-0 inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-bold transition-colors ${
-                            rowOpen
-                              ? 'border border-border text-muted-foreground hover:text-foreground'
-                              : e.orderBlocked
-                              ? 'border border-orange-300 text-orange-700 hover:bg-orange-50 dark:border-orange-500/40 dark:text-orange-300'
-                              : 'bg-green-600 text-white hover:bg-green-700'
-                          }`}
-                        >
-                          {rowOpen ? 'Close' : e.orderBlocked ? 'Pay anyway' : (
-                            <>
-                              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
-                              Pay
-                            </>
-                          )}
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Inline pay — the SAME account pre-fill + POST guard + force-override
-                        flow as the Payouts tab (openPayoutForm / submitPayout). */}
-                    {rowOpen && canPay && (
-                      <div className="mt-3 sm:pl-11 space-y-2">
-                        {e.payableSales.map(s => (
-                          payoutFormSaleId === s.id ? (
-                            <div key={s.id} className="rounded-xl border-2 border-primary/30 bg-primary/5 p-3 space-y-3">
-                              <div className="flex items-center justify-between gap-2 flex-wrap">
-                                <h5 className="text-sm font-bold text-foreground">Record payout · TX #{s.id}</h5>
-                                {nextPayoutId && (
-                                  <span className="font-mono text-sm font-bold text-primary bg-primary/10 px-2 py-0.5 rounded">{nextPayoutId}</span>
-                                )}
-                              </div>
-                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                                <div>
-                                  <label className="text-xs text-muted-foreground font-medium mb-1 block">Amount ({s.currency}) *</label>
-                                  <input type="number" step="0.01" min="0.01" max={s.remaining} value={payoutAmount}
-                                    onChange={ev => setPayoutAmount(ev.target.value)}
-                                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="0.00" />
-                                  <p className="text-[10px] text-muted-foreground mt-0.5">Remaining: <span className="font-bold text-amber-600">{sym}{s.remaining.toFixed(2)}</span></p>
-                                </div>
-                                <div>
-                                  <label className="text-xs text-muted-foreground font-medium mb-1 block">Paid to Account</label>
-                                  <input type="text" value={payoutAccount} onChange={ev => setPayoutAccount(ev.target.value)}
-                                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="IBAN / Account" />
-                                </div>
-                                <div>
-                                  <label className="text-xs text-muted-foreground font-medium mb-1 block">Note</label>
-                                  <input type="text" value={payoutNote} onChange={ev => setPayoutNote(ev.target.value)}
-                                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="Optional note" />
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <button onClick={() => submitPayout(s)} disabled={submitting || !payoutAmount}
-                                  className="inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                                  {submitting ? (<><div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />Recording...</>) : 'Record payout'}
-                                </button>
-                                <button onClick={() => { setPayoutFormSaleId(null); setNextPayoutId(null); if (e.payableSales.length === 1) setQueueOpenHex(null); }}
-                                  className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div key={s.id} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm min-w-0">
-                              <span className="text-muted-foreground text-xs w-20 flex-shrink-0">{formatDate(s.createdAt)}</span>
-                              <span className="font-mono flex-1 min-w-0 truncate">{s.lanaAmount.toLocaleString()} LANA</span>
-                              <SettlementDueChip dueAt={s.settlementDueAt} settled={false} quietOnMobile />
-                              <span className="font-mono font-bold text-amber-600 flex-shrink-0 whitespace-nowrap">{sym}{s.remaining.toFixed(2)}</span>
-                              <button onClick={() => openPayoutForm(s, e.user)}
-                                className="inline-flex items-center gap-1 rounded-lg bg-green-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-green-700 transition-colors flex-shrink-0">Pay</button>
-                            </div>
-                          )
-                        ))}
-                      </div>
-                    )}
-                  </li>
-                  );
-                })}
-              </ol>
-              <div className="px-4 sm:px-6 py-3 border-t border-border">
-                <button
-                  onClick={() => setPageTab('manage')}
-                  className="text-sm text-primary font-medium hover:underline"
-                >
-                  → Open full Payouts view (search, history, per-sale detail)
-                </button>
-              </div>
-            </div>
-          )
         ) : sortedUsers.length === 0 ? (
           <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
             {q ? (
@@ -1011,8 +686,8 @@ const AdminPayouts = () => {
                           <span className="text-xs text-muted-foreground font-mono">
                             {user.hexId.slice(0, 8)}...{user.hexId.slice(-6)}
                           </span>
-                          {(financingActive.length > 0 || crowdfunderSet.size > 0) && (() => {
-                            const b = priorityBadge(user.hexId);
+                          {(() => {
+                            const b = roundChip(roundPlaceOf(user.sales));
                             return <span title={b.title} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${b.cls}`}>{b.label}</span>;
                           })()}
                         </div>
@@ -1154,15 +829,18 @@ const AdminPayouts = () => {
                                     A promise nobody can see is not kept. */}
                                 <SettlementDueChip dueAt={sale.settlementDueAt} settled={isFullyPaid} quietOnMobile />
 
-                                {/* Payout-order block — a higher-priority recipient (same currency) is still unpaid */}
-                                {sale.orderBlocked && !isFullyPaid && !isBroadcast && (
-                                  <span
-                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex-shrink-0 bg-orange-100 text-orange-700"
-                                    title={`Financiers first — pay ${sale.orderBlockedBy || 'the higher-priority recipient'} (${sale.currency}) before this one`}
-                                  >
-                                    ⛔ Pay {sale.orderBlockedBy || 'higher-priority'} first
-                                  </span>
-                                )}
+                                {/* Which financing round (and Split) this sale settles in. */}
+                                {(() => {
+                                  const b = roundBadge(sale);
+                                  return b ? (
+                                    <span
+                                      className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider flex-shrink-0 bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300"
+                                      title={b.title}
+                                    >
+                                      {b.label}
+                                    </span>
+                                  ) : null;
+                                })()}
 
                                 {/* RPC verification info */}
                                 {sale.rpcVerified && sale.rpcBlockHeight && (
@@ -1370,16 +1048,6 @@ const AdminPayouts = () => {
                                     <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent flex-shrink-0" />
                                     <p className="text-xs text-blue-700 font-medium">
                                       Transaction broadcast to network — awaiting RPC confirmation before payout can be recorded.
-                                    </p>
-                                  </div>
-                                )}
-
-                                {/* Payout-order warning — financiers first (override possible) */}
-                                {sale.orderBlocked && !isFullyPaid && !isBroadcast && (
-                                  <div className="flex items-start gap-2 rounded-lg border border-orange-200 bg-orange-50 px-4 py-2.5">
-                                    <span className="text-base leading-none">⛔</span>
-                                    <p className="text-xs text-orange-800 font-medium">
-                                      Payouts follow the financing order. <span className="font-bold">{sale.orderBlockedBy || 'A higher-priority recipient'}</span> is ahead in the {sale.currency} queue and still unpaid. Recording this payout will ask you to confirm an out-of-order override.
                                     </p>
                                   </div>
                                 )}

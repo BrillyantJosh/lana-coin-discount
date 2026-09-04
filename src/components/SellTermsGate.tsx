@@ -34,7 +34,7 @@ const CONTENT: Record<'sl' | 'en', TermsContent> = {
       'Lana.discount kupuje te LANA za svojo zakladnico, kot glavni pogodbenik in z lastnim kapitalom. Ne prodaja jih v vašem imenu in ne nastopa kot vaš posrednik.',
       'Prikazana odkupna cena je znesek, ki ga bo Lana.discount plačal. To je naša ponudba za ta predlog, ne tržna cena in ne cena, na katero bi se lahko zanašali v prihodnje.',
       'Ko izvedete prenos, so LANA naše, skupaj z vsakim poznejšim dobičkom ali izgubo na njih.',
-      'Odkupno ceno vam dolgujemo do datuma, navedenega na ponudbi. Poravnave potekajo po objavljenem vrstnem redu.',
+      'Odkupno ceno vam dolgujemo do datuma, navedenega na ponudbi. Odkupi iz financirajočih proračunov sledijo objavljenemu vrstnemu redu krogov — krog 1, nato 2, nato 3.',
       'Lana.discount ne hrani vaših ključev, ne vodi stanj za vas in za vas ne izvršuje naročil.',
     ],
     agree: 'To sem prebral in sprejemam odkupno ponudbo.',

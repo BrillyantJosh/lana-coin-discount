@@ -46,14 +46,14 @@ describe('a closed door is a real answer', () => {
   });
 
   it('declines a class we are not acquiring, and names it', () => {
-    const v = decide(10, open({ classEnabled: false }), 'crowdfund');
+    const v = decide(10, open({ classEnabled: false }), 'other');
     expect(v.outcome).toBe('decline');
     expect(v.code).toBe('CLASS_CLOSED');
-    expect(v.reason).toContain('Crowd funding');
+    expect(v.reason).toContain('Other');
   });
 
   it('a closed currency closes it for every class, whatever the caps say', () => {
-    for (const cls of ['lanapays', 'crowdfund', 'other'] as WalletClass[]) {
+    for (const cls of ['lanapays', 'other'] as WalletClass[]) {
       expect(decide(1, open({ currencyEnabled: false, autoCap: null }), cls).outcome).toBe('decline');
     }
   });
@@ -167,7 +167,7 @@ describe('the defaults written on migration', () => {
   });
 
   it('caps the other classes so a large one reaches a person', () => {
-    for (const cls of ['crowdfund', 'other'] as WalletClass[]) {
+    for (const cls of ['other'] as WalletClass[]) {
       const s = readMandateSettings(map, 'EUR', cls);
       expect(s.autoCap).toBe(DEFAULT_AUTO_CAP_OTHER);
       expect(decideAcquisition({ walletClass: cls, currency: 'EUR', fiatValue: 100, settings: s }).outcome)
@@ -178,7 +178,7 @@ describe('the defaults written on migration', () => {
   });
 
   it('gives every class a settlement horizon', () => {
-    for (const cls of ['lanapays', 'crowdfund', 'other'] as WalletClass[]) {
+    for (const cls of ['lanapays', 'other'] as WalletClass[]) {
       expect(readMandateSettings(map, 'EUR', cls).dueDays).toBe(DEFAULT_DUE_DAYS);
     }
   });

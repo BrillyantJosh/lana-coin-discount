@@ -105,9 +105,10 @@ export const LANDING = {
   // The sections. Same data as before, named for what it actually is.
   settlementsTitle: 'Outstanding purchase-price settlements',
   settlementsIntro:
-    'Every purchase price we have agreed and not yet paid, and the order in which we settle them: those who ' +
-    'finance the Lana economy first, in financing order, then crowd-funding project owners, then the rest, ' +
-    'separately for each currency. Each line is money Lana.discount owes for LANA it has already bought.',
+    'Every purchase price we have agreed and not yet paid, and the order in which we settle them: acquisitions ' +
+    'from financing budgets by round — round 1, then 2, then 3, each opened on its published date — then ' +
+    'acquisitions outside a round, separately for each currency. Each line is money Lana.discount owes for ' +
+    'LANA it has already bought.',
   settlementsLink: 'Open the full list →',
 
   completedTitle: 'Completed treasury acquisitions',
@@ -117,7 +118,7 @@ export const LANDING = {
   completedLink: 'View the last 100 →',
 
   flowsTitle: 'Daily FIAT flows',
-  flowsIntro: 'Purchase prices settled to counterparties, and FIAT received from investors, by day.',
+  flowsIntro: 'Purchase prices settled to counterparties, and FIAT received from financers, by day.',
 
   positionTitle: 'Net FIAT position',
   positionIntro:
@@ -244,8 +245,8 @@ export const OFFER = {
   keyNote: 'Used once to sign this transfer, then discarded. It is never stored.',
 
   settlementTiming:
-    'We settle purchase prices in the order shown on our public list. The date on your offer is the date we ' +
-    'owe by.',
+    'Acquisitions from financing budgets follow the published round order — round 1, then 2, then 3. The date ' +
+    'on your offer is the date we owe by.',
 
   // ── before a proposal can even be made ──────────────────────────────────
   // Refusals the counterparty meets at the wallet step. Said there, in full,
@@ -399,6 +400,8 @@ export const OFFER_ERRORS: Record<string, string> = {
   BALANCE_UNVERIFIABLE: 'The wallet balance could not be read right now. Please try again shortly.',
   GATE_CHANGED: 'Please submit this proposal again.',
   BELOW_MINIMUM: 'This proposal is below the minimum acquisition value.',
+  MANDATE_EXHAUSTED: 'This mandate has been used up: the treasury has acquired everything it covers. Nothing more can be proposed under it.',
+  ALREADY_SETTLED: 'This acquisition has already been settled. Nothing is outstanding on it.',
 };
 
 // ─── admin screens for the rounds ─────────────────────────────────────────
@@ -489,7 +492,8 @@ export const TERMS = {
     'The purchase price shown is what Lana.discount will pay. It is our offer for this proposal, not a market ' +
       'rate and not a price you can rely on in future.',
     'Once you transfer, the LANA is ours, along with any later gain or loss on it.',
-    'We owe you the purchase price by the date shown on the offer. Settlements follow the published order.',
+    'We owe you the purchase price by the date shown on the offer. Acquisitions from financing budgets follow ' +
+      'the published round order — round 1, then 2, then 3.',
     'Lana.discount does not hold your keys, does not hold balances for you, and does not execute orders for you.',
   ],
   agree: 'I have read this and accept the purchase offer.',
@@ -500,20 +504,28 @@ export const TERMS = {
 // The block this replaces promised "a fair, public queue" and printed a
 // standing two-rate formula. Together those are exactly the automatic
 // conversion entitlement §6 says we must not publish: every holder, any time,
-// at a rate they can read off the page. The ordering itself is true, the owner
-// wants it visible, and it survives; the entitlement and the rates do not.
+// at a rate they can read off the page. What survives is the ONE order the
+// owner set on 4 Sep 2026 — by financing round — and nothing else ranks a
+// counterparty: no external rank, no crowd-funding band. The entitlement and
+// the rates do not survive.
 
 export const SETTLEMENT_ORDER = {
   title: UI.settlement,
   intro: OFFER.settlementTiming,
   points: [
     {
-      title: 'Financiers first, then crowd-funding',
+      title: 'Round 1, then round 2, then round 3',
       body:
-        'Those who finance the Lana economy — who fund the budgets that drive real spending — are settled ' +
-        'first, in the order they financed: round 1 before round 2 before round 3, first come first served ' +
-        'inside a round. Then crowd-funding project owners who have raised support this cycle. Then everyone ' +
-        'else we owe.',
+        'Acquisitions from financing budgets are settled by financing round — round 1, then round 2, then ' +
+        'round 3 — each opened on a published date. Earlier acquisitions come first inside a round. ' +
+        'Acquisitions outside a round come after them.',
+    },
+    {
+      title: 'Per financer, up to the LANA their budget received',
+      body:
+        'Within a round, a treasury mandate names each financer and the amount their financing budget ' +
+        'received. That amount is the most the treasury acquires from that budget under the mandate — a ' +
+        'ceiling on what we buy, not a right to sell.',
     },
     {
       title: 'Each currency on its own',
@@ -522,20 +534,59 @@ export const SETTLEMENT_ORDER = {
         'in one currency never holds up one in another.',
     },
     {
-      title: 'From our own funds, as revenue arrives',
+      title: 'From our own funds, by the date on the offer',
       body:
-        'We settle purchase prices out of our own capital, as the spending economy generates it. Your accepted ' +
-        'offer carries the date we owe by. What we do afterwards with LANA we have acquired is our own risk ' +
-        'and is not a step in paying you.',
+        'We settle purchase prices out of our own capital. Your accepted offer carries the date we owe by, ' +
+        'and that date is the promise. What we do afterwards with LANA we have acquired is our own risk and ' +
+        'is not a step in paying you.',
     },
     {
       title: 'Published, so it can be checked',
       body:
-        'Every purchase price we owe and have not yet settled is listed above, with its position and amount, ' +
-        'and every one we have settled is in the acquisitions list. Nothing about the order is decided out of ' +
-        'sight.',
+        'The round dates are published, every purchase price we owe and have not yet settled is listed above ' +
+        'with its round and amount, and every one we have settled is in the acquisitions list. Nothing about ' +
+        'the order is decided out of sight.',
     },
   ],
+} as const;
+
+// ─── the public settlement board ──────────────────────────────────────────
+// A line says who we owe, how much, and which financing round settles it.
+// It never says who is "next": the round dates and the date on each offer
+// are the only timing anyone is given.
+
+export const BOARD = {
+  roundBadge: 'Round {round}',
+  roundTitle: 'Financing round {round} of Split {split}',
+  outsideRoundBadge: 'Outside a round',
+  nothingOutstanding: 'Nothing outstanding',
+  nothingOutstandingBody: 'Every agreed purchase price has been settled.',
+  loadFailed: 'Could not load outstanding settlements. Please try again.',
+  footer:
+    'Round 1, then 2, then 3, then acquisitions outside a round · earliest first inside each · per currency · ' +
+    'updates every 30s',
+} as const;
+
+// ─── the round dates, on the landing page ─────────────────────────────────
+// Dates, states and LANA totals from the public /api/treasury/rounds. The
+// round discount is NOT shown here on purpose: a percentage beside a date on
+// a public page reads as a standing rate (P08 §4).
+
+export const ROUND_DATES = {
+  title: 'Financing rounds — Split {split}',
+  intro:
+    'The treasury acquires from financing budgets round by round. Each round opens on the date below; from ' +
+    'then on the treasury accepts proposals from that round, up to the LANA each budget received. A date ' +
+    'opens a mandate — it is not a right to sell, and no price is fixed by it.',
+  splitEndsAt: 'Split ends',
+  opensLabel: 'Opens',
+  noDate: 'No date published yet',
+  mandates: 'Mandates',
+  noMandates: 'No mandates published',
+  expectedLabel: 'Received by budgets in this round',
+  remainingLabel: 'Remaining in this round',
+  acceptedLabel: 'Accepted in this round',
+  settledLabel: 'Settled in this round',
 } as const;
 
 // ─── words that must never reach a counterparty ───────────────────────────
@@ -554,4 +605,10 @@ export const FORBIDDEN_PUBLIC_TERMS = [
   'withdrawal',
   'liquidity service',
   'off-ramp',
+  // We acquire for our treasury; a "buyback" is a promise to take coins back,
+  // and an "investor" is someone we owe a return. Neither is what happens here:
+  // the people whose budgets we acquire from are financers.
+  'buyback',
+  'buy-back',
+  'investor',
 ] as const;

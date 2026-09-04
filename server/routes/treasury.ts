@@ -13,7 +13,7 @@
  *            POST /mandates/ingest        Bearer ldk_ — the push road.
  *   admin    GET/PUT /admin/rounds        one date + one discount per round
  *            GET /admin/mandates          the worklist that replaces
- *                                          /admin/expecting-cashout (Phase B)
+ *                                          the old expecting-cash-out report
  *            POST /admin/mandates/:d/release
  *            POST /admin/mandates/sync
  *
@@ -288,7 +288,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     }
 
     // On-chain balances, chunked so one failed batch cannot sink the list
-    // (same shape as the expecting-cashout report this replaces).
+    // (same shape as the report this replaced).
     const allWallets = [...new Set(mandates.flatMap(m => m.wallets.map(w => w.address)))];
     const balByWallet = new Map<string, number>();
     const unavailable = new Set<string>();

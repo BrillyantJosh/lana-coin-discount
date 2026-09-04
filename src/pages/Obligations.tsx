@@ -2,12 +2,12 @@ import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import ObligationsBoard from '@/components/ObligationsBoard';
 import PendingVerification from '@/components/PendingVerification';
-import { LANDING } from '@/copy';
+import { LANDING, BOARD } from '@/copy';
 
 /**
  * Public transparency board: every purchase price we have agreed and not yet
- * settled, and the order we settle them in (financiers first in financing order
- * — rounds asc, FIFO inside — then crowd-funding, then the rest), per currency.
+ * settled, and the order we settle them in — financing round 1, then 2, then 3,
+ * then acquisitions outside a round; earliest first inside each — per currency.
  * The list is what we owe, published; it is not a register of claims on a service.
  *
  * Transfers still awaiting on-chain confirmation are shown ABOVE the board, not
@@ -28,9 +28,7 @@ const Obligations = () => (
       {/* Renders nothing at all when no transfer is awaiting confirmation. */}
       <div className="mb-6"><PendingVerification /></div>
       <ObligationsBoard />
-      <p className="text-center text-xs text-muted-foreground mt-6">
-        Financiers first (in financing order — rounds first, FIFO inside a round), then crowd-funding project owners, then the rest · per currency · updates every 30s · financing order refreshed every 5 min
-      </p>
+      <p className="text-center text-xs text-muted-foreground mt-6">{BOARD.footer}</p>
     </main>
     <Footer />
   </div>

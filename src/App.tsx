@@ -53,8 +53,8 @@ const App = () => (
             <Route path="/admin/payouts" element={<AdminPayouts />} />
             <Route path="/admin/mandates" element={<AdminMandates />} />
             <Route path="/admin/treasury-rounds" element={<AdminTreasuryRounds />} />
-            {/* The expecting-cashout report became the mandate worklist. The
-                old page file stays until Phase B removes it. */}
+            {/* The old expecting-cash-out report became the mandate worklist;
+                the page is gone, the bookmark still lands somewhere true. */}
             <Route path="/admin/expecting-cashout" element={<Navigate to="/admin/mandates" replace />} />
             <Route path="/admin/settings" element={<AdminSettings />} />
             <Route path="/admin/api-keys" element={<AdminApiKeys />} />

@@ -1,20 +1,21 @@
 import { useEffect, useState } from 'react';
 import { FrozenBadge } from './FrozenBadge';
+import { BOARD } from '@/copy';
 
 /** Shared live board of purchase prices we have agreed and not yet settled, per
- * currency, in the order we settle them. Used by the /obligations page and
+ * currency, in the order we settle them: financing round 1, then 2, then 3,
+ * then acquisitions outside a round. Used by the /obligations page and
  * embedded on the landing. These are our own obligations from completed
  * acquisitions — not places in line for a service, which is why nothing here
- * says a holder is owed a transaction. */
+ * says a holder is owed a transaction, and nothing here says who is "next". */
 interface Settlement {
   position: number;
   name: string;
   hex_short: string | null;
-  is_financier: boolean;
-  finance_rank: number | null;
-  is_crowdfunder: boolean;
+  /** 1 | 2 | 3, or null for an acquisition outside a financing round. */
+  round: number | null;
+  mandate_split: number | null;
   outstanding: number;
-  payable: boolean;
   /** null = not resolved yet (which is NOT the same as "clean") */
   frozen: boolean | null;
   freeze_level: 'account' | 'wallet' | 'none' | null;
@@ -25,8 +26,6 @@ interface Settlement {
 interface CurrencyBlock {
   total_outstanding: number;
   count: number;
-  financier_count: number;
-  crowdfunder_count: number;
   /** Purchase prices agreed and not yet paid, in the order we settle them. */
   settlements: Settlement[];
 }
@@ -36,16 +35,15 @@ interface ObligationsData {
   updated_at: string;
 }
 
-/**
- * /api/obligations names its ordered list with the one word this file may not
- * contain — src/copy.test.ts scans identifiers too, and the endpoint's shape is
- * deliberately frozen because other consumers read it. So the key is assembled
- * once, here, and the list is called what it is everywhere else.
- */
-
 const SYM: Record<string, string> = { EUR: '€', USD: '$', GBP: '£', CHF: 'CHF ' };
 const fmt = (n: number, cur: string) =>
   (SYM[cur] || cur + ' ') + (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const ROUND_CLS: Record<number, string> = {
+  1: 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300',
+  2: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300',
+  3: 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300',
+};
 
 export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: number }) {
   const [data, setData] = useState<ObligationsData | null>(null);
@@ -62,7 +60,7 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
         setData(json);
         setError(null);
       } catch {
-        if (alive) setError('Could not load outstanding settlements. Please try again.');
+        if (alive) setError(BOARD.loadFailed);
       } finally {
         if (alive) setLoading(false);
       }
@@ -81,8 +79,8 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
   if (currencies.length === 0) {
     return (
       <div className="rounded-2xl border-2 border-dashed border-border bg-card p-10 text-center">
-        <p className="text-lg text-muted-foreground">Nothing outstanding 🎉</p>
-        <p className="text-sm text-muted-foreground/70 mt-1">Every agreed purchase price has been settled.</p>
+        <p className="text-lg text-muted-foreground">{BOARD.nothingOutstanding}</p>
+        <p className="text-sm text-muted-foreground/70 mt-1">{BOARD.nothingOutstandingBody}</p>
       </div>
     );
   }
@@ -92,14 +90,15 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
       {currencies.map(([cur, block]) => {
         const all = block.settlements;
         const shown = maxPerCurrency ? all.slice(0, maxPerCurrency) : all;
+        const inRounds = all.filter(q => q.round !== null).length;
         return (
           <section key={cur} className="rounded-2xl border-2 border-border bg-card overflow-hidden">
             <div className="px-4 sm:px-6 py-4 border-b border-border flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2 flex-wrap min-w-0">
                 <h3 className="text-lg font-bold text-foreground">{cur}</h3>
                 <span className="text-xs text-muted-foreground">
-                  {block.count} counterpart{block.count !== 1 ? 'ies' : 'y'} · {block.financier_count} financier{block.financier_count !== 1 ? 's' : ''}
-                  {block.crowdfunder_count > 0 && ` · ${block.crowdfunder_count} crowdfunding`}
+                  {block.count} counterpart{block.count !== 1 ? 'ies' : 'y'}
+                  {inRounds > 0 && ` · ${inRounds} in a financing round`}
                 </span>
               </div>
               <span className="font-mono font-bold text-amber-600 shrink-0 whitespace-nowrap">{fmt(block.total_outstanding, cur)}</span>
@@ -108,24 +107,25 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
               {shown.map((q) => (
                 <li
                   key={q.position}
-                  className={`flex items-center gap-3 px-4 sm:px-6 py-3 border-b border-border/50 last:border-b-0 ${q.payable ? 'bg-green-50/50 dark:bg-green-500/[0.04]' : ''}`}
+                  className="flex items-center gap-3 px-4 sm:px-6 py-3 border-b border-border/50 last:border-b-0"
                 >
                   <span className={`inline-flex items-center justify-center w-8 h-8 shrink-0 rounded-full font-mono text-sm font-bold ${
-                    q.is_financier ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300'
-                      : q.is_crowdfunder ? 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300'
-                      : 'bg-muted text-muted-foreground'
+                    q.round !== null ? ROUND_CLS[q.round] || 'bg-muted text-muted-foreground' : 'bg-muted text-muted-foreground'
                   }`}>
-                    {q.position}
+                    {q.round !== null ? `R${q.round}` : '—'}
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap min-w-0">
                       <span className="font-medium text-foreground truncate">{q.name}</span>
-                      {q.is_financier ? (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300">Financier #{q.finance_rank}</span>
-                      ) : q.is_crowdfunder ? (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300">Crowdfunding</span>
+                      {q.round !== null ? (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${ROUND_CLS[q.round] || 'bg-muted text-muted-foreground'}`}
+                          title={q.mandate_split !== null ? BOARD.roundTitle.replace('{round}', String(q.round)).replace('{split}', String(q.mandate_split)) : undefined}
+                        >
+                          {BOARD.roundBadge.replace('{round}', String(q.round))}
+                        </span>
                       ) : (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground">Non-financier</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground">{BOARD.outsideRoundBadge}</span>
                       )}
                       <FrozenBadge info={q} />
                     </div>
@@ -133,11 +133,6 @@ export default function ObligationsBoard({ maxPerCurrency }: { maxPerCurrency?: 
                   </div>
                   <div className="text-right shrink-0">
                     <div className="font-mono font-bold text-foreground whitespace-nowrap">{fmt(q.outstanding, cur)}</div>
-                    {/* Status of OUR obligation in OUR order — not a claim the
-                        holder can enforce, and not a date we have promised. */}
-                    <div className={`text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap ${q.payable ? 'text-green-600' : 'text-muted-foreground'}`}>
-                      {q.payable ? 'Settling now' : 'Settles later'}
-                    </div>
                   </div>
                 </li>
               ))}

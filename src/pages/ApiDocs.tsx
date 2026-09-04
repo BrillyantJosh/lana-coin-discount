@@ -133,7 +133,7 @@ const ApiDocs = () => {
                 <tbody className="divide-y divide-border">
                   <ParamRow name="tx_hash" type="string" required description="The blockchain transaction hash (txid) of the completed LanaCoin transfer." />
                   <ParamRow name="sender_wallet_id" type="string" required description="The LanaCoin address that sent the coins (starts with L)." />
-                  <ParamRow name="buyback_wallet_id" type="string" required description="The LanaCoin address that received the coins (the buyback wallet)." />
+                  <ParamRow name="buyback_wallet_id" type="string" required description="The LanaCoin address that received the coins (the Lana.discount treasury wallet)." />
                   <ParamRow name="lana_amount" type="number" required description="Amount of LANA transferred, in whole coins (e.g. 500000 for 500K LANA)." />
                   <ParamRow name="currency" type="string" required description="The fiat currency the acquisition would settle in (e.g. EUR, USD, GBP)." />
                   <ParamRow name="exchange_rate" type="number" required description="The market reference the partner used, for the review record. Lana.discount is not bound by it." />
@@ -330,7 +330,7 @@ Response:
 }`}</CodeBlock>
 
           <h3 className="text-lg font-semibold text-foreground mt-6 mb-2">GET /api/brain/buyback-balance</h3>
-          <p>Returns the current LANA balance of the buyback wallet.</p>
+          <p>Returns the current LANA balance of the Lana.discount treasury wallet.</p>
           <CodeBlock>{`Response:
 {
   "wallet": "LXy8Fq...",
@@ -348,7 +348,7 @@ Response:
             </a>
             <a href="https://direct.lana.fund/docs/api" target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-border p-4 hover:border-primary transition">
               <h3 className="font-semibold text-foreground">Direct.Fund</h3>
-              <p className="mt-1 text-sm text-muted-foreground">Investor budgets and FIAT payments</p>
+              <p className="mt-1 text-sm text-muted-foreground">Financing budgets and FIAT payments</p>
             </a>
           </div>
         </Section>

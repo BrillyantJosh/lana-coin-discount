@@ -1,8 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { createHash, randomBytes } from 'crypto';
-import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, getSplitApproachingFromDb, getFreezeLanaRetailAccountAboveFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists, getCrowdfundBandSet, getCrowdfundEligibility, getSplitStartedAtFromDb, getPaidByHexCurrencySinceSplit } from '../db/index.js';
+import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, getSplitApproachingFromDb, getFreezeLanaRetailAccountAboveFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
-import { computeBlocker, financingPriorityOf, priorityFor, type QueueSeller } from '../lib/payoutOrder.js';
+import { groupObligations } from '../lib/obligations.js';
 import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetchPaymentScore, queryEventsFromRelays } from '../lib/nostr.js';
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
 import { evaluateBuybackSplit, isScopedWalletType } from '../lib/buybackSplit.js';
@@ -14,6 +14,7 @@ import { requireAdmin } from '../lib/adminAuth.js';
 import { requireApiKey } from '../lib/apiKeyAuth.js';
 import { DIRECT_FUND_URL } from '../lib/directFund.js';
 import { GATE_SETTING_KEY, LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
+import { WALLET_CLASSES } from '../lib/treasuryMandate.js';
 
 // The registrar's freeze answer is read through check.lanapays.us — the same
 // public proxy the mobile app uses, so both refuse on identical evidence.
@@ -897,30 +898,11 @@ router.get('/admin/payouts', async (req: Request, res: Response) => {
   if (!adminHex) return;
 
   try {
+    // Each sale already carries its financing round and mandate split (from
+    // the offer it came from) — display only. The T+15 due date on the offer
+    // governs settlement; nothing here blocks a payout.
     const users = getAllSalesWithPayouts();
-    // Annotate each sale with its payout-order block status (financiers → crowd-funders → rest, per currency).
-    const blocks = await computeAllBlocks(users);
-    // Crowd-funder eligibility is PER CURRENCY (a project raised in EUR is not a
-    // crowd-funder in GBP — separate budgets). Expose the exact set of currencies
-    // in which each user is a crowd-funder so the admin UI can rank correctly
-    // within each currency, not by a cross-currency union.
-    const curSet = new Set<string>();
-    for (const u of users) for (const sale of u.sales || []) if (sale.currency) curSet.add(sale.currency);
-    const crowdByCur = new Map<string, Set<string>>();
-    for (const cur of curSet) crowdByCur.set(cur, getCrowdfundBandSet(cur));
-    const annotated = users.map((u: any) => {
-      const crowdfunderCurrencies = [...curSet].filter(cur => crowdByCur.get(cur)?.has(u.hexId));
-      return {
-        ...u,
-        crowdfunder: crowdfunderCurrencies.length > 0, // back-compat (any currency)
-        crowdfunderCurrencies,                          // per-currency (new)
-        sales: (u.sales || []).map((sale: any) => {
-          const b = blocks.get(`${u.hexId}|${sale.currency}`);
-          return { ...sale, orderBlocked: b?.blocked || false, orderBlockedBy: b?.blockedByName || null };
-        }),
-      };
-    });
-    return res.json({ users: annotated });
+    return res.json({ users });
   } catch (err) {
     console.error('Admin payouts fetch error:', err);
     return res.status(500).json({ error: 'Failed to fetch payouts' });
@@ -936,7 +918,7 @@ router.post('/admin/payouts', async (req: Request, res: Response) => {
   if (!adminHex) return;
 
   try {
-    const { transactionId, amount, currency, paidToAccount, note, force } = req.body;
+    const { transactionId, amount, currency, paidToAccount, note } = req.body;
 
     if (!transactionId || typeof transactionId !== 'number') {
       return res.status(400).json({ error: 'Invalid transaction ID' });
@@ -965,25 +947,6 @@ router.post('/admin/payouts', async (req: Request, res: Response) => {
     const remaining = Math.round((tx.net_fiat - totalPaid) * 100) / 100;
     if (amount > remaining + 0.01) { // small tolerance for rounding
       return res.status(400).json({ error: `Amount exceeds remaining (${remaining.toFixed(2)} ${currency})` });
-    }
-
-    // ── Payout-order enforcement: financiers first, in the FINANCING order —
-    // rounds ascending, FIFO inside a round — then the rest, evaluated
-    // independently per currency. Blocked unless the admin explicitly forces.
-    const orderBlocks = await computeAllBlocks(getAllSalesWithPayouts());
-    const orderBlock = orderBlocks.get(`${tx.user_hex_id}|${tx.currency}`);
-    if (orderBlock?.blocked) {
-      const aheadLabel = orderBlock.blockedByName || (orderBlock.blockedByHex ? orderBlock.blockedByHex.slice(0, 8) + '…' : 'a higher-priority recipient');
-      if (force !== true) {
-        return res.status(409).json({
-          error: `Settlement order: ${aheadLabel} is ahead in the ${tx.currency} order and still unpaid — settle them first or override.`,
-          code: 'PAYOUT_ORDER_BLOCKED',
-          blockedByName: orderBlock.blockedByName,
-          blockedByHex: orderBlock.blockedByHex,
-          currency: tx.currency,
-        });
-      }
-      console.log(`[lana-discount] PAYOUT ORDER OVERRIDE: admin ${adminHex.slice(0, 12)}… paid TX#${transactionId} (${tx.currency}) out of order — ahead: ${aheadLabel}`);
     }
 
     // Generate payout ID and insert
@@ -1142,7 +1105,9 @@ router.put('/admin/settings', (req: Request, res: Response) => {
       if (typeof mandate_settings !== 'object' || mandate_settings === null) {
         return res.status(400).json({ error: 'mandate_settings must be an object' });
       }
-      const CLASSES = ['lanapays', 'crowdfund', 'other'];
+      // Only the classes still acquired; a retired class (crowdfund) is
+      // neither written nor accepted, its old rows are simply ignored.
+      const CLASSES: string[] = WALLET_CLASSES;
       for (const [key, raw] of Object.entries(mandate_settings as Record<string, unknown>)) {
         const value = String(raw ?? '');
 
@@ -1293,6 +1258,9 @@ router.get('/system-params', (_req: Request, res: Response) => {
     split,
     activeCurrencies,
     // Where an accepted acquisition is transferred to. An address, not a price.
+    // `treasuryWalletId` is the name the public pages read; the older key is
+    // kept for anything else already reading this endpoint.
+    treasuryWalletId: getAppSetting('buyback_wallet_id') || '',
     buybackWalletId: getAppSetting('buyback_wallet_id') || '',
     splitApproaching: getSplitApproachingFromDb(),
     freezeLanaRetailAccountAbove: getFreezeLanaRetailAccountAboveFromDb(),
@@ -1845,473 +1813,16 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
   }
 });
 
-// Financing order from Direct Fund: investment rounds ascending, FIFO inside a
-// round, sweeper last (the `financing_rank` field). Powers BOTH the Payouts
-// display panel (all currencies) and per-currency payout-order ENFORCEMENT.
-// Cached per currency with a stale-fallback so a Direct Fund hiccup never blanks
-// the page or wrongly freezes payouts — enforcement FAILS OPEN on an outage.
-const FINANCING_ORDER_TTL = 300_000; // 5 min — financing_rank is round-aware and MOVES as the
-// allocator spends budgets mid-split (a round-1 budget depleting re-anchors its investor at
-// round 2). 5 min bounds payout-order staleness well inside an admin session while keeping
-// Direct Fund load trivial; the stale-serve fallback below still fails OPEN on an outage.
-interface FinancingCacheEntry { order: any[]; split: number | null; fetchedAt: number }
-const financingCache = new Map<string, FinancingCacheEntry>(); // key '' = all currencies
-const financingFetching = new Set<string>();
-
-/** Fetch (cached) the financing order for a currency ('' = all). Never throws. */
-async function fetchFinancingOrder(currency: string): Promise<{ order: any[]; split: number | null; stale: boolean }> {
-  const key = currency || '';
-  const now = Date.now();
-  const cached = financingCache.get(key);
-  const fresh = cached && now - cached.fetchedAt < FINANCING_ORDER_TTL && cached.order.length > 0;
-  if (!fresh && !financingFetching.has(key)) {
-    financingFetching.add(key);
-    try {
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 15000);
-      const qs = key ? `?currency=${encodeURIComponent(key)}` : '';
-      const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/financing-order${qs}`, { signal: controller.signal });
-      clearTimeout(t);
-      if (!resp.ok) throw new Error(`Direct Fund financing-order ${resp.status}`);
-      const data = await resp.json() as any;
-      financingCache.set(key, { order: data.order || [], split: data.split ?? null, fetchedAt: now });
-    } catch (err: any) {
-      console.warn(`[lana-discount] financing-order(${key || 'all'}) fetch failed:`, err.message); // keep stale cache
-    } finally {
-      financingFetching.delete(key);
-    }
-  }
-  const entry = financingCache.get(key) || { order: [], split: null, fetchedAt: 0 };
-  return { order: entry.order, split: entry.split, stale: now - entry.fetchedAt >= FINANCING_ORDER_TTL };
-}
-
-/** hex → financier rank (+ display name) for ONE currency. Every listed investor
- * is a financier; the is_last_budget sweeper is included and ranked last.
- *
- * THE PAYOUT ORDER: financing_rank (rounds ascending, FIFO inside a round),
- * falling back to registration `rank` on payloads from an older Direct Fund.
- * Keyed by hex — call it with a REAL currency only; the '' (all-currencies)
- * fetch has one row per (hex, currency) and a hex-keyed map would collide.
- *
- * Exported as a TEST SEAM: payoutOrderIntegration.test.ts drives this and
- * computeAllBlocks against a stub Direct Fund to prove the whole chain —
- * payload → rank map → blocker — really orders payouts by round. */
-export async function getFinancingRankMap(currency: string): Promise<{ rankByHex: Map<string, number>; nameByHex: Map<string, string> }> {
-  const { order } = await fetchFinancingOrder(currency);
-  const rankByHex = new Map<string, number>();
-  const nameByHex = new Map<string, string>();
-  for (const o of order) {
-    if (o.nostr_hex_id != null && o.rank != null) rankByHex.set(o.nostr_hex_id, financingPriorityOf(o));
-    if (o.nostr_hex_id != null && o.name) nameByHex.set(o.nostr_hex_id, o.name);
-  }
-  return { rankByHex, nameByHex };
-}
-
-// ─── Expecting Cash Out: prev-split investor cohort → on-chain LANA → EUR owed ──
-const ROOT_ADMIN_HEX = '56e8670aa65491f8595dc3a71c94aa7445dcdca755ca5f77c07218498a362061';
-const COHORT_TTL = 60_000; // 60s — the cohort changes rarely, but this is a money tool
-interface CohortEntry { investors: any[]; fetchedAt: number }
-const cohortCache = new Map<number, CohortEntry>();
-const cohortFetching = new Set<number>();
-
-/** Fetch (cached) the Split-N investor cohort from Direct Fund. Never throws. */
-async function fetchInvestorsBySplit(split: number): Promise<{ investors: any[]; stale: boolean; failed: boolean }> {
-  const now = Date.now();
-  const cached = cohortCache.get(split);
-  const fresh = cached && now - cached.fetchedAt < COHORT_TTL;
-  let failed = false;
-  if (!fresh && !cohortFetching.has(split)) {
-    cohortFetching.add(split);
-    try {
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 15000);
-      const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/investors-by-split?split=${split}`, {
-        headers: { 'x-admin-hex': ROOT_ADMIN_HEX },
-        signal: controller.signal,
-      });
-      clearTimeout(t);
-      if (!resp.ok) throw new Error(`investors-by-split ${resp.status}`);
-      const data = await resp.json() as any;
-      cohortCache.set(split, { investors: data.investors || [], fetchedAt: now });
-    } catch (err: any) {
-      console.warn(`[lana-discount] investors-by-split(${split}) fetch failed:`, err.message); // keep stale cache
-      failed = true;
-    } finally {
-      cohortFetching.delete(split);
-    }
-  }
-  const entry = cohortCache.get(split);
-  if (!entry) return { investors: [], stale: false, failed: true };
-  return { investors: entry.investors, stale: now - entry.fetchedAt >= COHORT_TTL, failed };
-}
-
-/**
- * GET /api/admin/expecting-cashout — admin report. For the PREVIOUS split's
- * investors (direct-fund fund_settings.target_split = currentSplit−1), sum the
- * CURRENT on-chain LANA in their wallets, value it in EUR minus the live
- * Lana.discount buyback commission, and subtract already-paid → "still to pay".
- * READ-ONLY: creates/pays nothing. Components are all returned so the operator
- * sees on-chain-expected vs already-paid (different LANA tranches) transparently.
- */
-router.get('/admin/expecting-cashout', async (req: Request, res: Response) => {
-  const adminHex = requireAdmin(req, res);
-  if (!adminHex) return;
-  const r2 = (n: number) => Math.round((n || 0) * 100) / 100;
-
-  const currentSplit = parseInt(getSplitFromDb() || '0') || 0;
-  const prevSplit = currentSplit - 1;
-  if (prevSplit <= 0) {
-    return res.json({ prevSplit, currentSplit, note: 'No previous split', currencies: {}, grandTotals: {}, updated_at: new Date().toISOString() });
-  }
-
-  const { investors, stale, failed } = await fetchInvestorsBySplit(prevSplit);
-  if (failed && investors.length === 0) {
-    return res.json({ degraded: true, error: 'DIRECT_FUND_UNREACHABLE', prevSplit, currentSplit, currencies: {}, grandTotals: {}, updated_at: new Date().toISOString() });
-  }
-
-  // Distinct wallet addresses across the whole cohort.
-  const allWallets = [...new Set(investors.flatMap((i: any) => (i.walletIds as string[]) || []))];
-
-  // On-chain balances, chunked so one failed batch can't sink the whole report.
-  const balByWallet = new Map<string, number>();
-  const unavailable = new Set<string>();
-  let balancesPartial = false;
-  const electrumServers = getElectrumServersFromDb();
-  const CHUNK = 40;
-  for (let i = 0; i < allWallets.length; i += CHUNK) {
-    const chunk = allWallets.slice(i, i + CHUNK);
-    try {
-      const balances = await fetchBatchBalances(electrumServers, chunk);
-      for (const b of balances) balByWallet.set(b.wallet_id, b.balance || 0);
-    } catch (err: any) {
-      console.warn('[lana-discount] expecting-cashout balance chunk failed:', err.message);
-      for (const w of chunk) unavailable.add(w);
-      balancesPartial = true;
-    }
-  }
-
-  const rates = getExchangeRatesFromDb();
-  // Investors register their LanaPays.Us wallet in the fund, and the buyback
-  // charges LanaPays.Us wallets the commission_lanapays rate (live 21% — keep
-  // 79%), NOT commission_other (30%). Match the sell flow (api.ts sell/preview:
-  // walletType === 'LanaPays.Us' ? commission_lanapays : commission_other).
-  const commissionPct = parseFloat(getAppSetting('commission_lanapays') || '21') || 21;
-
-  // Already-paid EUR per (hex, currency) — ONLY payouts made since the current
-  // split started (KIND 38888 split_started_at, Unix seconds). This is "paid THIS
-  // cash-out cycle", not the investor's lifetime total. paid_at is a UTC datetime
-  // string, so compare against datetime(split_started_at,'unixepoch').
-  const splitStartedAt = getSplitStartedAtFromDb();
-  const hexes = investors.map((i: any) => i.nostrHexId).filter(Boolean);
-  const paidByHexCur = getPaidByHexCurrencySinceSplit(hexes, splitStartedAt);
-
-  // Group per currency (LANA valued once, in the investor's dominant currency).
-  const currencies: Record<string, any> = {};
-  for (const inv of investors) {
-    const cur = inv.currency || 'EUR';
-    if (!currencies[cur]) {
-      currencies[cur] = {
-        investors: [],
-        totals: { onchainLana: 0, grossEur: 0, commissionEur: 0, netExpectedEur: 0, alreadyPaidEur: 0, stillToPayEur: 0 },
-        rateMissing: !((rates as any)[cur] > 0),
-      };
-    }
-    const rate = (rates as any)[cur] || 0;
-    const walletIds: string[] = inv.walletIds || [];
-    const onchainLana = r2(walletIds.reduce((s: number, w: string) => s + (balByWallet.get(w) || 0), 0));
-    const grossEur = r2(onchainLana * rate);
-    const commissionEur = r2(grossEur * commissionPct / 100);
-    const netExpectedEur = r2(grossEur - commissionEur);
-    const alreadyPaidEur = r2(paidByHexCur.get(`${inv.nostrHexId}|${cur}`) || 0);
-    const stillToPayEur = Math.max(0, r2(netExpectedEur - alreadyPaidEur));
-    currencies[cur].investors.push({
-      nostrHexId: inv.nostrHexId,
-      name: inv.name || null,
-      walletIds,
-      walletCount: walletIds.length,
-      onchainLana, grossEur, commissionPct, commissionEur, netExpectedEur, alreadyPaidEur, stillToPayEur,
-      isLastBudget: !!inv.isLastBudget,
-      hasMultipleCurrencies: !!inv.hasMultipleCurrencies,
-      currencies: inv.currencies || [cur],
-      status: inv.status || null,
-      balanceUnavailable: walletIds.some((w: string) => unavailable.has(w)),
-    });
-    const t = currencies[cur].totals;
-    t.onchainLana = r2(t.onchainLana + onchainLana);
-    t.grossEur = r2(t.grossEur + grossEur);
-    t.commissionEur = r2(t.commissionEur + commissionEur);
-    t.netExpectedEur = r2(t.netExpectedEur + netExpectedEur);
-    t.alreadyPaidEur = r2(t.alreadyPaidEur + alreadyPaidEur);
-    t.stillToPayEur = r2(t.stillToPayEur + stillToPayEur);
-  }
-
-  const grandTotals: Record<string, any> = {};
-  for (const cur of Object.keys(currencies)) {
-    // Biggest still-owed first (operator worklist), then net expected.
-    currencies[cur].investors.sort((a: any, b: any) => (b.stillToPayEur - a.stillToPayEur) || (b.netExpectedEur - a.netExpectedEur));
-    grandTotals[cur] = {
-      netExpectedEur: currencies[cur].totals.netExpectedEur,
-      stillToPayEur: currencies[cur].totals.stillToPayEur,
-      investorCount: currencies[cur].investors.length,
-    };
-  }
-
-  res.json({
-    prevSplit, currentSplit, commissionPct, rates,
-    splitStartedAt: splitStartedAt || null,
-    splitStartMissing: !(splitStartedAt > 0),
-    currencies, grandTotals,
-    stale: !!stale, balancesPartial,
-    updated_at: new Date().toISOString(),
-  });
-});
-
-/** Outstanding fiat per (currency → hex) over completed/paid sales (remaining > 0). */
-function outstandingByCurrency(users: any[]): Map<string, Map<string, number>> {
-  const out = new Map<string, Map<string, number>>();
-  for (const u of users) {
-    for (const sale of u.sales || []) {
-      if (sale.status !== 'completed' && sale.status !== 'paid') continue;
-      const rem = sale.remaining || 0;
-      if (rem <= 0) continue;
-      const cur = sale.currency;
-      if (!out.has(cur)) out.set(cur, new Map());
-      const m = out.get(cur)!;
-      m.set(u.hexId, (m.get(u.hexId) || 0) + rem);
-    }
-  }
-  return out;
-}
-
-interface PayoutBlock { blocked: boolean; blockedByHex: string | null; blockedByName: string | null }
-
-/** Per-(hex|currency) payout-order block status. Tier 1 financiers (financing
- * order: rounds ascending, FIFO inside a round, sweeper last) → Tier 2
- * crowd-funders (flat) → the rest (unordered), independently per currency.
- * Fails OPEN on outage (financing outage or empty crowd set).
- * Exported as a test seam — see getFinancingRankMap above. */
-export async function computeAllBlocks(users: any[]): Promise<Map<string, PayoutBlock>> {
-  const oc = outstandingByCurrency(users);
-  const nameOf = new Map<string, string>();
-  for (const u of users) nameOf.set(u.hexId, u.displayName || 'Anonymous');
-  const result = new Map<string, PayoutBlock>();
-  for (const [currency, hexRemaining] of oc) {
-    const { rankByHex, nameByHex } = await getFinancingRankMap(currency);
-    const crowdSet = getCrowdfundBandSet(currency);
-    const sellers: QueueSeller[] = [...hexRemaining.entries()].map(([hex, remaining]) => ({
-      hex, remaining, priority: priorityFor(hex, rankByHex, crowdSet),
-    }));
-    for (const seller of sellers) {
-      const { blocked, blockedByHex } = computeBlocker(sellers, seller.hex);
-      result.set(`${seller.hex}|${currency}`, {
-        blocked, blockedByHex,
-        blockedByName: blockedByHex ? (nameByHex.get(blockedByHex) || nameOf.get(blockedByHex) || null) : null,
-      });
-    }
-  }
-  return result;
-}
-
-router.get('/admin/financing-order', async (req: Request, res: Response) => {
-  const adminHex = requireAdmin(req, res);
-  if (!adminHex) return;
-  const currency = (req.query.currency as string) || '';
-  const { order, split, stale } = await fetchFinancingOrder(currency);
-  res.json({
-    split, order, count: order.length, stale,
-    fetchedAt: financingCache.get(currency || '')?.fetchedAt || null,
-  });
-});
-
-/**
- * GET /api/admin/crowdfund-cashout — Tier-2 monitoring + payout eligibility for
- * THIS split. Per currency: per-owner eligibility (raised − paid = the priority
- * list) and per-project raised/goal (monitoring). Read-only report — pays no one.
- */
-router.get('/admin/crowdfund-cashout', async (req: Request, res: Response) => {
-  const adminHex = requireAdmin(req, res);
-  if (!adminHex) return;
-  try {
-    const currentSplit = parseInt(getSplitFromDb() || '0') || 0;
-    const splitStartedAt = getSplitStartedAtFromDb();
-    const since = splitStartedAt > 0 ? splitStartedAt : 0; // 0 → lifetime fallback
-
-    const eligibility = getCrowdfundEligibility(since); // per owner|currency, this split
-
-    // Per-project raised (monitoring) from the donation ledger, excluding blocked projects.
-    const sinceClause = since > 0 ? 'AND d.timestamp_paid >= ?' : '';
-    const projParams: any[] = since > 0 ? [since] : [];
-    const projRows = db.prepare(`
-      SELECT d.project_id AS projectId, d.currency AS currency,
-             COALESCE(SUM(d.amount_fiat),0) AS raisedFiat,
-             COALESCE(SUM(d.amount_lanoshis),0) AS raisedLanoshis,
-             COUNT(DISTINCT d.supporter_hex) AS backers
-      FROM crowdfund_donations d
-      LEFT JOIN crowdfund_projects p ON p.project_id = d.project_id
-      WHERE d.donation_type = 'donation' AND (p.visibility IS NULL OR p.visibility != 'blocked') ${sinceClause}
-      GROUP BY d.project_id, d.currency
-    `).all(...projParams) as any[];
-
-    const projectMeta = new Map<string, any>();
-    for (const p of db.prepare('SELECT * FROM crowdfund_projects').all() as any[]) projectMeta.set(p.project_id, p);
-
-    // Resolve owner names from the local users (KIND 0) cache.
-    const ownerHexes = new Set<string>();
-    for (const e of eligibility) ownerHexes.add(e.owner_hex);
-    for (const p of projRows) { const m = projectMeta.get(p.projectId); if (m?.owner_hex) ownerHexes.add(m.owner_hex); }
-    const nameByHex = new Map<string, string>();
-    if (ownerHexes.size > 0) {
-      const ph = [...ownerHexes].map(() => '?').join(',');
-      for (const r of db.prepare(`SELECT nostr_hex_id, display_name, full_name FROM users WHERE nostr_hex_id IN (${ph})`).all(...ownerHexes) as any[]) {
-        const nm = r.full_name || r.display_name;   // payout → real name first
-        if (nm) nameByHex.set(r.nostr_hex_id, nm);
-      }
-    }
-    const nameOf = (hex: string) => nameByHex.get(hex) || `${hex.slice(0, 12)}…`;
-    const r2 = (n: number) => Math.round(n * 100) / 100;
-
-    const currencies: Record<string, any> = {};
-    const ensureCur = (cur: string) => (currencies[cur] ||= {
-      owners: [], projects: [],
-      totals: { raisedFiat: 0, raisedLana: 0, alreadyPaidFiat: 0, stillEligibleFiat: 0 },
-    });
-
-    for (const e of eligibility) {
-      const c = ensureCur(e.currency);
-      c.owners.push({
-        ownerHex: e.owner_hex, ownerName: nameOf(e.owner_hex),
-        raisedLana: e.raisedLana, raisedFiat: e.raisedFiat,
-        alreadyPaidFiat: e.paidFiat, stillEligibleFiat: e.remainingFiat,
-        donationCount: e.donationCount,
-      });
-      c.totals.raisedFiat = r2(c.totals.raisedFiat + e.raisedFiat);
-      c.totals.raisedLana = r2(c.totals.raisedLana + e.raisedLana);
-      c.totals.alreadyPaidFiat = r2(c.totals.alreadyPaidFiat + e.paidFiat);
-      c.totals.stillEligibleFiat = r2(c.totals.stillEligibleFiat + e.remainingFiat);
-    }
-    for (const p of projRows) {
-      const m = projectMeta.get(p.projectId) || {};
-      const cur = p.currency || m.currency || 'EUR';
-      const c = ensureCur(cur);
-      const raisedFiat = r2(p.raisedFiat || 0);
-      const goal = m.fiat_goal || 0;
-      c.projects.push({
-        projectId: p.projectId, title: m.title || null,
-        ownerHex: m.owner_hex || null, ownerName: m.owner_hex ? nameOf(m.owner_hex) : null,
-        fiatGoal: goal, raisedLana: r2((p.raisedLanoshis || 0) / 1e8), raisedFiat,
-        pctFunded: goal > 0 ? Math.round((raisedFiat / goal) * 100) : null,
-        backers: p.backers || 0, status: m.status || null,
-      });
-    }
-    for (const cur of Object.keys(currencies)) {
-      currencies[cur].owners.sort((a: any, b: any) => b.stillEligibleFiat - a.stillEligibleFiat);
-      currencies[cur].projects.sort((a: any, b: any) => b.raisedFiat - a.raisedFiat);
-    }
-    const grandTotals: Record<string, any> = {};
-    for (const [cur, c] of Object.entries(currencies) as [string, any][]) {
-      grandTotals[cur] = {
-        raisedFiat: c.totals.raisedFiat, stillEligibleFiat: c.totals.stillEligibleFiat,
-        ownerCount: c.owners.length, projectCount: c.projects.length,
-      };
-    }
-
-    res.json({
-      currentSplit,
-      splitStartedAt: splitStartedAt || null,
-      splitStartMissing: !(splitStartedAt > 0),
-      currencies, grandTotals,
-      updated_at: new Date().toISOString(),
-    });
-  } catch (err: any) {
-    console.error('[lana-discount] crowdfund-cashout error:', err.message);
-    res.status(500).json({ error: 'Failed to load crowd-funding report' });
-  }
-});
-
 /**
  * Public settlement list — every purchase price we have agreed and not yet
- * paid, in the order we settle them,
- * grouped per currency (financiers first by FIFO rank, then the rest). Transparency
- * only: display name + amount owed + queue position + payable/waiting. No payment
- * details, no full hex, no per-sale breakdown.
+ * paid, per currency, in the order we settle them: financing round 1, then 2,
+ * then 3, then acquisitions outside a round; earliest first inside each. The
+ * grouping is pure (lib/obligations.ts) so the order is proven in a unit test.
+ * Transparency only: display name + amount owed + round. No payment details,
+ * no full hex, no per-sale breakdown.
  */
-async function buildObligations(): Promise<{ currencies: Record<string, any>; total_currencies: number }> {
-  const users = getAllSalesWithPayouts();
-
-  const nameOf = new Map<string, string>();
-  const perCur = new Map<string, Map<string, { outstanding: number; earliestAt: string }>>();
-  for (const u of users) {
-    nameOf.set(u.hexId, u.displayName || 'Anonymous');
-    for (const sale of u.sales || []) {
-      if (sale.status !== 'completed' && sale.status !== 'paid') continue;
-      const rem = sale.remaining || 0;
-      if (rem <= 0) continue;
-      const cur = sale.currency;
-      if (!perCur.has(cur)) perCur.set(cur, new Map());
-      const m = perCur.get(cur)!;
-      const e = m.get(u.hexId) || { outstanding: 0, earliestAt: sale.createdAt };
-      e.outstanding += rem;
-      if (sale.createdAt && sale.createdAt < e.earliestAt) e.earliestAt = sale.createdAt;
-      m.set(u.hexId, e);
-    }
-  }
-
-  const currencies: Record<string, any> = {};
-  for (const [currency, hexMap] of perCur) {
-    const { rankByHex, nameByHex } = await getFinancingRankMap(currency);
-    const crowdSet = getCrowdfundBandSet(currency);
-    const sellers: QueueSeller[] = [...hexMap.entries()].map(([hex, v]) => ({
-      hex, remaining: v.outstanding, priority: priorityFor(hex, rankByHex, crowdSet),
-    }));
-    // Payout order by priority: Tier 1 financiers (financing rank — rounds first,
-    // FIFO inside a round) → Tier 2 crowd-funders → the rest. Ties within a band
-    // (crowd-funders / non-financiers) → earliest arrival.
-    const ordered = [...hexMap.entries()].map(([hex, v]) => ({
-      hex, ...v,
-      financeRank: rankByHex.get(hex) ?? null,
-      isCrowdfunder: rankByHex.get(hex) == null && crowdSet.has(hex),
-      priority: priorityFor(hex, rankByHex, crowdSet),
-    }));
-    ordered.sort((a, b) =>
-      a.priority !== b.priority
-        ? a.priority - b.priority
-        : a.earliestAt < b.earliestAt ? -1 : a.earliestAt > b.earliestAt ? 1 : 0
-    );
-    const settlements = ordered.map((e, i) => {
-      const { blocked } = computeBlocker(sellers, e.hex);
-      const name = (e.financeRank != null ? (nameByHex.get(e.hex) || nameOf.get(e.hex)) : nameOf.get(e.hex)) || 'Anonymous';
-      // Freeze status is already public (KIND 30889); surfaced here so a reader
-      // can see that someone on the list cannot be settled the usual way.
-      // null = we have not resolved them yet, which is NOT "clean".
-      const fz = freezeOf(e.hex);
-      return {
-        position: i + 1,
-        name,
-        hex_short: e.hex.slice(0, 8),
-        frozen: fz ? fz.frozen : null,
-        freeze_level: fz?.level ?? null,          // 'account' | 'wallet' | 'none'
-        frozen_wallets: fz?.frozenWallets ?? null,
-        total_wallets: fz?.totalWallets ?? null,
-        freeze_reasons: fz?.reasons ?? [],
-        is_financier: e.financeRank != null,
-        finance_rank: e.financeRank,
-        is_crowdfunder: e.isCrowdfunder,
-        outstanding: Math.round(e.outstanding * 100) / 100,
-        payable: !blocked, // true = next in line / payable now; false = waiting behind a higher-priority recipient
-      };
-    });
-    currencies[currency] = {
-      total_outstanding: Math.round([...hexMap.values()].reduce((s, v) => s + v.outstanding, 0) * 100) / 100,
-      count: settlements.length,
-      financier_count: settlements.filter((q: any) => q.is_financier).length,
-      crowdfunder_count: settlements.filter((q: any) => q.is_crowdfunder).length,
-      settlements,
-      // Kept for one release so anything already reading this public feed does
-      // not break on the rename. New readers should use `settlements`.
-      queue: settlements,
-    };
-  }
-  return { currencies, total_currencies: Object.keys(currencies).length };
+async function buildObligations() {
+  return groupObligations(getAllSalesWithPayouts(), freezeOf);
 }
 
 /**

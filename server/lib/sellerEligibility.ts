@@ -54,18 +54,16 @@ export interface EligibilityDeps {
   trustedRegistrars: string[];
   walletCheckBaseUrl: string;
   currentSplit: string | null;
-  /** Hexes that own a crowd-funding project — the Tier-2 band. */
-  crowdfundHexes: Set<string>;
 }
 
 /**
- * `LanaPays.Us` and its sub-types are the payment system's own wallets; a
- * crowd-funding project owner is its own class; everything else — a person's
- * main wallet, a retail card — is `other`.
+ * `LanaPays.Us` and its sub-types are the payment system's own wallets;
+ * everything else — a person's main wallet, a retail card — is `other`.
+ * (The crowd-funding class was retired with the old settlement order; rows
+ * that already carry it are read, never written.)
  */
-export function classifyWallet(walletType: string | null, hexId: string, crowdfundHexes: Set<string>): WalletClass {
+export function classifyWallet(walletType: string | null): WalletClass {
   if (isScopedWalletType(walletType)) return 'lanapays';
-  if (crowdfundHexes.has(hexId.toLowerCase())) return 'crowdfund';
   return 'other';
 }
 
@@ -164,7 +162,7 @@ export async function checkSellerEligibility(
     return {
       ok: true,
       walletType,
-      walletClass: classifyWallet(scopedType ?? walletType, hexId, deps.crowdfundHexes),
+      walletClass: classifyWallet(scopedType ?? walletType),
       evidence: {
         checkedAt: new Date().toISOString(),
         registrarReachable: registrar.reachable,

@@ -208,7 +208,6 @@ export function dbModuleStub(db: Database.Database) {
     getSplitFromDb: () => latest38888()?.split ?? null,
     getSplitEndsAtFromDb: () => latest38888()?.split_ends_at || 0,
     getSplitStartedAtFromDb: () => latest38888()?.split_started_at || 0,
-    getCrowdfundBandSet: () => new Set<string>(),
     isAdminUser: (hex: string) => !!db.prepare('SELECT 1 FROM admin_users WHERE hex_id = ?').get(hex),
     getApiKeyByHash: (hash: string) => db.prepare('SELECT * FROM api_keys WHERE key_hash = ?').get(hash) ?? null,
     updateApiKeyLastUsed: (id: number) => db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?").run(id),

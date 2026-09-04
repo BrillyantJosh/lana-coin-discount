@@ -18,20 +18,22 @@
  * So this module answers exactly one question, and it must be able to answer
  * NO. A mandate that always says yes is not a mandate.
  *
- * Pure by design — no database, no clock, no network — like payoutOrder.ts, so
+ * Pure by design — no database, no clock, no network — so
  * every branch is unit-testable and the same verdict can be reused by the
  * submit endpoint, the admin queue and any future audit.
  */
 
 /**
- * The three kinds of LANA we treat differently, because they carry different
- * risk and different provenance quality.
+ * The kinds of LANA we treat differently, because they carry different risk
+ * and different provenance quality.
  *
  * `lanapays` — issued by the payment system itself; the registrar stamps its
  *   split, its history is ours, and the owner has said we acquire these
  *   without a size limit.
- * `crowdfund` — a crowd-funding project owner's wallet.
  * `other` — anything else, including a person's own main wallet.
+ * `crowdfund` — RETIRED with the old settlement order (4 Sep 2026). The
+ *   literal stays in the type only so offers stored under it still read; no
+ *   new offer is classified as it and no settings screen lists it.
  */
 export type WalletClass = 'lanapays' | 'crowdfund' | 'other';
 
@@ -76,12 +78,12 @@ export interface MandateVerdict {
  */
 export const DEFAULT_DUE_DAYS = 15;
 
-/** Every class we know about, in the order an admin screen should list them. */
-export const WALLET_CLASSES: WalletClass[] = ['lanapays', 'crowdfund', 'other'];
+/** Every class we still acquire, in the order an admin screen lists them. */
+export const WALLET_CLASSES: WalletClass[] = ['lanapays', 'other'];
 
-export const CLASS_LABELS: Record<WalletClass, string> = {
+/** Labels for the live classes; a retired class prints its raw name. */
+export const CLASS_LABELS: Partial<Record<WalletClass, string>> = {
   lanapays: 'LanaPays.Us',
-  crowdfund: 'Crowd funding',
   other: 'Other',
 };
 
@@ -171,7 +173,7 @@ export function decideAcquisition(input: {
   if (!settings.classEnabled) {
     return {
       ...base, outcome: 'decline', code: 'CLASS_CLOSED',
-      reason: `Lana.discount is not acquiring ${CLASS_LABELS[input.walletClass]} holdings at the moment.`,
+      reason: `Lana.discount is not acquiring ${CLASS_LABELS[input.walletClass] ?? input.walletClass} holdings at the moment.`,
     };
   }
 

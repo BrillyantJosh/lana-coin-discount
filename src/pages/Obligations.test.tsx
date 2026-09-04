@@ -32,13 +32,16 @@ const OBLIGATIONS = {
   total_currencies: 1,
   currencies: {
     GBP: {
-      count: 1,
-      total_outstanding: 24.12,
-      financier_count: 0,
+      count: 2,
+      total_outstanding: 36.12,
       settlements: [{
         position: 1, name: 'Lewis Sykes', hex_short: 'b1131b9c',
-        outstanding: 24.12, is_financier: false, finance_rank: null,
-        is_crowdfunder: false, blocked: false, frozen: false,
+        outstanding: 24.12, round: 1, mandate_split: 8, frozen: false,
+        freeze_level: 'none', frozen_wallets: 0, total_wallets: 1, freeze_reasons: [],
+      }, {
+        position: 2, name: 'Legacy Seller', hex_short: 'c2242c0d',
+        outstanding: 12.00, round: null, mandate_split: null, frozen: false,
+        freeze_level: 'none', frozen_wallets: 0, total_wallets: 1, freeze_reasons: [],
       }],
     },
   },
@@ -65,6 +68,16 @@ describe('the page a seller lands on after transferring', () => {
   it('still shows the purchase prices already owed', async () => {
     render(<Obligations />);
     await waitFor(() => expect(screen.getByText('Lewis Sykes')).toBeInTheDocument());
+  });
+
+  it('labels each line with its financing round, or says it is outside a round', async () => {
+    render(<Obligations />);
+    await waitFor(() => expect(screen.getByText('Round 1')).toBeInTheDocument());
+    expect(screen.getByText('Outside a round')).toBeInTheDocument();
+    // The old verdicts are gone: the round is the whole story.
+    expect(screen.queryByText(/Settling now/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Settles later/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Financier #/i)).not.toBeInTheDocument();
   });
 
   it('asks the server for both lists, not just the board', async () => {

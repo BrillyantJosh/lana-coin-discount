@@ -26,7 +26,7 @@ const SRC = path.resolve(__dirname);
 
 /**
  * Everything a member of the public or a counterparty can read. Admin pages
- * (src/pages/Admin*.tsx, ExpectingCashout.tsx) and this file are excluded.
+ * (src/pages/Admin*.tsx) and this file are excluded.
  */
 function publicSurfaceFiles(): string[] {
   const out: string[] = [];
@@ -41,9 +41,6 @@ function publicSurfaceFiles(): string[] {
       if (!/\.tsx?$/.test(entry.name)) continue;
       if (/\.test\.tsx?$/.test(entry.name)) continue;
       if (/^Admin/.test(entry.name)) continue;
-      // Admin-only, despite living in components/ — it renders only inside
-      // ExpectingCashout, which is behind the admin guard.
-      if (entry.name === 'ExpectingCashout.tsx' || entry.name === 'CrowdfundCashout.tsx') continue;
       if (entry.name === 'copy.ts') continue; // it defines the banned list
       out.push(full);
     }
@@ -57,6 +54,27 @@ function withoutComments(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .replace(/(^|[^:])\/\/.*$/gm, '$1 ');
+}
+
+/**
+ * A few WIRE IDENTIFIERS other systems already speak contain a banned word:
+ * `buyback_wallet_id` on /api/external/sale, the `/api/brain/buyback-balance`
+ * path, the `buyback_wallet` response key, the `investor_lana` order type and
+ * the sample address `LBuybackAddress…` on /docs/api. Renaming them would
+ * break counterparties and would not change one sentence a person reads.
+ *
+ * They are listed VERBATIM and stripped before matching. Nothing is exempt by
+ * shape: a new identifier that carries a banned word has to be added here by
+ * name, in a commit a reviewer can see — that is the whole point. (A shape
+ * rule once exempted anything glued to a letter, which is a loophole, not a
+ * list.)
+ */
+const PROTOCOL_TOKENS = ['buyback_wallet_id', '/api/brain/buyback-balance', 'buyback_wallet', 'investor_lana'];
+const SAMPLE_ADDRESS = /lbuybackaddress[0-9a-z]*/g;
+function withoutProtocolTokens(body: string): string {
+  let out = body.replace(SAMPLE_ADDRESS, ' ');
+  for (const token of PROTOCOL_TOKENS) out = out.split(token).join(' ');
+  return out;
 }
 
 describe('the words a counterparty never sees', () => {
@@ -73,7 +91,7 @@ describe('the words a counterparty never sees', () => {
       const offenders: string[] = [];
       for (const file of files) {
         const body = withoutComments(fs.readFileSync(file, 'utf8')).toLowerCase();
-        if (body.includes(term)) offenders.push(path.relative(SRC, file));
+        if (withoutProtocolTokens(body).includes(term)) offenders.push(path.relative(SRC, file));
       }
       expect(offenders, `"${term}" appears in: ${offenders.join(', ')}`).toEqual([]);
     });

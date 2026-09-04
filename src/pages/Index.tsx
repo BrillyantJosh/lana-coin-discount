@@ -1,7 +1,8 @@
 import Navbar from "@/components/Navbar";
 import HeroSection from "@/components/HeroSection";
 import HowItWorks from "@/components/HowItWorks";
-import PayoutOrderExplainer from "@/components/PayoutOrderExplainer";
+import RoundOrderExplainer from "@/components/RoundOrderExplainer";
+import RoundDates from "@/components/RoundDates";
 import Requirements from "@/components/Requirements";
 import ObligationsBoard from "@/components/ObligationsBoard";
 import RecentPayouts from "@/components/RecentPayouts";
@@ -42,6 +43,10 @@ const Index = () => {
           </div>
         </div>
       </section>
+
+      {/* The round dates: when the treasury starts acquiring from each financing
+          round. Dates and totals only — never a discount (P08 §4). */}
+      <RoundDates />
 
       {/* Live board of every purchase price we owe and have not yet settled */}
       <section id="settlements" className="py-16 md:py-20 bg-muted/50">
@@ -95,7 +100,7 @@ const Index = () => {
       </section>
 
       {/* Explanations come after the live data */}
-      <PayoutOrderExplainer />
+      <RoundOrderExplainer />
       <HowItWorks />
       <Requirements />
       <Footer />

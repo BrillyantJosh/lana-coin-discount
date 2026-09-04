@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 /** Public daily FIAT flows: per day, purchase prices we settled (with the
- * counterparty breakdown) and FIAT received from investors, as two bars per day.
+ * counterparty breakdown) and FIAT received from financers, as two bars per day.
  * Both are our own money moving; neither is a balance held for anyone.
  * Reads the open /api/payouts-daily endpoint. */
 interface Person { name: string; hex_short: string | null; amount: number; }
@@ -128,7 +128,7 @@ const PayoutStats = () => {
               <span className="inline-block h-2.5 w-2.5 rounded-sm bg-sky-500" /> Received ({cur})
             </p>
             <p className="text-2xl sm:text-3xl font-bold text-foreground tabular-nums">{fmt(totalReceived, cur)}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">from investors · all-time</p>
+            <p className="text-xs text-muted-foreground mt-0.5">from financers · all-time</p>
           </div>
         </div>
         {data.currencies.length > 1 && (

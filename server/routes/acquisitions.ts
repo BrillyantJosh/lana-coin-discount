@@ -38,7 +38,7 @@ import { Router, type Request, type Response } from 'express';
 import {
   getAppSetting, getAllAppSettings, getRelaysFromDb, getTrustedSignersFromDb,
   getSplitFromDb, getElectrumServersFromDb, getExchangeRatesFromDb,
-  getCrowdfundBandSet, insertBuybackTransaction, getDbHandle,
+  insertBuybackTransaction, getDbHandle,
 } from '../db/index.js';
 import { GATE_SETTING_KEY } from '../db/roundMandateSchema.js';
 import {
@@ -230,12 +230,11 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
     };
   }
 
-  const eligibilityDeps = (currency: string) => ({
+  const eligibilityDeps = () => ({
     relays: getRelaysFromDb(),
     trustedRegistrars: getTrustedSignersFromDb().LanaRegistrar || [],
     walletCheckBaseUrl: deps.walletCheckBaseUrl,
     currentSplit: getSplitFromDb(),
-    crowdfundHexes: getCrowdfundBandSet(currency),
   });
 
   // ── 1. Submit an offer ──────────────────────────────────────────────
@@ -261,7 +260,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       }
 
       // Who and what — the same three gates the sale has always had.
-      const eligibility = await checkSellerEligibility(hexId, senderAddress, eligibilityDeps(currency));
+      const eligibility = await checkSellerEligibility(hexId, senderAddress, eligibilityDeps());
       if (!eligibility.ok) {
         return res.status(eligibility.httpStatus || 403).json({
           error: eligibility.error, code: eligibility.code, ...(eligibility.detail || {}),
@@ -316,7 +315,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
           purchasePriceFiat: null, settlementDueAt: null, offerExpiresAt: null,
           decisionReason: mandate.reason,
         });
-        console.log(`[lana-discount] Offer ${offerRef} declined (${mandate.code}) — ${CLASS_LABELS[walletClass]} ${currency}`);
+        console.log(`[lana-discount] Offer ${offerRef} declined (${mandate.code}) — ${CLASS_LABELS[walletClass] ?? walletClass} ${currency}`);
         return res.json({ offer: offerView(offer) });
       }
 
@@ -700,7 +699,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
 
       // Re-run eligibility: an accepted offer is not a licence to move coins
       // that have been frozen in the meantime.
-      const eligibility = await checkSellerEligibility(hexId, offer.sender_wallet_id, eligibilityDeps(offer.currency));
+      const eligibility = await checkSellerEligibility(hexId, offer.sender_wallet_id, eligibilityDeps());
       if (!eligibility.ok) {
         return res.status(eligibility.httpStatus || 403).json({
           error: eligibility.error, code: eligibility.code, ...(eligibility.detail || {}),

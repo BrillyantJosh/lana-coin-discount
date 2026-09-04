@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 /**
  * NET FIAT POSITION — the line under the Daily FIAT flows bars.
  *
- * Same two flows as the chart above (FIAT in from investors, purchase prices
+ * Same two flows as the chart above (FIAT in from financers, purchase prices
  * settled out), but accumulated: every point is the running sum since the first
  * day of activity, so the question it answers is "on that day, had we taken in
  * more than we had settled, or less?".
@@ -279,7 +279,7 @@ const LiquidityBalance = () => {
       </div>
 
       <p className="mt-3 text-[10px] leading-relaxed text-muted-foreground">
-        The running total of FIAT received from investors minus purchase prices we have settled, since{' '}
+        The running total of FIAT received from financers minus purchase prices we have settled, since{' '}
         {data.firstDay ? fmtDayFull(data.firstDay) : '—'}. Above the line means more has come in than has gone out
         by that day; below it means the opposite. {daysBelow > 0 && <>{daysBelow} of the {view.length} days shown are below zero. </>}
         It is a flow difference, not a bank balance: LANA we hold, LANA still to be transferred to us and purchase

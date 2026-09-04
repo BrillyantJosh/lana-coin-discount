@@ -1,19 +1,19 @@
-import { ListOrdered, Layers, Landmark, Eye } from "lucide-react";
+import { ListOrdered, Users, Layers, Landmark, Eye } from "lucide-react";
 import { SETTLEMENT_ORDER } from "@/copy";
 
 /**
- * HOW WE SETTLE WHAT WE OWE.
+ * HOW WE SETTLE WHAT WE OWE — by financing round.
  *
- * This block used to promise "a fair, public queue" and print two standing
- * rates. That pairing — a place in line plus a rate anyone can read off the
- * page — is a standing conversion entitlement, which §6 of the framework says
- * we must not publish. The ordering it described is real, the owner wants it
- * visible, and it stays; the entitlement and the percentages are gone. The
- * words themselves live in src/copy.ts, where they can be reviewed in one place.
+ * The one order the owner set on 4 Sep 2026: round 1, then 2, then 3, each
+ * opened on a published date; per financer up to the LANA their budget
+ * received; per currency; from our own funds by the date on the offer. This
+ * block replaces the old explainer, which described ranks and bands that no
+ * longer exist. The words live in src/copy.ts, where they are reviewed in one
+ * place and checked by src/copy.test.ts.
  */
-const ICONS = [ListOrdered, Layers, Landmark, Eye];
+const ICONS = [ListOrdered, Users, Layers, Landmark, Eye];
 
-const PayoutOrderExplainer = () => {
+const RoundOrderExplainer = () => {
   return (
     <section id="settlement" className="py-20 md:py-28">
       <div className="container mx-auto px-6">
@@ -45,4 +45,4 @@ const PayoutOrderExplainer = () => {
   );
 };
 
-export default PayoutOrderExplainer;
+export default RoundOrderExplainer;
