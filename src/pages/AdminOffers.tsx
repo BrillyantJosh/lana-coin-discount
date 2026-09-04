@@ -43,6 +43,11 @@ interface QueueOffer {
   grossFiat: number | null;
   indicativePrice: number | null;
   mandateCode: string | null;
+  // Round-mandate fields (null on the legacy path).
+  mandateRef?: string | null;
+  round?: number | null;
+  proposedLanaAmount?: number | null;
+  isCounteroffer?: boolean;
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -67,6 +72,10 @@ const WHY_HERE: Record<string, { label: string; detail: string }> = {
     label: 'No reference value',
     detail: 'We could not put a fiat value on this offer, so there was nothing to weigh against the ceiling.',
   },
+  NO_MANDATE: {
+    label: 'No financing-round mandate',
+    detail: 'A LanaPays.Us wallet with no KIND 30960 mandate for this hex. Never automatic either way: a person decides, at the discount entered here (the fallback commission is a reference only).',
+  },
 };
 
 const AdminOffers = () => {
@@ -87,6 +96,35 @@ const AdminOffers = () => {
   // Decline: the two-step confirm, plus the reason the counterparty will read.
   const [declineRef, setDeclineRef] = useState<string | null>(null);
   const [declineReason, setDeclineReason] = useState('');
+
+  // Void: an accepted offer whose transfer never came. Such offers are not in
+  // the review list (they are past it), so the reference is typed in.
+  const [voidRef, setVoidRef] = useState('');
+  const [voidReason, setVoidReason] = useState('');
+  const [voiding, setVoiding] = useState(false);
+
+  const voidOffer = async () => {
+    if (!session) return;
+    const ref = voidRef.trim();
+    const reason = voidReason.trim();
+    if (!ref || !reason) { toast.error('Reference and reason are both required'); return; }
+    setVoiding(true);
+    try {
+      const res = await fetch(`/api/acquisitions/admin/${encodeURIComponent(ref)}/void`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        body: JSON.stringify({ reason }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'Void failed');
+      toast.success(`${ref} voided — its cap returns to the mandate`);
+      setVoidRef(''); setVoidReason('');
+    } catch (err: any) {
+      toast.error(err.message || 'Void failed');
+    } finally {
+      setVoiding(false);
+    }
+  };
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -207,64 +245,12 @@ const AdminOffers = () => {
 
   if (authLoading || !session || !isAdmin) return null;
 
-  return (
-    <div className="min-h-screen bg-background flex flex-col">
-      <AdminNav />
+  // NO_MANDATE reviews are a different kind of question — "is this financer
+  // known to us at all?" — so they stand under their own heading.
+  const noMandate = offers.filter(o => o.mandateCode === 'NO_MANDATE');
+  const others = offers.filter(o => o.mandateCode !== 'NO_MANDATE');
 
-      {/* Content */}
-      <div className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-12 max-w-5xl">
-        <div className="mb-8 space-y-2">
-          <h1 className="text-3xl font-bold text-foreground">Acquisition Offers</h1>
-          <p className="text-muted-foreground">
-            Proposals the treasury mandate would not decide on its own. Accept at our standard discount,
-            counter with a price of your own, or decline with a reason the counterparty will read.
-          </p>
-        </div>
-
-        {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="flex flex-col items-center gap-4">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-              <p className="text-muted-foreground">Loading acquisition offers...</p>
-            </div>
-          </div>
-        ) : offers.length === 0 ? (
-          <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
-            <div className="flex flex-col items-center gap-3">
-              <svg className="h-12 w-12 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <p className="text-lg text-muted-foreground">Nothing is waiting for a decision</p>
-              <p className="text-sm text-muted-foreground/70">
-                Offers the mandate cannot settle by itself appear here. Everything else was already
-                priced or declined automatically.
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {/* Summary */}
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-3 flex items-center gap-3">
-              <div className="h-8 w-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
-                <svg className="h-4 w-4 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <div className="min-w-0">
-                <span className="font-bold text-amber-800">
-                  {offers.length} offer{offers.length !== 1 ? 's' : ''}
-                </span>
-                <span className="text-amber-700"> under treasury review — oldest first</span>
-              </div>
-              <button
-                onClick={fetchQueue}
-                className="ml-auto flex-shrink-0 rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100 transition-colors"
-              >
-                Refresh
-              </button>
-            </div>
-
-            {offers.map(offer => {
+  const renderOffer = (offer: QueueOffer) => {
               const busy = busyRef === offer.offerRef;
               const why = offer.mandateCode ? WHY_HERE[offer.mandateCode] : undefined;
               const isCountering = counterRef === offer.offerRef;
@@ -279,6 +265,22 @@ const AdminOffers = () => {
                     <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 flex-shrink-0">
                       Under Treasury Review
                     </span>
+                    {offer.round ? (
+                      <span
+                        title={offer.mandateRef || undefined}
+                        className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-700 flex-shrink-0"
+                      >
+                        Round {offer.round}
+                      </span>
+                    ) : null}
+                    {offer.isCounteroffer && (
+                      <span
+                        title={offer.proposedLanaAmount !== null && offer.proposedLanaAmount !== undefined ? `Proposed ${offer.proposedLanaAmount.toLocaleString()} LANA; capped to the remaining mandate` : undefined}
+                        className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-purple-100 text-purple-700 flex-shrink-0"
+                      >
+                        Counteroffer
+                      </span>
+                    )}
                     {why && (
                       <span
                         title={why.detail}
@@ -320,6 +322,14 @@ const AdminOffers = () => {
                             {offer.lanaAmount.toLocaleString()} LANA
                           </span>
                         </div>
+                        {offer.isCounteroffer && offer.proposedLanaAmount !== null && offer.proposedLanaAmount !== undefined && (
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-xs text-muted-foreground w-28 flex-shrink-0">Proposed</span>
+                            <span className="font-mono text-xs text-foreground flex-shrink-0 whitespace-nowrap">
+                              {offer.proposedLanaAmount.toLocaleString()} LANA
+                            </span>
+                          </div>
+                        )}
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="text-xs text-muted-foreground w-28 flex-shrink-0">Reference gross</span>
                           <span className="font-mono text-xs text-foreground flex-shrink-0 whitespace-nowrap">
@@ -470,9 +480,115 @@ const AdminOffers = () => {
                   </div>
                 </div>
               );
-            })}
+  };
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col">
+      <AdminNav />
+
+      {/* Content */}
+      <div className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-12 max-w-5xl">
+        <div className="mb-8 space-y-2">
+          <h1 className="text-3xl font-bold text-foreground">Acquisition Offers</h1>
+          <p className="text-muted-foreground">
+            Proposals the treasury mandate would not decide on its own. Accept at our standard discount,
+            counter with a price of your own, or decline with a reason the counterparty will read.
+          </p>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="flex flex-col items-center gap-4">
+              <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+              <p className="text-muted-foreground">Loading acquisition offers...</p>
+            </div>
+          </div>
+        ) : offers.length === 0 ? (
+          <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
+            <div className="flex flex-col items-center gap-3">
+              <svg className="h-12 w-12 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-lg text-muted-foreground">Nothing is waiting for a decision</p>
+              <p className="text-sm text-muted-foreground/70">
+                Offers the mandate cannot settle by itself appear here. Everything else was already
+                priced or declined automatically.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Summary */}
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-3 flex items-center gap-3">
+              <div className="h-8 w-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                <svg className="h-4 w-4 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="min-w-0">
+                <span className="font-bold text-amber-800">
+                  {offers.length} offer{offers.length !== 1 ? 's' : ''}
+                </span>
+                <span className="text-amber-700"> under treasury review — oldest first</span>
+              </div>
+              <button
+                onClick={fetchQueue}
+                className="ml-auto flex-shrink-0 rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100 transition-colors"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {others.length > 0 && noMandate.length > 0 && (
+              <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground pt-2">Above the ceiling, or unmeasurable</h2>
+            )}
+            {others.map(renderOffer)}
+
+            {noMandate.length > 0 && (
+              <div className="space-y-4 pt-4">
+                <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-5 py-3">
+                  <h2 className="text-sm font-bold text-blue-800 dark:text-blue-300">No financing-round mandate ({noMandate.length})</h2>
+                  <p className="text-xs text-blue-700 dark:text-blue-400 mt-0.5">{WHY_HERE.NO_MANDATE.detail}</p>
+                </div>
+                {noMandate.map(renderOffer)}
+              </div>
+            )}
           </div>
         )}
+
+        {/* Void — an accepted offer whose transfer never came. The sweeper
+            does this by itself after the transfer window; a person may do it
+            sooner, with a reason. A transferred offer cannot be voided (409). */}
+        <div className="mt-10 rounded-2xl border-2 border-border bg-card p-5 space-y-3">
+          <h2 className="text-lg font-semibold text-foreground">Void an accepted offer</h2>
+          <p className="text-sm text-muted-foreground">
+            Only an <span className="font-medium">accepted</span> offer with no transfer can be voided; its cap returns to
+            the financer's mandate. References are on the Mandates screen (expand a row) or in the offer itself.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={voidRef}
+              onChange={e => setVoidRef(e.target.value)}
+              placeholder="Offer reference"
+              className="w-48 rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+            />
+            <input
+              type="text"
+              value={voidReason}
+              onChange={e => setVoidReason(e.target.value)}
+              placeholder="Reason (recorded)"
+              className="flex-1 min-w-[12rem] rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+            />
+            <button
+              onClick={voidOffer}
+              disabled={voiding || !voidRef.trim() || !voidReason.trim()}
+              className="rounded-lg border border-red-300 px-4 py-2 text-sm font-bold text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
+            >
+              {voiding ? 'Voiding…' : 'Void'}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Footer */}

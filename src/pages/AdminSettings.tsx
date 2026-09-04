@@ -150,8 +150,10 @@ const AdminSettings = () => {
       setInitialWalletId(bwId);
       setInitialCurrencies(currencies);
 
-      const cLp = data.settings.commission_lanapays || '30';
-      const cOt = data.settings.commission_other || '21';
+      // Fallbacks match the server (priceAcquisition: lanapays 21, other 30).
+      // They used to be the other way round here.
+      const cLp = data.settings.commission_lanapays || '21';
+      const cOt = data.settings.commission_other || '30';
       setCommissionLanapays(cLp);
       setCommissionOther(cOt);
       setInitialCommissionLanapays(cLp);
@@ -416,7 +418,9 @@ const AdminSettings = () => {
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1.5">LanaPays.Us Wallets</label>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">
+                    Fallback for LanaPays.Us proposals without a mandate (admin review only)
+                  </label>
                   <div className="relative">
                     <input
                       type="number"
@@ -430,7 +434,8 @@ const AdminSettings = () => {
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground font-bold">%</span>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Applied when seller uses a <span className="font-medium">LanaPays</span> registered wallet.
+                    Financer wallets under a financing-round mandate are priced at the <span className="font-medium">round discount</span> (Round dates &amp; discounts).
+                    This value applies only to a LanaPays.Us proposal with no mandate, which always goes to a person to decide.
                   </p>
                 </div>
                 <div>

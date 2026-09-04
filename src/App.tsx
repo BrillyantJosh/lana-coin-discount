@@ -17,7 +17,8 @@ import AdminVerifyTx from "./pages/AdminVerifyTx";
 import AdminIncomingPayments from "./pages/AdminIncomingPayments";
 import AdminAnalytics from "./pages/AdminAnalytics";
 import AdminOverview from "./pages/AdminOverview";
-import ExpectingCashout from "./pages/ExpectingCashout";
+import AdminMandates from "./pages/AdminMandates";
+import AdminTreasuryRounds from "./pages/AdminTreasuryRounds";
 import SubmitOffer from "./pages/SubmitOffer";
 import AdminOffers from "./pages/AdminOffers";
 import ApiDocs from "./pages/ApiDocs";
@@ -50,7 +51,11 @@ const App = () => (
             <Route path="/admin/offers" element={<AdminOffers />} />
             <Route path="/admin/verify-tx" element={<AdminVerifyTx />} />
             <Route path="/admin/payouts" element={<AdminPayouts />} />
-            <Route path="/admin/expecting-cashout" element={<ExpectingCashout />} />
+            <Route path="/admin/mandates" element={<AdminMandates />} />
+            <Route path="/admin/treasury-rounds" element={<AdminTreasuryRounds />} />
+            {/* The expecting-cashout report became the mandate worklist. The
+                old page file stays until Phase B removes it. */}
+            <Route path="/admin/expecting-cashout" element={<Navigate to="/admin/mandates" replace />} />
             <Route path="/admin/settings" element={<AdminSettings />} />
             <Route path="/admin/api-keys" element={<AdminApiKeys />} />
             <Route path="/admin/admins" element={<AdminUsers />} />

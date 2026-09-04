@@ -29,8 +29,9 @@ const sections = [
   {
     label: 'Lana Sales',
     items: [
-      { to: '/admin/incoming-payments', label: 'Incoming Payments', desc: 'FIAT from investors' },
-      { to: '/admin/expecting-cashout', label: 'Expecting Cash Out', desc: 'EUR owed to prev-split investors' },
+      { to: '/admin/incoming-payments', label: 'Incoming Payments', desc: 'FIAT from financers' },
+      { to: '/admin/mandates', label: 'Mandates — financer × round', desc: 'Financing-round mandates from KIND 30960' },
+      { to: '/admin/treasury-rounds', label: 'Round dates & discounts', desc: 'When each round opens, and at what discount' },
     ],
   },
   {

@@ -4,6 +4,9 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import { convertWifToIds } from '@/lib/crypto';
 import { SellTermsGate } from '@/components/SellTermsGate';
+import { MandatePanel, proposalGate, counterBody, fill, fmtUtc, type MandateInfo } from '@/components/MandatePanel';
+import { signedFetch, type SigningKey } from '@/lib/signedRequest';
+import { describeOfferError } from '@/lib/offerErrors';
 import { BRAND, OFFER, LANDING } from '@/copy';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
@@ -97,6 +100,12 @@ interface AcquisitionOffer {
   senderWallet: string;
   createdAt: string;
   transactionId: number | null;
+  // Round-mandate fields (null on the legacy path).
+  mandateCode?: string | null;
+  mandateRef?: string | null;
+  round?: number | null;
+  proposedLanaAmount?: number | null;
+  isCounteroffer?: boolean;
 }
 
 interface TransferResult {
@@ -204,6 +213,14 @@ const SubmitOffer = () => {
   const [splitCheck, setSplitCheck] = useState<SplitCheck | null>(null);
   const [splitChecking, setSplitChecking] = useState(false);
   const tooManyUtxos = utxoCount !== null && utxoCount > MAX_UTXOS;
+
+  // The financing-round mandate for this wallet — read with a signed GET,
+  // because a financer's remaining cap is theirs to see and nobody else's.
+  const [mandateInfo, setMandateInfo] = useState<MandateInfo | null>(null);
+  const [mandateLoading, setMandateLoading] = useState(false);
+  const [mandateError, setMandateError] = useState<string | null>(null);
+  // Why an offer lapsed, when the server said more than "lapsed".
+  const [lapsedReason, setLapsedReason] = useState<string | null>(null);
 
   // How much is being offered
   const [lanaAmount, setLanaAmount] = useState('');
@@ -389,6 +406,37 @@ const SubmitOffer = () => {
     return () => { cancelled = true; };
   }, [selectedWallet]);
 
+  /**
+   * The key that signs mandate-path requests. AuthContext derived it from the
+   * WIF at sign-in and holds it for the session; it never leaves the browser.
+   */
+  const signer = (): SigningKey | null =>
+    session?.nostrPrivateKey && session?.nostrHexId
+      ? { privateKeyHex: session.nostrPrivateKey, pubkeyHex: session.nostrHexId }
+      : null;
+
+  // WHICH ROUND — once the Split check has answered, ask what mandate the
+  // treasury has published for this wallet. Refreshed after every decision,
+  // because an offer made or withdrawn changes what remains.
+  useEffect(() => {
+    if (!session || !selectedWallet || !selectedCurrency || splitChecking) { if (!selectedWallet) setMandateInfo(null); return; }
+    const key = signer();
+    if (!key) { setMandateInfo(null); setMandateError('No signing key in this session.'); return; }
+    let cancelled = false;
+    setMandateLoading(true);
+    setMandateError(null);
+    const q = new URLSearchParams({ hexId: session.nostrHexId, wallet: selectedWallet, currency: selectedCurrency });
+    signedFetch(`/api/acquisitions/mandate?${q.toString()}`, key)
+      .then(async r => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Mandate could not be read');
+        if (!cancelled) setMandateInfo(d);
+      })
+      .catch(e => { if (!cancelled) { setMandateInfo(null); setMandateError(e.message || 'Mandate could not be read'); } })
+      .finally(() => { if (!cancelled) setMandateLoading(false); });
+    return () => { cancelled = true; };
+  }, [session?.nostrHexId, selectedWallet, selectedCurrency, splitChecking, offer?.status]);
+
   // "Max" offers the balance less an estimated fee, and the transfer then has
   // to empty the wallet — otherwise it keeps a change output and the fee has
   // nowhere to come from. That flag lives in this page and is lost the moment
@@ -437,46 +485,54 @@ const SubmitOffer = () => {
     setSubmitting(true);
     setSubmitError('');
     try {
-      const res = await fetch('/api/acquisitions/offers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          hexId: session.nostrHexId,
-          senderAddress: selectedWallet,
-          lanaAmount: amount,
-          currency: selectedCurrency,
-        }),
-      });
+      // The body is signed by the session key (lib/signedRequest.ts): on the
+      // mandate path the server requires it, on the legacy path it ignores
+      // it. One request shape, whichever path the gate picks.
+      const body = { hexId: session.nostrHexId, senderAddress: selectedWallet, lanaAmount: amount, currency: selectedCurrency };
+      const key = signer();
+      const res = key
+        ? await signedFetch('/api/acquisitions/offers', key, { method: 'POST', body })
+        : await fetch('/api/acquisitions/offers', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+          });
       const data = await res.json();
       if (!res.ok || !data.offer) {
-        setSubmitError(data.error || 'This proposal could not be submitted right now.');
+        setSubmitError(describeOfferError(data, notOpenContext()));
         return;
       }
       setOffer(data.offer);
       setServerLapsed(false);
+      setLapsedReason(null);
       setShowTerms(false);
       setStage('offer');
-    } catch {
-      setSubmitError('Network error. Please try again.');
+    } catch (err: any) {
+      setSubmitError(err?.message?.includes('sign in') ? err.message : 'Network error. Please try again.');
     } finally {
       setSubmitting(false);
     }
+  };
+
+  /** Accepting or withdrawing a mandate-bound offer is signed; a legacy one is not. */
+  const postForOffer = (path: string, bound: boolean) => {
+    const body = { hexId: session!.nostrHexId };
+    const key = signer();
+    if (bound && key) return signedFetch(path, key, { method: 'POST', body });
+    return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   };
 
   const acceptOffer = async () => {
     if (!session || !offer) return;
     setAccepting(true);
     try {
-      const res = await fetch(`/api/acquisitions/${offer.offerRef}/accept`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hexId: session.nostrHexId }),
-      });
+      const res = await postForOffer(`/api/acquisitions/${offer.offerRef}/accept`, !!offer.mandateRef);
       const data = await res.json();
       if (!res.ok || !data.offer) {
         // 409 is the offer lapsing under us, which is not an error to retry.
-        if (res.status === 409) setServerLapsed(true);
-        else toast.error(data.error || 'This purchase offer could not be accepted.');
+        // REFERENCE_MOVED says why: the reference changed while it stood.
+        if (res.status === 409) {
+          setServerLapsed(true);
+          setLapsedReason(data.code === 'REFERENCE_MOVED' ? describeOfferError(data) : null);
+        } else toast.error(describeOfferError(data) || 'This purchase offer could not be accepted.');
         return;
       }
       setOffer(data.offer);
@@ -494,11 +550,7 @@ const SubmitOffer = () => {
   const declineOffer = async () => {
     if (!session || !offer) return;
     try {
-      await fetch(`/api/acquisitions/${offer.offerRef}/withdraw`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hexId: session.nostrHexId }),
-      });
+      await postForOffer(`/api/acquisitions/${offer.offerRef}/withdraw`, !!offer.mandateRef);
     } catch { /* closing our own offer is best-effort; it lapses anyway */ }
     toast.success(OFFER.notNowNote);
     resetToAmount();
@@ -544,7 +596,7 @@ const SubmitOffer = () => {
       const data = await res.json();
       if (!res.ok || !data.success) {
         if (data.code === 'OFFER_EXPIRED') setServerLapsed(true);
-        setTransferError({ error: data.error || 'The transfer did not go through.', code: data.code, unfreezeUrl: data.unfreezeUrl });
+        setTransferError({ error: describeOfferError(data) || 'The transfer did not go through.', code: data.code, unfreezeUrl: data.unfreezeUrl });
         return;
       }
       setResult(data);
@@ -595,9 +647,21 @@ const SubmitOffer = () => {
     };
   }, [privateKey, offer?.senderWallet, selectedWallet]);
 
+  /**
+   * The round and date a MANDATE_NOT_OPEN refusal is about — the lowest round
+   * with a date still ahead, from the mandate we already read.
+   */
+  const notOpenContext = () => {
+    const m = [...(mandateInfo?.mandates || [])]
+      .sort((a, b) => (a.split - b.split) || (a.round - b.round))
+      .find(x => x.state === 'not_open' || x.state === 'upcoming_split');
+    return { round: m?.round ?? null, opensAt: m?.opensAt ?? null };
+  };
+
   const resetToAmount = () => {
     setOffer(null);
     setServerLapsed(false);
+    setLapsedReason(null);
     setShowTerms(false);
     setTransferError(null);
     setPrivateKey('');
@@ -616,6 +680,11 @@ const SubmitOffer = () => {
   const walletReady = !!selectedWallet && !tooManyUtxos && !utxoLoading && !!selectedCurrency
     && !!settlementAccount && !splitChecking && !!splitCheck?.allowed;
   const eligible = !ratingChecked || (userRating !== null && userRating === 10);
+  // Before the round date the button is dead here, and the server would say
+  // no anyway: a proposal then is a "not yet" with a date, nothing more.
+  const gate = proposalGate(mandateInfo);
+  const enteredAmount = parseFloat(lanaAmount);
+  const canPropose = !submitting && enteredAmount > 0 && gate.allowed && !mandateLoading;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -905,6 +974,20 @@ const SubmitOffer = () => {
                   </div>
                 )}
 
+                {/* Which financing round this wallet belongs to — read after
+                    the Split check, so the counterparty learns here whether
+                    and when the treasury accepts proposals from it. */}
+                {selectedWallet && !splitChecking && splitCheck && (
+                  <MandatePanel
+                    info={mandateInfo}
+                    loading={mandateLoading}
+                    error={mandateError}
+                    lanaAmount={null}
+                    currency={selectedCurrency}
+                    showIndicative={false}
+                  />
+                )}
+
                 <div className="flex justify-between gap-3">
                   <Link to="/dashboard" className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                     Cancel
@@ -961,6 +1044,17 @@ const SubmitOffer = () => {
                       Available: {walletBalance.toLocaleString()} LANA
                     </p>
                   )}
+                  {/* How much the open round can take; above it comes a
+                      counteroffer for what remains, not a refusal. */}
+                  {gate.openRound && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="cap-hint">
+                      {fill(OFFER.capHint, { round: gate.openRound.round, remaining: gate.openRound.remainingLana.toLocaleString(undefined, { maximumFractionDigits: 2 }) })}{' '}
+                      {OFFER.capHintAbove}
+                    </p>
+                  )}
+                  {!gate.allowed && gate.reason && (
+                    <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-400">{gate.reason}</p>
+                  )}
 
                   <div className="mt-4 rounded-lg border border-border bg-muted/30 p-3 space-y-1 text-xs">
                     <div className="flex min-w-0 items-center justify-between gap-3">
@@ -980,15 +1074,27 @@ const SubmitOffer = () => {
                   )}
                 </div>
 
+                {/* The mandate, with an indicative figure for the amount typed
+                    — a projection under its own heading, never a price. */}
+                <MandatePanel
+                  info={mandateInfo}
+                  loading={mandateLoading}
+                  error={mandateError}
+                  lanaAmount={enteredAmount > 0 ? enteredAmount : null}
+                  currency={selectedCurrency}
+                  showIndicative
+                />
+
                 <div className="flex justify-between gap-3">
                   <button onClick={() => setStage('wallet')} className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                     Back
                   </button>
                   <button
                     onClick={submitOffer}
-                    disabled={submitting || !(parseFloat(lanaAmount) > 0)}
+                    disabled={!canPropose}
+                    title={!gate.allowed ? gate.reason : undefined}
                     className={`rounded-xl px-6 py-3 font-semibold text-white transition-all ${
-                      submitting || !(parseFloat(lanaAmount) > 0)
+                      !canPropose
                         ? 'bg-muted-foreground/30 cursor-not-allowed'
                         : 'bg-primary hover:bg-primary/90 shadow-lg'
                     }`}
@@ -998,7 +1104,7 @@ const SubmitOffer = () => {
                         <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
                         {OFFER.submitting}
                       </span>
-                    ) : OFFER.submit}
+                    ) : !gate.allowed ? OFFER.proposeNotYet : OFFER.submit}
                   </button>
                 </div>
               </div>
@@ -1011,7 +1117,7 @@ const SubmitOffer = () => {
                 {lapsed && offer.status !== 'declined' && offer.status !== 'under_review' ? (
                   <div className="rounded-2xl border-2 border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 p-6 space-y-3">
                     <h2 className="text-xl font-bold text-amber-800 dark:text-amber-300">{OFFER.lapsedTitle}</h2>
-                    <p className="text-sm text-amber-700 dark:text-amber-400 leading-relaxed">{OFFER.lapsedBody}</p>
+                    <p className="text-sm text-amber-700 dark:text-amber-400 leading-relaxed">{lapsedReason || OFFER.lapsedBody}</p>
                     <button
                       onClick={resetToAmount}
                       className="rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
@@ -1022,9 +1128,28 @@ const SubmitOffer = () => {
                 ) : offer.status === 'offered' ? (
                   <>
                     <div className="rounded-2xl border-2 border-primary/30 bg-primary/5 p-5 sm:p-6 space-y-4">
+                      {/* Above the remaining mandate the treasury counters for
+                          what is left (P08 §2). Said first, in one sentence. */}
+                      {offer.isCounteroffer && offer.proposedLanaAmount !== null && offer.proposedLanaAmount !== undefined && (
+                        <div className="rounded-xl border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 p-4 space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-200 text-amber-900">
+                              {OFFER.counterTag}
+                            </span>
+                            {offer.round && <span className="text-[11px] text-amber-800 dark:text-amber-300">Round {offer.round}</span>}
+                          </div>
+                          <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">{OFFER.counterTitle}</p>
+                          <p className="text-sm text-amber-700 dark:text-amber-400 leading-relaxed">
+                            {counterBody(offer.proposedLanaAmount, offer.lanaAmount)}
+                          </p>
+                        </div>
+                      )}
                       <div>
                         <h2 className="text-xl font-bold text-foreground">{OFFER.offeredTitle}</h2>
                         <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">{OFFER.offeredBody}</p>
+                        {offer.round && !offer.isCounteroffer && (
+                          <p className="mt-1 text-xs text-muted-foreground">Financing round {offer.round}</p>
+                        )}
                       </div>
 
                       <div className="rounded-xl border border-border bg-card p-4 space-y-2.5 text-sm">
@@ -1128,6 +1253,29 @@ const SubmitOffer = () => {
                         className="rounded-xl border border-primary/30 bg-primary/5 px-6 py-3 text-sm font-semibold text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
                       >
                         {refreshingDecision ? 'Checking…' : 'Check again'}
+                      </button>
+                    </div>
+                  </div>
+                ) : offer.status === 'declined' && offer.mandateCode === 'MANDATE_NOT_OPEN' ? (
+                  // Before the round date: a "not yet" with the date. The date
+                  // opens a mandate; it is not a place in any line.
+                  <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6 space-y-4">
+                    <h2 className="text-xl font-bold text-foreground">{OFFER.notOpenTitle}</h2>
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      {fill(OFFER.notOpenBody, {
+                        round: offer.round ?? notOpenContext().round ?? '—',
+                        date: fmtUtc(notOpenContext().opensAt),
+                      })}
+                    </p>
+                    <div className="flex flex-col-reverse sm:flex-row sm:justify-between gap-3">
+                      <Link to="/dashboard" className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-center text-muted-foreground hover:text-foreground transition-colors">
+                        Back to Dashboard
+                      </Link>
+                      <button
+                        onClick={resetToAmount}
+                        className="rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
+                      >
+                        {OFFER.lapsedAgain}
                       </button>
                     </div>
                   </div>

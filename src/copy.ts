@@ -287,6 +287,168 @@ export const OFFER = {
     'a purchase offer.',
   completedAcquiredLabel: 'LANA acquired',
   transferHashLabel: 'Transfer',
+
+  // ── financing-round mandates (BEF P08) ──────────────────────────────────
+  // An indicative figure is a projection from public parameters. It is shown
+  // only where a mandate exists, under a heading that says what it is not,
+  // because the one thing a public page must never do is read as a standing
+  // rate (P08 §4). Only a purchase price on an accepted offer binds.
+  indicativeLabel: 'Indicative figure — not a price, not a rate, not a guarantee.',
+  indicativeBasisProjected: 'Basis: projected next-Split reference',
+  indicativeBasisCurrent: 'Basis: live Split reference',
+  indicativeNote:
+    'A projection from the round discount and the reference shown, for the amount you enter. It is not an ' +
+    'offer. If the treasury wants the LANA, its purchase offer carries the price — and only that price binds.',
+  indicativeForLabel: 'For',
+  indicativeAmountLabel: 'Indicative amount',
+  indicativeReferenceLabel: 'Reference',
+  indicativeDiscountLabel: 'Round discount',
+
+  // A proposal above the remaining mandate is met with a counteroffer for
+  // what is left (P08 §2), not a refusal.
+  counterTitle: 'Counteroffer — for your remaining mandate',
+  counterBody:
+    'You proposed {proposed} LANA; the treasury can acquire {allowed} LANA now — your remaining mandate. ' +
+    'Accept {allowed} LANA or not now.',
+  counterTag: UI.counteroffer,
+
+  // A proposal before the round date. The date opens a mandate; it creates no
+  // right to sell, so this is a "not yet", with the date, and nothing more.
+  notOpenTitle: 'The treasury is not accepting proposals from this round yet',
+  notOpenBody:
+    'From {date} the treasury accepts proposals from financing round {round}. Nothing has been transferred. ' +
+    'Please propose again then.',
+
+  // How much may be proposed under the open round, next to the amount field.
+  capHint: 'Under round {round} the treasury can acquire up to {remaining} LANA from this wallet now.',
+  capHintAbove: 'Anything above that is met with a counteroffer for what remains.',
+  proposeNotYet: 'Proposals open on the round date',
+} as const;
+
+// ─── the mandate panel: what a financer sees about their own rounds ───────
+// The event on the relays and the dates here are evidence of a treasury
+// mandate (P08 §2). None of it is a right to sell (P08 §8), and the wording
+// says so: "the treasury accepts proposals from…", never "you may sell".
+
+export const MANDATE = {
+  title: 'Your financing-round mandate',
+  intro:
+    'The treasury acquires from financing budgets round by round — round 1, then 2, then 3 — each from its ' +
+    'published date, and from each budget up to the LANA it received. This is what applies to the wallet ' +
+    'you selected.',
+  roundLabel: 'Round {round}',
+  expectedLabel: 'Received by this budget',
+  remainingLabel: 'Remaining under the mandate',
+  proposedLabel: 'Proposed',
+  acceptedLabel: 'Accepted',
+  settledLabel: 'Settled',
+  stateLabel: 'State',
+
+  // The timing line, one per state (server/lib/roundMandate.ts RoundState).
+  upcomingSplit: 'This Split is still running; your mandate opens after the Split, on the round date',
+  notOpen: 'Round {round} opens on {date}',
+  open: 'Round {round} is open — you may propose up to {remaining} LANA',
+  released: 'Opened early by the treasury',
+  fullyAcquired: 'Fully acquired',
+  termsMissing: 'The treasury has not yet published its terms for this round',
+  windowPassed: 'The window for this mandate has passed',
+  closed: 'This mandate has been closed',
+  splitUnknown: 'The current Split could not be read right now',
+
+  // Short chips for the same states.
+  states: {
+    upcoming_split: 'After the Split',
+    not_open: 'Opens later',
+    open: 'Open',
+    released: 'Opened early',
+    fully_acquired: 'Fully acquired',
+    terms_missing: 'Terms pending',
+    window_passed: 'Window passed',
+    closed: 'Closed',
+    split_unknown: 'Unknown',
+  } as Record<string, string>,
+
+  noMandateTitle: 'No financing-round mandate for this wallet',
+  noMandateBody:
+    'The treasury has published no mandate for this wallet. A proposal from it is not judged against a round: ' +
+    'it goes to a person to decide, with no automatic offer either way.',
+  loading: 'Reading your mandate…',
+  unavailable: 'Your mandate could not be read right now. You may still propose; the treasury judges it on receipt.',
+  openNoRight: 'A round date opens a treasury mandate. It creates no right to sell (BEF P08 §8).',
+  eventLabel: 'Mandate event',
+} as const;
+
+// ─── what a refusal from the mandate path means, in words ─────────────────
+// Keyed by the server's `code`. Every code has a sentence; an unknown one
+// falls back to the server's own `error` text.
+
+export const OFFER_ERRORS: Record<string, string> = {
+  MANDATE_NOT_OPEN: OFFER.notOpenBody,
+  TERMS_MISSING: 'The treasury has not yet published its terms for this round. Please try again later.',
+  SPLIT_WINDOW: 'This mandate is not in the window the treasury acquires from right now.',
+  FULLY_ACQUIRED: 'The treasury has already acquired the full amount this mandate covers.',
+  WALLET_NOT_OWNED: 'This wallet is not on the signed wallet list of your account, so a proposal from it cannot be made.',
+  WALLET_OWNERSHIP_UNVERIFIABLE: 'Wallet ownership could not be verified right now. Please try again shortly.',
+  SIGNATURE_REQUIRED: 'This proposal must be signed with the key of your account. Please sign in again and retry.',
+  SIGNATURE_REPLAYED: 'This signed request was already used. Please submit it again.',
+  SIGNATURE_STALE: 'Your device clock differs from ours by more than five minutes. Please correct it and retry.',
+  REFERENCE_MOVED: 'The reference moved while this offer stood, so it lapsed. Please propose again.',
+  EMPTY_WALLET_EXCEEDS_MANDATE:
+    'This wallet holds more than the amount the treasury agreed to acquire, so it cannot be emptied into this ' +
+    'acquisition. Transfer the agreed amount only.',
+  BALANCE_UNVERIFIABLE: 'The wallet balance could not be read right now. Please try again shortly.',
+  GATE_CHANGED: 'Please submit this proposal again.',
+  BELOW_MINIMUM: 'This proposal is below the minimum acquisition value.',
+};
+
+// ─── admin screens for the rounds ─────────────────────────────────────────
+// Read by us, not by counterparties — but they say the same true thing.
+
+export const ADMIN_ROUNDS = {
+  title: 'Round dates & discounts',
+  intro:
+    'One date and one discount per financing round, per Split. From its date the treasury accepts proposals ' +
+    'from that round, up to the LANA each budget received.',
+  banner: 'A date OPENS a mandate; it grants no right to sell (BEF P08 §8).',
+  splitLabel: 'Split',
+  liveSplit: 'Split {split} — live window',
+  upcomingSplit: 'Split {split} — upcoming (opens after the Split)',
+  splitEndsAt: 'Split ends at',
+  opensLabel: 'Opens (UTC)',
+  discountLabel: 'Acquisition discount %',
+  prefill: 'Prefill from Direct Fund',
+  prefillNone: 'Direct Fund suggests nothing for the empty fields.',
+  prefillUnreachable: 'Direct Fund could not be reached; no suggestions.',
+  gateLabel: 'Round mandates from Split',
+  gateHint: 'Empty = round mandates off (legacy path). A split number turns the gate on from that Split.',
+  bandWarning: 'Outside the BEF P08 §4 orientation band of {min}–{max} %.',
+  beforeEndWarning: 'Before the Split ends — the mandate cannot open before the Split anyway.',
+  save: 'Save round terms',
+  saved: 'Round terms saved',
+} as const;
+
+export const ADMIN_MANDATES = {
+  title: 'Mandates — financer × round',
+  intro:
+    'Every financing budget the treasury may acquire from this Split, from the signed KIND 30960 events, with ' +
+    'what was received, what remains, and what has been proposed, accepted and settled.',
+  tiles: { expected: 'Expected', remaining: 'Remaining', proposed: 'Proposed', accepted: 'Accepted', settled: 'Settled' },
+  sync: 'Sync now',
+  syncing: 'Syncing…',
+  releaseNow: 'Release now',
+  releaseWithdraw: 'Withdraw release',
+  releaseTitle: 'Release this mandate ahead of its date',
+  releaseBody: 'The financer may propose from this budget immediately. A reason is required and is recorded.',
+  releaseRound1Confirm: 'I understand this opens a round-1 mandate before the published date.',
+  releaseReason: 'Reason',
+  degraded: {
+    noEvents: 'No mandate events for this Split. Nothing has been published, or the sync has not run.',
+    noTerms: 'No round dates or discounts are set for this Split — no round can open.',
+    splitUnknown: 'The current Split is unknown (no KIND 38888). No window can be judged.',
+    staleSync: 'The last verified relay sync is older than 24 hours.',
+    balancesPartial: 'Some on-chain balances could not be read.',
+  },
+  acceptedExceedsReceived: 'Accepted exceeds received — a re-allocation shrank this budget after acceptance.',
 } as const;
 
 // ─── the two status vocabularies ──────────────────────────────────────────
