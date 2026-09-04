@@ -25,6 +25,8 @@ export interface Kind38888Data {
   split: string;
   split_target_lana?: number;
   split_started_at?: number;
+  /** When the Split ends (Unix seconds); 0 when the event does not say. */
+  split_ends_at?: number;
   version: string;
   valid_from: number;
   split_approaching: boolean;                // KIND 38888 v3: a Split round is near
@@ -111,6 +113,38 @@ export async function queryEventsFromRelays(
 }
 
 /**
+ * Is this event what it claims to be?
+ *
+ * Recomputes the id from the NIP-01 serialisation and checks the Schnorr
+ * signature over it. Two separate facts, both required: a matching id proves
+ * the tags we read are the tags that were signed (a tampered tag changes the
+ * id), and a valid signature proves the pinned author signed them. Until now
+ * nothing in this service verified any event it consumed — KIND 30889 lists
+ * and 38888 parameters were trusted by pubkey string alone — and for a
+ * mandate that opens a treasury cap that is not enough. Any exception is a
+ * "no": an unverifiable event is never a verified one.
+ */
+export function verifyEventSignature(event: NostrEvent): boolean {
+  try {
+    if (!event || typeof event !== 'object') return false;
+    const { id, pubkey, created_at, kind, tags, content, sig } = event;
+    if (!/^[0-9a-f]{64}$/.test(String(id)) || !/^[0-9a-f]{64}$/.test(String(pubkey))) return false;
+    if (!/^[0-9a-f]{128}$/.test(String(sig))) return false;
+    if (!Number.isInteger(created_at) || !Number.isInteger(kind)) return false;
+    if (!Array.isArray(tags) || typeof content !== 'string') return false;
+    if (!tags.every(t => Array.isArray(t) && t.every(v => typeof v === 'string'))) return false;
+
+    const serialized = JSON.stringify([0, pubkey, created_at, kind, tags, content]);
+    const hash = crypto.createHash('sha256').update(serialized).digest('hex');
+    if (hash !== id) return false;
+
+    return schnorr.verify(Buffer.from(sig, 'hex'), Buffer.from(id, 'hex'), Buffer.from(pubkey, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Parse KIND 38888 event into structured data (same as MejmoseFajn)
  */
 function parseKind38888Event(event: NostrEvent): Kind38888Data {
@@ -143,6 +177,7 @@ function parseKind38888Event(event: NostrEvent): Kind38888Data {
   const split = tags.find(t => t[0] === 'split')?.[1] || content.split || '';
   const split_target_lana = parseInt(tags.find(t => t[0] === 'split_target_lana')?.[1] || content.split_target_lana || '0');
   const split_started_at = parseInt(tags.find(t => t[0] === 'split_started_at')?.[1] || content.split_started_at || '0');
+  const split_ends_at = parseInt(tags.find(t => t[0] === 'split_ends_at')?.[1] || content.split_ends_at || '0');
   const version = tags.find(t => t[0] === 'version')?.[1] || content.version || '1';
   const valid_from = parseInt(tags.find(t => t[0] === 'valid_from')?.[1] || content.valid_from || '0');
   // KIND 38888 v3 additions — tag OR content (spec carries these in content).
@@ -161,6 +196,7 @@ function parseKind38888Event(event: NostrEvent): Kind38888Data {
     split,
     split_target_lana,
     split_started_at,
+    split_ends_at,
     version,
     valid_from,
     split_approaching,

@@ -7,6 +7,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './routes/api.js';
 import { createAcquisitionsRouter } from './routes/acquisitions.js';
+import { createTreasuryRouter } from './routes/treasury.js';
+import { pullRoundMandates } from './lib/roundMandateSync.js';
 import {
   fetchKind38888, fetchKind0, Kind38888Data,
   queryEventsFromRelays, parseDonation60200, parseProject31234, parseVisibility31235,
@@ -72,6 +74,10 @@ app.use('/api/acquisitions', createAcquisitionsRouter({
     return publishBuybackEvent(tx as any);
   },
 }));
+// Financing-round mandates (KIND 30960): public round dates, the brain's
+// push/terms endpoints, and the admin worklist. Reads the tables the
+// acquisitions router's gate reads; writes nothing that moves money.
+app.use('/api/treasury', createTreasuryRouter());
 app.use('/health', (_req, res) => res.redirect('/api/health'));
 
 // Serve static frontend in production
@@ -98,9 +104,9 @@ async function syncKind38888ToDb(): Promise<boolean> {
     db.prepare(`
       INSERT INTO kind_38888 (
         id, event_id, pubkey, created_at, relays, electrum_servers,
-        exchange_rates, split, version, valid_from, split_started_at,
+        exchange_rates, split, version, valid_from, split_started_at, split_ends_at,
         split_target_lana, split_approaching, freeze_lana_retail_account_above, trusted_signers, raw_event
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       'live_' + data.event_id,
       data.event_id,
@@ -113,6 +119,7 @@ async function syncKind38888ToDb(): Promise<boolean> {
       data.version || null,
       data.valid_from || null,
       data.split_started_at || null,
+      data.split_ends_at || null,
       data.split_target_lana || null,
       data.split_approaching ? 1 : 0,
       data.freeze_lana_retail_account_above || 0,
@@ -766,6 +773,12 @@ async function heartbeatLoop() {
       if (heartbeatCount % 5 === 4) {
         await withTimeout(() => pullCrowdfundDonations(), 'Crowd-funding sync', 30000);
       }
+
+      // Round mandates (KIND 30960) every 5 heartbeats, on a tick of their
+      // own so a slow relay never delays the auto-send or the crowd pull.
+      if (heartbeatCount % 5 === 1) {
+        await withTimeout(() => pullRoundMandates(db, getRelaysFromDb()), 'Round mandates sync', 30000);
+      }
     } catch (err: any) {
       console.error(`[lana-discount] Heartbeat #${heartbeatCount} error:`, err.message);
     }
@@ -826,6 +839,14 @@ app.listen(PORT, '0.0.0.0', async () => {
     await pullCrowdfundDonations();
   } catch (err: any) {
     console.warn('[lana-discount] Initial crowd-funding sync failed:', err.message);
+  }
+
+  // Initial round-mandate pull, for the same reason. A failure here is a
+  // warning, not a stop: the brain's push and the next heartbeat both retry.
+  try {
+    await pullRoundMandates(db, getRelaysFromDb());
+  } catch (err: any) {
+    console.warn('[lana-discount] Initial round mandates sync failed:', err.message);
   }
 
   // Freeze status on startup, so the public board is not blank about it for the

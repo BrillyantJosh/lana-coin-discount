@@ -10,6 +10,10 @@ import { isSellableWalletType } from '../lib/sellableWallet.js';
 import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from '../lib/sendLock.js';
 import { buildLiquiditySeries, type FlowRow } from '../lib/liquidity.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
+import { requireAdmin } from '../lib/adminAuth.js';
+import { requireApiKey } from '../lib/apiKeyAuth.js';
+import { DIRECT_FUND_URL } from '../lib/directFund.js';
+import { GATE_SETTING_KEY, LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
 
 // The registrar's freeze answer is read through check.lanapays.us — the same
 // public proxy the mobile app uses, so both refuse on identical evidence.
@@ -201,15 +205,15 @@ router.post('/sync-kind-38888', async (_req: Request, res: Response) => {
       db.prepare(`
         INSERT INTO kind_38888 (
           id, event_id, pubkey, created_at, relays, electrum_servers,
-          exchange_rates, split, version, valid_from, split_started_at,
+          exchange_rates, split, version, valid_from, split_started_at, split_ends_at,
           split_target_lana, split_approaching, freeze_lana_retail_account_above, trusted_signers, raw_event
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         'live_' + data.event_id, data.event_id, data.pubkey, data.created_at,
         JSON.stringify(data.relays), JSON.stringify(data.electrum_servers),
         JSON.stringify(data.exchange_rates), data.split || null,
         data.version || null, data.valid_from || null,
-        data.split_started_at || null, data.split_target_lana || null,
+        data.split_started_at || null, data.split_ends_at || null, data.split_target_lana || null,
         data.split_approaching ? 1 : 0, data.freeze_lana_retail_account_above || 0,
         JSON.stringify(data.trusted_signers), data.raw_event
       );
@@ -304,15 +308,8 @@ router.post('/wallets/utxo-info', async (req: Request, res: Response) => {
 // Admin endpoints
 // ---------------------------------------------------------------------------
 
-/** Admin auth helper — reads x-admin-hex-id header and verifies against admin_users table */
-function requireAdmin(req: Request, res: Response): string | null {
-  const hexId = req.headers['x-admin-hex-id'] as string;
-  if (!hexId || !isAdminUser(hexId)) {
-    res.status(403).json({ error: 'Admin access required' });
-    return null;
-  }
-  return hexId;
-}
+// requireAdmin now lives in lib/adminAuth.ts, shared with the acquisitions
+// and treasury routers.
 
 /**
  * GET /api/admin/check/:hexId
@@ -1148,6 +1145,27 @@ router.put('/admin/settings', (req: Request, res: Response) => {
       const CLASSES = ['lanapays', 'crowdfund', 'other'];
       for (const [key, raw] of Object.entries(mandate_settings as Record<string, unknown>)) {
         const value = String(raw ?? '');
+
+        // Round-mandate gate: '' turns rounds off, a split number turns them
+        // on from that split. Not per currency or class, so it is matched
+        // before the class-scoped patterns below.
+        if (key === GATE_SETTING_KEY) {
+          if (value !== '' && !(Number.isInteger(Number(value)) && Number(value) > 0)) {
+            return res.status(400).json({ error: `${key} must be empty (off) or a positive split number` });
+          }
+          setAppSetting(key, value, adminHex);
+          continue;
+        }
+        // Written by the relay sync; accepted here only so an admin can
+        // clear a stale value ('') or set one deliberately.
+        if (key === LAST_SYNC_SETTING_KEY) {
+          if (value !== '' && !Number.isFinite(Date.parse(value))) {
+            return res.status(400).json({ error: `${key} must be empty or an ISO-8601 timestamp` });
+          }
+          setAppSetting(key, value, adminHex);
+          continue;
+        }
+
         const enabled = key.match(/^acq_([A-Z]{3})_enabled$/);
         const classEnabled = key.match(/^acq_([A-Z]{3})_([a-z]+)_enabled$/);
         const cap = key.match(/^acq_([A-Z]{3})_([a-z]+)_auto_cap$/);
@@ -1522,31 +1540,7 @@ router.post('/sell/preview', (_req: Request, res: Response) => {
 // API Key Management + External API
 // ---------------------------------------------------------------------------
 
-/** API key auth helper — reads Authorization: Bearer ldk_xxx header */
-function requireApiKey(req: Request, res: Response): { apiKeyId: number; appName: string } | null {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader || !authHeader.startsWith('Bearer ldk_')) {
-    res.status(401).json({ error: 'Missing or invalid API key. Use: Authorization: Bearer ldk_...' });
-    return null;
-  }
-
-  const apiKey = authHeader.replace('Bearer ', '');
-  const keyHash = createHash('sha256').update(apiKey).digest('hex');
-  const row = getApiKeyByHash(keyHash);
-
-  if (!row) {
-    res.status(401).json({ error: 'Invalid API key' });
-    return null;
-  }
-
-  if (!row.is_active) {
-    res.status(403).json({ error: 'API key is disabled' });
-    return null;
-  }
-
-  updateApiKeyLastUsed(row.id);
-  return { apiKeyId: row.id, appName: row.app_name };
-}
+// requireApiKey now lives in lib/apiKeyAuth.ts, shared with the treasury router.
 
 /**
  * GET /api/admin/api-keys
@@ -1709,7 +1703,7 @@ router.post('/admin/reject-transaction/:id', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // Incoming FIAT Payments from Direct Fund (proxy to direct.lana.fund)
 // ---------------------------------------------------------------------------
-const DIRECT_FUND_URL = process.env.DIRECT_FUND_URL || 'http://lana-direct-fund-web:3005';
+// DIRECT_FUND_URL comes from lib/directFund.ts (shared with routes/treasury.ts).
 
 // Cache buyback balance to avoid Electrum calls on every page load
 let cachedBuybackBalance = { wallet: '', balanceLana: 0, confirmedLana: 0, unconfirmedLana: 0, fetchedAt: 0 };

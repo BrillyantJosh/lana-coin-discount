@@ -17,8 +17,10 @@ import {
   generateOfferRef, insertOffer, getOfferByRef, sqliteFuture,
   markOffered, markDeclined, markAccepted, markSettled, markWithdrawn,
   expireStaleOffers, listOffersForReview, assertTransferable,
-  OFFER_VALIDITY_MINUTES, type NewOffer,
+  markVoidedByAdmin, consumedByMandate,
+  OFFER_VALIDITY_MINUTES, ACCEPTED_TRANSFER_WINDOW_HOURS, TRANSFER_NOT_COMPLETED, type NewOffer,
 } from './acquisitionOffer';
+import { ROUND_MANDATE_OFFER_COLUMNS } from '../db/roundMandateSchema';
 
 const SELLER = 'a'.repeat(64);
 const OTHER = 'b'.repeat(64);
@@ -51,6 +53,9 @@ beforeEach(() => {
       updated_at TEXT DEFAULT (datetime('now'))
     );
   `);
+  // The round-mandate columns are added by the same migration strings
+  // production runs, so this DDL cannot drift from them.
+  for (const sql of ROUND_MANDATE_OFFER_COLUMNS) db.exec(sql);
 });
 
 const draft = (over: Partial<NewOffer> = {}): NewOffer => ({
@@ -163,6 +168,105 @@ describe('a lapsed offer is not a price', () => {
     expect(getOfferByRef(db, stale.offer_ref)!.status).toBe('expired');
     expect(getOfferByRef(db, live.offer_ref)!.status).toBe('offered');
     expect(getOfferByRef(db, alreadyAccepted)!.status).toBe('accepted');
+  });
+});
+
+/**
+ * AN ACCEPTED OFFER WITHOUT A TRANSFER MUST NOT HOLD THE MANDATE FOREVER.
+ *
+ * consumedByMandate counts 'accepted', and nothing moved an accepted row on
+ * if the seller never signed the transfer — so one abandoned acceptance
+ * would consume a financer's remaining cap for good. Two ways out, both
+ * guarded by `transaction_id IS NULL`: the sweeper after 24 h, and an admin
+ * with a reason. A transferred row is a sale and is never touched by either.
+ */
+describe('an accepted offer whose transfer never comes', () => {
+  const MANDATE = `8:1:${SELLER}`;
+  const acceptedUnderMandate = (): string => {
+    const o = insertOffer(db, draft({ mandateRef: MANDATE, round: 1 }));
+    markOffered(db, o.offer_ref, price());
+    markAccepted(db, o.offer_ref, 'v1.0');
+    return o.offer_ref;
+  };
+  const acceptedHoursAgo = (ref: string, hours: number) =>
+    db.prepare(`UPDATE acquisition_offers SET accepted_at = datetime('now', ?) WHERE offer_ref = ?`).run(`-${hours} hours`, ref);
+
+  it('the sweeper lapses it after ACCEPTED_TRANSFER_WINDOW_HOURS, with the reason, and frees the mandate', () => {
+    const stale = acceptedUnderMandate();
+    acceptedHoursAgo(stale, ACCEPTED_TRANSFER_WINDOW_HOURS + 1);
+    expect(consumedByMandate(db, [MANDATE]).get(MANDATE)).toBe(100_000_000_000);
+
+    expect(expireStaleOffers(db)).toBe(1);
+    const row = getOfferByRef(db, stale)!;
+    expect(row.status).toBe('expired');
+    expect(row.decision_reason).toBe(TRANSFER_NOT_COMPLETED);
+    expect(consumedByMandate(db, [MANDATE]).get(MANDATE)).toBeUndefined();
+    expect(assertTransferable(db, stale, SELLER).code).toBe('OFFER_EXPIRED');
+  });
+
+  it('the sweeper leaves a recently accepted one, and one accepted a minute inside the window, alone', () => {
+    const fresh = acceptedUnderMandate();
+    const nearly = acceptedUnderMandate();
+    db.prepare(`UPDATE acquisition_offers SET accepted_at = datetime('now', ?) WHERE offer_ref = ?`)
+      .run(`-${ACCEPTED_TRANSFER_WINDOW_HOURS * 60 - 1} minutes`, nearly);
+    expect(expireStaleOffers(db)).toBe(0);
+    expect(getOfferByRef(db, fresh)!.status).toBe('accepted');
+    expect(getOfferByRef(db, nearly)!.status).toBe('accepted');
+  });
+
+  it('a TRANSFERRED offer (transaction_id set) is never lapsed, however old', () => {
+    const ref = acceptedUnderMandate();
+    const txId = Number(db.prepare('INSERT INTO buyback_transactions (net_fiat) VALUES (101.12)').run().lastInsertRowid);
+    // Status left at 'accepted' on purpose: the transaction_id alone must protect it.
+    db.prepare('UPDATE acquisition_offers SET transaction_id = ? WHERE offer_ref = ?').run(txId, ref);
+    acceptedHoursAgo(ref, 1000);
+    expect(expireStaleOffers(db)).toBe(0);
+    expect(getOfferByRef(db, ref)!.status).toBe('accepted');
+    expect(consumedByMandate(db, [MANDATE]).get(MANDATE)).toBe(100_000_000_000);
+  });
+
+  it('a LEGACY accepted offer (no mandate_ref) is NOT lapsed by the 24 h sweep — that path is unchanged from before rounds', () => {
+    // At HEAD the sweeper touched only 'offered' rows. The transfer-window
+    // sweep exists to free a financer's cap, which a legacy offer never held,
+    // so it must stay outside the sweep; the admin void still reaches it.
+    const legacy = accepted();
+    acceptedHoursAgo(legacy, ACCEPTED_TRANSFER_WINDOW_HOURS + 1);
+    const mandate = acceptedUnderMandate();
+    acceptedHoursAgo(mandate, ACCEPTED_TRANSFER_WINDOW_HOURS + 1);
+
+    expect(expireStaleOffers(db)).toBe(1);
+    expect(getOfferByRef(db, legacy)!.status).toBe('accepted');
+    expect(getOfferByRef(db, legacy)!.decision_reason).toBeNull();
+    expect(getOfferByRef(db, mandate)!).toMatchObject({ status: 'expired', decision_reason: TRANSFER_NOT_COMPLETED });
+    expect(markVoidedByAdmin(db, legacy, 'seller asked', OTHER)).toBe(true);
+    expect(getOfferByRef(db, legacy)!.status).toBe('withdrawn');
+  });
+
+  it('an admin can void it with a reason, which frees the mandate and records who did it', () => {
+    const ref = acceptedUnderMandate();
+    expect(markVoidedByAdmin(db, ref, 'seller asked to start over', OTHER)).toBe(true);
+    const row = getOfferByRef(db, ref)!;
+    expect(row.status).toBe('withdrawn');
+    expect(row.decision_reason).toBe('seller asked to start over');
+    expect(row.decided_by).toBe(OTHER);
+    expect(row.decided_at).not.toBeNull();
+    expect(consumedByMandate(db, [MANDATE]).get(MANDATE)).toBeUndefined();
+    // …and voiding is not reopening: it cannot be accepted or transferred after.
+    expect(markAccepted(db, ref, 'v1.0')).toBe(false);
+    expect(assertTransferable(db, ref, SELLER).code).toBe('NOT_ACCEPTED');
+  });
+
+  it('an admin cannot void a transferred offer, nor one that was never accepted', () => {
+    const transferred = acceptedUnderMandate();
+    const txId = Number(db.prepare('INSERT INTO buyback_transactions (net_fiat) VALUES (101.12)').run().lastInsertRowid);
+    db.prepare('UPDATE acquisition_offers SET transaction_id = ? WHERE offer_ref = ?').run(txId, transferred);
+    expect(markVoidedByAdmin(db, transferred, 'no', OTHER)).toBe(false);
+    expect(getOfferByRef(db, transferred)!.status).toBe('accepted');
+
+    const merelyOffered = insertOffer(db, draft({ mandateRef: MANDATE, round: 1 }));
+    markOffered(db, merelyOffered.offer_ref, price());
+    expect(markVoidedByAdmin(db, merelyOffered.offer_ref, 'no', OTHER)).toBe(false);
+    expect(getOfferByRef(db, merelyOffered.offer_ref)!.status).toBe('offered');
   });
 });
 

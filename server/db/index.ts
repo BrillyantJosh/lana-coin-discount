@@ -2,6 +2,9 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { defaultMandateRows } from '../lib/treasuryMandate.js';
+import {
+  ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, KIND_38888_SPLIT_ENDS_AT_COLUMN, addColumnIfMissing,
+} from './roundMandateSchema.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -285,6 +288,15 @@ for (const sql of migrationColumns) {
   try { db.exec(sql); } catch {}
 }
 
+// --- Acquisition by financing round (KIND 30960 mandates) -----------------
+// Tables first, then the nullable columns on acquisition_offers; the DDL
+// lives in roundMandateSchema.ts so the tests run against the same strings.
+// Only "duplicate column" is tolerated: any other failure (locked or
+// read-only file, missing table) throws and stops the boot on purpose.
+db.exec(ROUND_MANDATE_SCHEMA_SQL);
+for (const sql of ROUND_MANDATE_OFFER_COLUMNS) addColumnIfMissing(db, sql);
+addColumnIfMissing(db, KIND_38888_SPLIT_ENDS_AT_COLUMN);
+
 // --- Seed the treasury mandate for the active currencies -------------------
 // INSERT OR IGNORE only: a row that exists is an owner's decision and must
 // never be reset by a deploy. Runs for the currencies we actually settle in.
@@ -495,6 +507,16 @@ export function getFreezeLanaRetailAccountAboveFromDb(): number {
 export function getSplitStartedAtFromDb(): number {
   const row = db.prepare('SELECT split_started_at FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
   return row?.split_started_at || 0;
+}
+
+/**
+ * Split end (Unix seconds) from KIND 38888, or 0 if not published. Used only
+ * to WARN an admin who sets a round date before the Split ends — the window
+ * itself is decided by the split number, never by this clock.
+ */
+export function getSplitEndsAtFromDb(): number {
+  const row = db.prepare('SELECT split_ends_at FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
+  return row?.split_ends_at || 0;
 }
 
 /**

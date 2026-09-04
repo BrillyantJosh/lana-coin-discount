@@ -1,7 +1,9 @@
 /**
  * The life of one acquisition offer.
  *
- * submitted ─┬─ accept (within mandate) ─▶ offered ─┬─ seller accepts ─▶ accepted ─▶ settled
+ * submitted ─┬─ accept (within mandate) ─▶ offered ─┬─ seller accepts ─▶ accepted ─┬─ transfer ─▶ settled
+ *            │                                      │                             ├─ no transfer in 24 h ─▶ expired
+ *            │                                      │                             └─ admin voids ─────────▶ withdrawn
  *            │                                      └─ lapses ─────────▶ expired
  *            ├─ review ─▶ under_review ─┬─ admin accepts ─▶ offered
  *            │                          └─ admin declines ─▶ declined
@@ -39,6 +41,20 @@ export type OfferStatus =
 /** How long a purchase offer stands before it lapses. */
 export const OFFER_VALIDITY_MINUTES = 30;
 
+/**
+ * How long an ACCEPTED offer may sit without its transfer before it lapses.
+ *
+ * An accepted offer reserves its amount on the mandate (consumedByMandate
+ * counts 'accepted'), and nothing else ever moves it on: the seller may
+ * close the tab, lose the key, or simply never sign. Without a horizon such
+ * a row would hold the financer's remaining cap forever. 24 hours is far
+ * beyond the 30-minute window in which assertTransferable still lets the
+ * transfer happen, so nothing that could still settle is ever lapsed.
+ */
+export const ACCEPTED_TRANSFER_WINDOW_HOURS = 24;
+/** decision_reason written by the sweeper on such a lapse. */
+export const TRANSFER_NOT_COMPLETED = 'TRANSFER_NOT_COMPLETED';
+
 export interface OfferRow {
   id: number;
   offer_ref: string;
@@ -63,6 +79,12 @@ export interface OfferRow {
   accepted_at: string | null;
   terms_version: string | null;
   transaction_id: number | null;
+  /** Financing-round mandate this offer drew on (KIND 30960 d tag); null on the legacy path. */
+  mandate_ref: string | null;
+  round: number | null;
+  /** The seller's ORIGINAL ask when we countered with the remaining mandate. */
+  proposed_lana_lanoshis: number | null;
+  reference_basis: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +118,11 @@ export interface NewOffer {
   settlementDueAt: string | null;
   offerExpiresAt: string | null;
   decisionReason: string | null;
+  /** Round-mandate fields; all optional so the legacy path is unchanged. */
+  mandateRef?: string | null;
+  round?: number | null;
+  proposedLanaLanoshis?: number | null;
+  referenceBasis?: string | null;
 }
 
 export function insertOffer(db: Database.Database, o: NewOffer): OfferRow {
@@ -105,14 +132,15 @@ export function insertOffer(db: Database.Database, o: NewOffer): OfferRow {
       lana_amount_lanoshis, lana_amount_display, currency, status,
       reference_rate, discount_percent, purchase_price_fiat, gross_fiat,
       mandate_code, eligibility_json, settlement_due_at, offer_expires_at,
-      decision_reason
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      decision_reason, mandate_ref, round, proposed_lana_lanoshis, reference_basis
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     o.offerRef, o.userHexId, o.senderWalletId, o.walletClass,
     o.lanaAmountLanoshis, o.lanaAmountDisplay, o.currency, o.status,
     o.referenceRate, o.discountPercent, o.purchasePriceFiat, o.grossFiat,
     o.mandateCode, o.eligibility === null || o.eligibility === undefined ? null : JSON.stringify(o.eligibility),
     o.settlementDueAt, o.offerExpiresAt, o.decisionReason,
+    o.mandateRef ?? null, o.round ?? null, o.proposedLanaLanoshis ?? null, o.referenceBasis ?? null,
   );
   return getOfferByRef(db, o.offerRef)!;
 }
@@ -198,15 +226,132 @@ export function markWithdrawn(db: Database.Database, offerRef: string, userHexId
   return r.changes === 1;
 }
 
-/** Lapse offers nobody accepted in time. Called by the heartbeat. */
+/**
+ * Lapse ONE offer for a stated reason — used when the reference price moved
+ * between the offer and the seller's acceptance (REFERENCE_MOVED). The reason
+ * lands in decision_reason so the audit trail says why a live offer died
+ * before its 30 minutes were up.
+ */
+export function markExpiredWithReason(db: Database.Database, offerRef: string, reason: string): boolean {
+  const r = db.prepare(`
+    UPDATE acquisition_offers
+       SET status = 'expired', decision_reason = ?, updated_at = datetime('now')
+     WHERE offer_ref = ? AND status = 'offered'
+  `).run(reason, offerRef);
+  return r.changes === 1;
+}
+
+/**
+ * How much of each mandate is spoken for — THE one definition of "consumed"
+ * (plan: "ena definicija"). Counts what we owe or will owe:
+ *
+ *   accepted, settled            the purchase happened or is contracted
+ *   offered AND not yet lapsed   a live purchase offer reserves its amount,
+ *                                otherwise two proposals inside the same 30
+ *                                minutes could both be offered the last of it
+ *
+ * expired / declined / withdrawn / under_review reserve nothing. Called
+ * inside the same transaction as the insert that depends on it.
+ */
+export function consumedByMandate(db: Database.Database, dTags: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!dTags || dTags.length === 0) return out;
+  const placeholders = dTags.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT mandate_ref, COALESCE(SUM(lana_amount_lanoshis), 0) AS consumed
+      FROM acquisition_offers
+     WHERE mandate_ref IN (${placeholders})
+       AND (
+         status IN ('accepted', 'settled')
+         OR (status = 'offered' AND offer_expires_at IS NOT NULL AND offer_expires_at > datetime('now'))
+       )
+     GROUP BY mandate_ref
+  `).all(...dTags) as any[];
+  for (const r of rows) out.set(r.mandate_ref, Number(r.consumed) || 0);
+  return out;
+}
+
+export interface MandateOfferTotals {
+  /** Live purchase offers (offered, not lapsed) — reserved, not yet ours. */
+  proposed: number;
+  accepted: number;
+  settled: number;
+}
+
+/**
+ * The same rows consumedByMandate sums, split by status for a screen. Kept
+ * beside it so the tiles an admin reads add up to the figure the gate uses.
+ */
+export function offerTotalsByMandate(db: Database.Database, dTags: string[]): Map<string, MandateOfferTotals> {
+  const out = new Map<string, MandateOfferTotals>();
+  if (!dTags || dTags.length === 0) return out;
+  const placeholders = dTags.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT mandate_ref,
+           COALESCE(SUM(CASE WHEN status = 'offered' AND offer_expires_at IS NOT NULL AND offer_expires_at > datetime('now') THEN lana_amount_lanoshis ELSE 0 END), 0) AS proposed,
+           COALESCE(SUM(CASE WHEN status = 'accepted' THEN lana_amount_lanoshis ELSE 0 END), 0) AS accepted,
+           COALESCE(SUM(CASE WHEN status = 'settled' THEN lana_amount_lanoshis ELSE 0 END), 0) AS settled
+      FROM acquisition_offers
+     WHERE mandate_ref IN (${placeholders})
+     GROUP BY mandate_ref
+  `).all(...dTags) as any[];
+  for (const r of rows) {
+    out.set(r.mandate_ref, { proposed: Number(r.proposed) || 0, accepted: Number(r.accepted) || 0, settled: Number(r.settled) || 0 });
+  }
+  return out;
+}
+
+/**
+ * The sweeper, called by the heartbeat. Two kinds of stale row:
+ *
+ *   offered   nobody accepted inside OFFER_VALIDITY_MINUTES → expired
+ *   accepted  MANDATE-BOUND (mandate_ref IS NOT NULL), but no transfer for
+ *             ACCEPTED_TRANSFER_WINDOW_HOURS → expired with decision_reason
+ *             TRANSFER_NOT_COMPLETED, so the mandate it reserved is free
+ *             again (consumedByMandate ignores 'expired'). `transaction_id
+ *             IS NULL` is the guard: a row whose transfer DID happen is
+ *             never touched here, whatever its clock.
+ *
+ * The second sweep exists only to free a financer's cap, which a legacy
+ * offer (no mandate_ref) never held — so legacy rows are left exactly as the
+ * sweeper left them before rounds existed. An admin can still void any
+ * accepted-but-untransferred row, legacy or not (markVoidedByAdmin).
+ */
 export function expireStaleOffers(db: Database.Database): number {
-  return db.prepare(`
+  const unaccepted = db.prepare(`
     UPDATE acquisition_offers
        SET status = 'expired', updated_at = datetime('now')
      WHERE status = 'offered'
        AND offer_expires_at IS NOT NULL
        AND offer_expires_at <= datetime('now')
   `).run().changes;
+  const untransferred = db.prepare(`
+    UPDATE acquisition_offers
+       SET status = 'expired', decision_reason = ?, updated_at = datetime('now')
+     WHERE status = 'accepted'
+       AND mandate_ref IS NOT NULL
+       AND transaction_id IS NULL
+       AND accepted_at IS NOT NULL
+       AND accepted_at <= datetime('now', ?)
+  `).run(TRANSFER_NOT_COMPLETED, `-${ACCEPTED_TRANSFER_WINDOW_HOURS} hours`).changes;
+  return unaccepted + untransferred;
+}
+
+/**
+ * An admin voids an accepted offer whose transfer never came — before the
+ * 24-hour sweep would, e.g. when the seller says so. Same guard as the
+ * sweeper: only `accepted` AND `transaction_id IS NULL`; a transferred offer
+ * cannot be voided by anyone. Lands as 'withdrawn' with the admin's name and
+ * reason, so the audit trail says who freed the mandate and why.
+ */
+export function markVoidedByAdmin(db: Database.Database, offerRef: string, reason: string, by: string): boolean {
+  const r = db.prepare(`
+    UPDATE acquisition_offers
+       SET status = 'withdrawn', decision_reason = ?, decided_by = ?,
+           decided_at = datetime('now'), updated_at = datetime('now')
+     WHERE offer_ref = ? AND status = 'accepted' AND transaction_id IS NULL
+  `).run(reason, by, offerRef);
+  return r.changes === 1;
 }
 
 export function listOffersForReview(db: Database.Database): OfferRow[] {
