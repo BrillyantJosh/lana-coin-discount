@@ -43,7 +43,6 @@ export interface MandateView {
 export interface MandateInfo {
   nonBinding: boolean;
   note: string;
-  gateActive: boolean;
   currentSplit: number | null;
   mandates: MandateView[];
 }
@@ -105,12 +104,12 @@ export interface ProposalGate {
 
 /**
  * Whether the propose button should be live. Mirrors the server's order in
- * evaluateRoundMandate: no gate or no mandate → the server decides (legacy
- * path, or a NO_MANDATE review); otherwise the lowest round that is open or
+ * evaluateRoundMandate: no mandate → the server decides (a NO_MANDATE
+ * review); otherwise the lowest round that is open or
  * released with something left; else the first blocked round says why.
  */
 export function proposalGate(info: MandateInfo | null): ProposalGate {
-  if (!info || !info.gateActive || info.mandates.length === 0) return { allowed: true };
+  if (!info || info.mandates.length === 0) return { allowed: true };
   const sorted = [...info.mandates].sort((a, b) => (a.split - b.split) || (a.round - b.round));
   const open = sorted.find(m => (m.state === 'open' || m.state === 'released') && m.remainingLana > 0);
   if (open) return { allowed: true, openRound: open };
@@ -158,8 +157,7 @@ export function MandatePanel({ info, loading, error, lanaAmount, currency, showI
       </div>
     );
   }
-  // Gate off: the legacy path, and nothing to say about rounds.
-  if (!info || !info.gateActive) return null;
+  if (!info) return null;
 
   if (info.mandates.length === 0) {
     return (

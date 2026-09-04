@@ -487,7 +487,7 @@ const SubmitOffer = () => {
     try {
       // The body is signed by the session key (lib/signedRequest.ts): on the
       // mandate path the server requires it, on the legacy path it ignores
-      // it. One request shape, whichever path the gate picks.
+      // it. One request shape for every wallet class.
       const body = { hexId: session.nostrHexId, senderAddress: selectedWallet, lanaAmount: amount, currency: selectedCurrency };
       const key = signer();
       const res = key

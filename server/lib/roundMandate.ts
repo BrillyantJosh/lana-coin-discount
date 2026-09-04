@@ -18,7 +18,6 @@
  *
  * The order of the answers is the policy, so it is fixed here and tested:
  *
- *   gate off                              → 'legacy'  (today's path, untouched)
  *   no announced mandate for this wallet  → review NO_MANDATE (IN QUEUE — a
  *                                           person looks; never auto-accept,
  *                                           never a hard refusal)
@@ -66,7 +65,6 @@ export interface RoundTerms {
 export type RoundDeclineCode = 'SPLIT_WINDOW' | 'TERMS_MISSING' | 'MANDATE_NOT_OPEN' | 'FULLY_ACQUIRED';
 
 export type RoundMandateVerdict =
-  | 'legacy'
   | { outcome: 'review'; code: 'NO_MANDATE'; reason: string }
   | { outcome: 'decline'; code: RoundDeclineCode; reason: string; opensAt?: number; mandateRef?: string; round?: number }
   | {
@@ -84,8 +82,6 @@ export type RoundMandateVerdict =
     };
 
 export interface EvaluateRoundMandateInput {
-  /** Parsed acq_round_mandates_from_split; null = gate off. */
-  gateFromSplit: number | null;
   currentSplit: number | null;
   hexId: string;
   wallet: string;
@@ -100,17 +96,6 @@ export interface EvaluateRoundMandateInput {
   consumed: Map<string, number>;
   /** Unix seconds. */
   now: number;
-}
-
-/** '' or missing = off; anything that is not a positive integer = off (cautious end). */
-export function parseGateSetting(raw: string | null | undefined): number | null {
-  if (raw === undefined || raw === null || String(raw).trim() === '') return null;
-  const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-export function isGateActive(gateFromSplit: number | null, currentSplit: number | null): boolean {
-  return gateFromSplit !== null && currentSplit !== null && currentSplit >= gateFromSplit;
 }
 
 /** Is the mandate's split the one the buyback window is about right now? */
@@ -128,8 +113,6 @@ const sameAddress = (a: string, b: string) =>
 const fmtDate = (unix: number) => new Date(unix * 1000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
 
 export function evaluateRoundMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict {
-  if (!isGateActive(input.gateFromSplit, input.currentSplit)) return 'legacy';
-
   const hex = String(input.hexId || '').toLowerCase();
   const mine = input.candidates.filter(c =>
     c.status === 'announced' &&
@@ -285,10 +268,12 @@ export interface RoundTermsValidation {
   rows: Array<{ round: number; opensAt: string | null; discountPercent: number | null }>;
 }
 
-export function validateRoundTerms(
-  rounds: RoundTermsInput[],
-  ctx: { splitEndsAt: number | null },
-): RoundTermsValidation {
+// Round dates are checked against each other and nothing else. KIND 38888's
+// split_ends_at is an intention, not a fact — the Split is over when the
+// authority publishes the next split number, and that is what the window
+// rule reads. Warning against a date that may move would teach the operator
+// to ignore warnings.
+export function validateRoundTerms(rounds: RoundTermsInput[]): RoundTermsValidation {
   const warnings: string[] = [];
   const rows: RoundTermsValidation['rows'] = [];
   const seen = new Set<number>();
@@ -309,9 +294,6 @@ export function validateRoundTerms(
       const ms = Date.parse(String(r.opensAt));
       if (!Number.isFinite(ms)) return { ok: false, error: `round ${round}: opensAt must be an ISO-8601 date`, warnings, rows };
       opensAt = new Date(ms).toISOString();
-      if (ctx.splitEndsAt && ms / 1000 < ctx.splitEndsAt) {
-        warnings.push(`Round ${round} opens before the Split ends (${new Date(ctx.splitEndsAt * 1000).toISOString()}); the window rule will keep proposals declined until the Split turns.`);
-      }
     }
 
     let discountPercent: number | null = null;

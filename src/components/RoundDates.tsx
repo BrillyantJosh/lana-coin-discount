@@ -25,7 +25,6 @@ interface RoundRow {
 interface RoundsData {
   split: number;
   currentSplit: number | null;
-  splitEndsAt: string | null;
   note: string;
   rounds: RoundRow[];
 }
@@ -71,11 +70,6 @@ export default function RoundDates() {
             {ROUND_DATES.title.replace('{split}', String(data.split))}
           </h2>
           <p className="mt-2 text-muted-foreground max-w-2xl">{ROUND_DATES.intro}</p>
-          {data.splitEndsAt && (
-            <p className="mt-1 text-sm text-muted-foreground">
-              {ROUND_DATES.splitEndsAt}: <span className="font-medium text-foreground">{utc(data.splitEndsAt)}</span>
-            </p>
-          )}
         </div>
 
         <div className="grid gap-4 sm:grid-cols-3">

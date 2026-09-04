@@ -25,7 +25,6 @@ import { getDbHandle } from '../db/index.js';
 import { createAcquisitionsRouter, OFFERS_SIGNED_PATH } from '../routes/acquisitions';
 import { createTreasuryRouter } from '../routes/treasury';
 import { ingestMandateEvent } from './roundMandateSync';
-import { GATE_SETTING_KEY } from '../db/roundMandateSchema';
 import { createReplayCache } from './requestSignature';
 import { expireStaleOffers, ACCEPTED_TRANSFER_WINDOW_HOURS, TRANSFER_NOT_COMPLETED } from './acquisitionOffer';
 import { makeKey, mandateEvent, signedHeaders, setSplit, setSetting, setRoundTerms, type TestKey } from './roundMandateTestKit';
@@ -58,7 +57,7 @@ app.use('/api/acquisitions', createAcquisitionsRouter({
   walletCheckBaseUrl: 'http://check.test',
   publishBuybackEvent: async () => undefined,
   checkSellerEligibility: async () => world.eligible
-    ? { ok: true, walletType: 'LanaPays.Us', walletClass: 'lanapays', evidence: { splitCode: 'OK' } }
+    ? { ok: true, walletType: (world as any).walletClass === 'other' ? 'Main Wallet' : 'LanaPays.Us', walletClass: (world as any).walletClass || 'lanapays', evidence: { splitCode: 'OK' } }
     : { ok: false, httpStatus: 403, code: 'WALLET_FROZEN', error: 'frozen' },
   fetchUserWallets: async () => {
     if (world.listedWallets === 'throw') throw new Error('relay down');
@@ -100,7 +99,6 @@ beforeEach(async () => {
   setSetting(db, 'acq_EUR_lanapays_auto_cap', '');
   setSetting(db, 'acq_EUR_lanapays_due_days', '15');
   setSetting(db, 'buyback_wallet_id', 'LTreasuryWalletXXXXXXXXXXXXXXXXXXX');
-  setSetting(db, GATE_SETTING_KEY, '9');
   db.prepare("INSERT INTO admin_users (hex_id, label) VALUES (?, 'test')").run(ADMIN);
   db.prepare("INSERT INTO api_keys (key_hash, app_name, created_by) VALUES (?, 'brain', 'test')").run(createHash('sha256').update(API_KEY).digest('hex'));
   // Split-8 mandate for the seller: 1000 LANA in W1, round 1 open at 22 %.
@@ -226,7 +224,6 @@ describe('proposal under a mandate', () => {
 
   it('a mandate whose split is still running is closed, whatever the date', async () => {
     setSplit(db, 8, { EUR: 0.128 });
-    setSetting(db, GATE_SETTING_KEY, '8');
     const r = await propose(100);
     expect(r.body.offer.mandateCode).toBe('SPLIT_WINDOW');
   });
@@ -321,24 +318,25 @@ describe('who may propose', () => {
     expect(again.body.code).toBe('SIGNATURE_REPLAYED');
     expect((db.prepare('SELECT COUNT(*) c FROM acquisition_offers').get() as any).c).toBe(1);
   });
-
-  it('with the gate off the legacy path needs no signature (today\'s UI keeps working)', async () => {
-    setSetting(db, GATE_SETTING_KEY, '');
-    setSetting(db, 'acq_EUR_lanapays_auto_cap', '1');
-    const r = await propose(100, { headers: null });
-    expect(r.status).toBe(200);
-    expect(r.body.offer.status).toBe('under_review'); // auto_cap = 1 EUR on the legacy path
-    expect(r.body.offer.mandateRef).toBeNull();
-  });
 });
 
-/** An 'offered' row on the LEGACY path (gate off, no auto cap): what today's UI produces. */
-async function legacyOffered(): Promise<string> {
-  setSetting(db, GATE_SETTING_KEY, '');
-  const r = await propose(100, { headers: null });
-  expect(r.body.offer.status).toBe('offered');
-  expect(r.body.offer.mandateRef).toBeNull();
-  return r.body.offer.offerRef as string;
+/** An 'offered' row OUTSIDE a round: a non-financer ('other' class) wallet,
+ * priced by the class-based settings. LanaPays.Us wallets have no such path
+ * any more (the owner retired it on 2026-09-04) — this is the only way an
+ * offer without a mandate_ref comes to exist. */
+async function otherOffered(): Promise<string> {
+  setSetting(db, 'acq_EUR_other_enabled', 'true');
+  setSetting(db, 'acq_EUR_other_auto_cap', '');
+  setSetting(db, 'acq_EUR_other_due_days', '15');
+  (world as any).walletClass = 'other';
+  try {
+    const r = await propose(100, { headers: null });
+    expect(r.body.offer.status).toBe('offered');
+    expect(r.body.offer.mandateRef).toBeNull();
+    return r.body.offer.offerRef as string;
+  } finally {
+    (world as any).walletClass = 'lanapays';
+  }
 }
 
 describe('accept', () => {
@@ -354,8 +352,8 @@ describe('accept', () => {
     expect((await propose(1000)).body.offer.status).toBe('offered');
   });
 
-  it('PHASE A: a LEGACY offer still accepts after a rate change (today\'s UI cannot handle the 409 yet)', async () => {
-    const ref = await legacyOffered();
+  it('an offer OUTSIDE a round still accepts after a rate change (REFERENCE_MOVED is scoped to mandate offers)', async () => {
+    const ref = await otherOffered();
     setSplit(db, 9, { EUR: 0.25 });
     const r = await post(`/api/acquisitions/${ref}/accept`, { hexId: seller.pub });
     expect(r.status).toBe(200);
@@ -371,7 +369,7 @@ describe('accept', () => {
     expect(r.body.offer.purchasePrice).toBe(o.purchasePrice);
   });
 
-  it('accepting a mandate-bound offer must be signed by the financer; a legacy one need not be', async () => {
+  it('accepting a mandate-bound offer must be signed by the financer; an offer outside a round need not be', async () => {
     const mandate = (await propose(100)).body.offer.offerRef;
     const unsigned = await post(`/api/acquisitions/${mandate}/accept`, { hexId: seller.pub });
     expect(unsigned.status).toBe(401);
@@ -381,8 +379,8 @@ describe('accept', () => {
     expect(wrongKey.status).toBe(404); // another hex: no such offer for them
     expect((await acceptOffer(mandate)).status).toBe(200);
 
-    const legacy = await legacyOffered();
-    expect((await post(`/api/acquisitions/${legacy}/accept`, { hexId: seller.pub })).status).toBe(200);
+    const outside = await otherOffered();
+    expect((await post(`/api/acquisitions/${outside}/accept`, { hexId: seller.pub })).status).toBe(200);
   });
 });
 
@@ -401,8 +399,8 @@ describe('withdraw', () => {
     expect((await propose(1000)).body.offer.status).toBe('offered');
   });
 
-  it('a legacy offer withdraws unsigned, as today', async () => {
-    const ref = await legacyOffered();
+  it('an offer outside a round withdraws unsigned', async () => {
+    const ref = await otherOffered();
     expect((await post(`/api/acquisitions/${ref}/withdraw`, { hexId: seller.pub })).status).toBe(200);
     expect(row(ref).status).toBe('withdrawn');
   });

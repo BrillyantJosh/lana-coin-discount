@@ -13,7 +13,7 @@ import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
 import { requireAdmin } from '../lib/adminAuth.js';
 import { requireApiKey } from '../lib/apiKeyAuth.js';
 import { DIRECT_FUND_URL } from '../lib/directFund.js';
-import { GATE_SETTING_KEY, LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
+import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
 import { WALLET_CLASSES } from '../lib/treasuryMandate.js';
 
 // The registrar's freeze answer is read through check.lanapays.us — the same
@@ -1111,16 +1111,6 @@ router.put('/admin/settings', (req: Request, res: Response) => {
       for (const [key, raw] of Object.entries(mandate_settings as Record<string, unknown>)) {
         const value = String(raw ?? '');
 
-        // Round-mandate gate: '' turns rounds off, a split number turns them
-        // on from that split. Not per currency or class, so it is matched
-        // before the class-scoped patterns below.
-        if (key === GATE_SETTING_KEY) {
-          if (value !== '' && !(Number.isInteger(Number(value)) && Number(value) > 0)) {
-            return res.status(400).json({ error: `${key} must be empty (off) or a positive split number` });
-          }
-          setAppSetting(key, value, adminHex);
-          continue;
-        }
         // Written by the relay sync; accepted here only so an admin can
         // clear a stale value ('') or set one deliberately.
         if (key === LAST_SYNC_SETTING_KEY) {

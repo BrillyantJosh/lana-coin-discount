@@ -33,8 +33,6 @@ interface RoundRow {
 interface RoundsResponse {
   split: number;
   currentSplit: number | null;
-  splitEndsAt: string | null;
-  gateFromSplit: number | null;
   directFundReachable: boolean;
   rounds: RoundRow[];
 }
@@ -72,9 +70,6 @@ const AdminTreasuryRounds = () => {
   // The three rows as edited.
   const [opens, setOpens] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
   const [discount, setDiscount] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
-  const [gate, setGate] = useState('');
-  const [initialGate, setInitialGate] = useState('');
-  const [savingGate, setSavingGate] = useState(false);
   const [serverWarnings, setServerWarnings] = useState<string[]>([]);
 
   useEffect(() => {
@@ -103,8 +98,6 @@ const AdminTreasuryRounds = () => {
         d[r.round] = r.discountPercent === null ? '' : String(r.discountPercent);
       }
       setOpens(o); setDiscount(d);
-      const g = json.gateFromSplit === null ? '' : String(json.gateFromSplit);
-      setGate(g); setInitialGate(g);
       setServerWarnings([]);
     } catch (err: any) {
       toast.error(err.message || 'Failed to load round terms');
@@ -133,10 +126,6 @@ const AdminTreasuryRounds = () => {
     const d = Number(discount[round]);
     if ((discount[round] || '').trim() !== '' && Number.isFinite(d) && (d < DISCOUNT_BAND.min || d > DISCOUNT_BAND.max)) {
       out.push(fill(ADMIN_ROUNDS.bandWarning, { min: DISCOUNT_BAND.min, max: DISCOUNT_BAND.max }));
-    }
-    const iso = localUtcToIso(opens[round]);
-    if (iso && data?.splitEndsAt && new Date(iso).getTime() < new Date(data.splitEndsAt).getTime()) {
-      out.push(ADMIN_ROUNDS.beforeEndWarning);
     }
     return out;
   };
@@ -171,28 +160,6 @@ const AdminTreasuryRounds = () => {
     }
   };
 
-  const saveGate = async () => {
-    if (!session) return;
-    setSavingGate(true);
-    try {
-      const res = await fetch('/api/admin/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
-        body: JSON.stringify({ mandate_settings: { acq_round_mandates_from_split: gate.trim() } }),
-      });
-      const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Save failed');
-      const stored = json.settings?.acq_round_mandates_from_split ?? '';
-      if (stored !== gate.trim()) throw new Error('The server did not store the gate value.');
-      setInitialGate(gate.trim());
-      toast.success('Gate saved');
-    } catch (err: any) {
-      toast.error(err.message || 'Save failed');
-    } finally {
-      setSavingGate(false);
-    }
-  };
-
   if (authLoading || !session || !isAdmin) return null;
 
   const current = data?.currentSplit ?? null;
@@ -200,8 +167,6 @@ const AdminTreasuryRounds = () => {
     { value: current - 1, label: fill(ADMIN_ROUNDS.liveSplit, { split: current - 1 }) },
     { value: current, label: fill(ADMIN_ROUNDS.upcomingSplit, { split: current }) },
   ];
-  const gateState = gate.trim() === '' ? 'off'
-    : current !== null && current >= Number(gate) ? 'active' : 'armed';
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -246,7 +211,6 @@ const AdminTreasuryRounds = () => {
                 )}
                 <span className="text-xs text-muted-foreground">
                   Current Split: <strong className="text-foreground">{current ?? 'unknown'}</strong>
-                  {' · '}{ADMIN_ROUNDS.splitEndsAt}: <strong className="text-foreground">{fmtUtcLong(data?.splitEndsAt ?? null)}</strong>
                 </span>
               </div>
             </div>
@@ -342,33 +306,6 @@ const AdminTreasuryRounds = () => {
               </div>
             </div>
 
-            {/* Gate */}
-            <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6 space-y-3">
-              <h2 className="text-lg font-semibold text-foreground">{ADMIN_ROUNDS.gateLabel}</h2>
-              <p className="text-sm text-muted-foreground">{ADMIN_ROUNDS.gateHint}</p>
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="font-mono text-xs text-muted-foreground">acq_round_mandates_from_split</span>
-                <input
-                  type="text" inputMode="numeric"
-                  value={gate}
-                  onChange={e => setGate(e.target.value)}
-                  placeholder="empty = off"
-                  className="w-32 rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
-                />
-                <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                  gateState === 'active' ? 'bg-green-100 text-green-800' : gateState === 'armed' ? 'bg-amber-100 text-amber-800' : 'bg-muted text-muted-foreground'
-                }`}>
-                  {gateState === 'active' ? 'Active now' : gateState === 'armed' ? `Turns on at Split ${gate.trim()}` : 'Off'}
-                </span>
-                <button
-                  onClick={saveGate}
-                  disabled={savingGate || gate.trim() === initialGate}
-                  className="rounded-lg border border-border px-4 py-2 text-sm font-bold text-foreground hover:bg-accent transition-colors disabled:opacity-50"
-                >
-                  {savingGate ? 'Saving…' : 'Save gate'}
-                </button>
-              </div>
-            </div>
           </div>
         )}
       </div>

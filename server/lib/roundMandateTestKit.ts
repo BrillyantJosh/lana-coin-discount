@@ -206,7 +206,6 @@ export function dbModuleStub(db: Database.Database) {
     getElectrumServersFromDb: () => [{ host: 'e', port: 5097 }],
     getExchangeRatesFromDb: () => { try { return JSON.parse(latest38888()?.exchange_rates || '{}'); } catch { return {}; } },
     getSplitFromDb: () => latest38888()?.split ?? null,
-    getSplitEndsAtFromDb: () => latest38888()?.split_ends_at || 0,
     getSplitStartedAtFromDb: () => latest38888()?.split_started_at || 0,
     isAdminUser: (hex: string) => !!db.prepare('SELECT 1 FROM admin_users WHERE hex_id = ?').get(hex),
     getApiKeyByHash: (hash: string) => db.prepare('SELECT * FROM api_keys WHERE key_hash = ?').get(hash) ?? null,

@@ -67,7 +67,6 @@ interface MandateRow {
 interface MandatesResponse {
   split: number;
   currentSplit: number | null;
-  gateFromSplit: number | null;
   lastSyncAt: string | null;
   degraded: { noEvents: boolean; noTerms: boolean; splitUnknown: boolean; staleSync: boolean; balancesPartial: boolean };
   totals: { expectedLana: number; remainingLana: number; proposedLana: number; acceptedLana: number; settledLana: number };
@@ -270,7 +269,7 @@ export default function AdminMandates() {
             <h1 className="text-3xl font-bold text-foreground">{ADMIN_MANDATES.title}</h1>
             <p className="text-muted-foreground">{ADMIN_MANDATES.intro}</p>
             <p className="text-xs text-muted-foreground">
-              Gate: <span className="font-mono">{data?.gateFromSplit ?? 'off'}</span> · Last sync: {fmtUtc(data?.lastSyncAt)}
+              Last sync: {fmtUtc(data?.lastSyncAt)}
             </p>
           </div>
           <button

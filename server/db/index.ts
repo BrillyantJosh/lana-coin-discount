@@ -514,10 +514,6 @@ export function getSplitStartedAtFromDb(): number {
  * to WARN an admin who sets a round date before the Split ends — the window
  * itself is decided by the split number, never by this clock.
  */
-export function getSplitEndsAtFromDb(): number {
-  const row = db.prepare('SELECT split_ends_at FROM kind_38888 ORDER BY created_at DESC LIMIT 1').get() as any;
-  return row?.split_ends_at || 0;
-}
 
 /**
  * Sum of sale_payouts (fiat) per `hex|currency`, optionally only for payouts

@@ -3,7 +3,7 @@
  * FIFO BY ROUND, FROM THE DATE, UP TO WHAT THE BUDGET RECEIVED — and every
  * way the answer must be "not now".
  *
- * The gate can open a treasury cap, so most of this file is about the
+ * A mandate can open a treasury cap, so most of this file is about the
  * refusals and about the exact meaning of a date: it OPENS a round at the
  * second it names (>= — the mutation to > must fail here), a release waives
  * the date and nothing else, and a mandate whose split is still running is
@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  evaluateRoundMandate, roundState, validateRoundTerms, parseGateSetting, isGateActive,
+  evaluateRoundMandate, roundState, validateRoundTerms,
   ESTIMATED_FEE_LANOSHIS, EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS,
   type MandateCandidate, type RoundTerms, type EvaluateRoundMandateInput,
 } from './roundMandate';
@@ -42,30 +42,11 @@ const r2 = (over: Partial<MandateCandidate> = {}) => mandate({
 const open = (round: number, discount = 22, opensAt = NOW - 3600): RoundTerms => ({ round, opensAt, discountPercent: discount });
 
 const input = (over: Partial<EvaluateRoundMandateInput> = {}): EvaluateRoundMandateInput => ({
-  gateFromSplit: 9, currentSplit: 9, hexId: HEX, wallet: W1, requestedLanoshis: 100 * LANA,
+  currentSplit: 9, hexId: HEX, wallet: W1, requestedLanoshis: 100 * LANA,
   candidates: [mandate()], terms: [open(1)], released: new Set(), consumed: new Map(), now: NOW, ...over,
 });
 
 const decided = (v: ReturnType<typeof evaluateRoundMandate>) => (typeof v === 'string' ? { outcome: v } : v) as any;
-
-describe('the gate', () => {
-  it("'' or missing means off → legacy path, whatever else is true", () => {
-    expect(parseGateSetting('')).toBeNull();
-    expect(parseGateSetting(null)).toBeNull();
-    expect(parseGateSetting('abc')).toBeNull();
-    expect(parseGateSetting('0')).toBeNull();
-    expect(parseGateSetting('9')).toBe(9);
-    expect(evaluateRoundMandate(input({ gateFromSplit: null }))).toBe('legacy');
-  });
-
-  it('a gate set for split 9 stays legacy during split 8 and turns on by itself at 9', () => {
-    expect(isGateActive(9, 8)).toBe(false);
-    expect(isGateActive(9, 9)).toBe(true);
-    expect(isGateActive(9, 10)).toBe(true);
-    expect(isGateActive(9, null)).toBe(false);
-    expect(evaluateRoundMandate(input({ currentSplit: 8 }))).toBe('legacy');
-  });
-});
 
 describe('no mandate → a person looks (IN QUEUE), never an automatic yes or a hard no', () => {
   it('a wallet no announced event names', () => {
@@ -92,7 +73,7 @@ describe('no mandate → a person looks (IN QUEUE), never an automatic yes or a 
 
 describe('the split window — the same one-split rule the wallet gate enforces', () => {
   it('a past date does NOT open a mandate whose split is still running', () => {
-    const v = decided(evaluateRoundMandate(input({ gateFromSplit: 8, currentSplit: 8, terms: [open(1, 22, NOW - 86400 * 30)] })));
+    const v = decided(evaluateRoundMandate(input({ currentSplit: 8, terms: [open(1, 22, NOW - 86400 * 30)] })));
     expect(v.outcome).toBe('decline');
     expect(v.code).toBe('SPLIT_WINDOW');
     expect(v.reason).toMatch(/still running/);
@@ -100,7 +81,7 @@ describe('the split window — the same one-split rule the wallet gate enforces'
 
   it('a release does not move a mandate into a split it was not published for', () => {
     const v = decided(evaluateRoundMandate(input({
-      gateFromSplit: 8, currentSplit: 8, released: new Set([`8:1:${HEX}`]),
+      currentSplit: 8, released: new Set([`8:1:${HEX}`]),
     })));
     expect(v.code).toBe('SPLIT_WINDOW');
   });
@@ -320,7 +301,7 @@ describe('validateRoundTerms', () => {
     const v = validateRoundTerms([
       { round: 2, opensAt: '2026-09-21T22:00:00+02:00', discountPercent: 25 },
       { round: 1, opensAt: '2026-09-14T22:00:00Z', discountPercent: 22 },
-    ], { splitEndsAt: null });
+    ]);
     expect(v.ok).toBe(true);
     expect(v.rows.map(r => r.round)).toEqual([1, 2]);
     expect(v.rows[1].opensAt).toBe('2026-09-21T20:00:00.000Z');
@@ -328,38 +309,38 @@ describe('validateRoundTerms', () => {
   });
 
   it('refuses a bad round, a bad date, a discount outside 0–100, a duplicate', () => {
-    expect(validateRoundTerms([{ round: 4, opensAt: null, discountPercent: null }], { splitEndsAt: null }).ok).toBe(false);
-    expect(validateRoundTerms([{ round: 1, opensAt: 'soon', discountPercent: null }], { splitEndsAt: null }).ok).toBe(false);
-    expect(validateRoundTerms([{ round: 1, opensAt: null, discountPercent: 101 }], { splitEndsAt: null }).ok).toBe(false);
-    expect(validateRoundTerms([{ round: 1, opensAt: null, discountPercent: 22 }, { round: 1, opensAt: null, discountPercent: 22 }], { splitEndsAt: null }).ok).toBe(false);
-    expect(validateRoundTerms([], { splitEndsAt: null }).ok).toBe(false);
+    expect(validateRoundTerms([{ round: 4, opensAt: null, discountPercent: null }]).ok).toBe(false);
+    expect(validateRoundTerms([{ round: 1, opensAt: 'soon', discountPercent: null }]).ok).toBe(false);
+    expect(validateRoundTerms([{ round: 1, opensAt: null, discountPercent: 101 }]).ok).toBe(false);
+    expect(validateRoundTerms([{ round: 1, opensAt: null, discountPercent: 22 }, { round: 1, opensAt: null, discountPercent: 22 }]).ok).toBe(false);
+    expect(validateRoundTerms([]).ok).toBe(false);
   });
 
   it('rounds must open in order once every date is set — earlier rows may stay empty', () => {
     const bad = validateRoundTerms([
       { round: 1, opensAt: '2026-09-21T00:00:00Z', discountPercent: 22 },
       { round: 2, opensAt: '2026-09-14T00:00:00Z', discountPercent: 25 },
-    ], { splitEndsAt: null });
+    ]);
     expect(bad.ok).toBe(false);
     expect(bad.error).toMatch(/round 2 opens before round 1/);
     const partial = validateRoundTerms([
       { round: 1, opensAt: null, discountPercent: 22 },
       { round: 2, opensAt: '2026-09-14T00:00:00Z', discountPercent: 25 },
-    ], { splitEndsAt: null });
+    ]);
     expect(partial.ok).toBe(true);
   });
 
-  it('warns, but saves, when a date precedes the Split end or a discount leaves the 22–35 band', () => {
-    const splitEndsAt = Math.floor(Date.parse('2026-09-14T22:00:00Z') / 1000);
+  it('warns, but saves, when a discount leaves the 22–35 band — and says nothing about the Split end date', () => {
+    // KIND 38888's split_ends_at is an intention, not a fact; the owner asked
+    // (4 Sep 2026) that round dates are never checked against it.
     const v = validateRoundTerms([
       { round: 1, opensAt: '2026-09-14T21:00:00Z', discountPercent: 21 },
       { round: 2, opensAt: '2026-09-15T00:00:00Z', discountPercent: 36 },
-    ], { splitEndsAt });
+    ]);
     expect(v.ok).toBe(true);
-    expect(v.warnings).toHaveLength(3);
-    expect(v.warnings[0]).toMatch(/before the Split ends/);
-    expect(v.warnings[1]).toMatch(/21% is outside/);
-    expect(v.warnings[2]).toMatch(/36% is outside/);
+    expect(v.warnings).toHaveLength(2);
+    expect(v.warnings[0]).toMatch(/21% is outside/);
+    expect(v.warnings[1]).toMatch(/36% is outside/);
   });
 });
 

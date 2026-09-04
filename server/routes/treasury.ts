@@ -22,16 +22,16 @@
  */
 import { Router, type Request, type Response } from 'express';
 import {
-  getDbHandle, getAppSetting, getSplitFromDb, getSplitEndsAtFromDb,
+  getDbHandle, getAppSetting, getSplitFromDb,
   getElectrumServersFromDb, getRelaysFromDb,
 } from '../db/index.js';
-import { GATE_SETTING_KEY, LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
+import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
 import { requireAdmin } from '../lib/adminAuth.js';
 import { requireApiKey } from '../lib/apiKeyAuth.js';
 import { DIRECT_FUND_URL } from '../lib/directFund.js';
 import { fetchBatchBalances as realFetchBatchBalances } from '../lib/electrum.js';
 import {
-  roundState, validateRoundTerms, parseGateSetting, remainingOf, type RoundTerms,
+  roundState, validateRoundTerms, remainingOf, type RoundTerms,
 } from '../lib/roundMandate.js';
 import { ingestMandateEvent, pullRoundMandates, listMandatesForSplit, loadRoundTerms, loadReleases } from '../lib/roundMandateSync.js';
 import { consumedByMandate, offerTotalsByMandate } from '../lib/acquisitionOffer.js';
@@ -115,7 +115,6 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     return res.json({
       split,
       currentSplit,
-      splitEndsAt: getSplitEndsAtFromDb() ? new Date(getSplitEndsAtFromDb() * 1000).toISOString() : null,
       note: 'A round date opens a treasury mandate; it creates no right to sell (BEF P08 §8).',
       rounds,
     });
@@ -210,12 +209,9 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         updatedAt: row?.updated_at ?? null,
       };
     });
-    const splitEndsAt = getSplitEndsAtFromDb();
     return res.json({
       split,
       currentSplit,
-      splitEndsAt: splitEndsAt ? new Date(splitEndsAt * 1000).toISOString() : null,
-      gateFromSplit: parseGateSetting(getAppSetting(GATE_SETTING_KEY)),
       directFundReachable: df.reachable,
       rounds,
     });
@@ -227,8 +223,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     const split = parseSplitParam(req.body?.split, null);
     if (split === null) return res.status(400).json({ error: 'split must be a positive integer' });
 
-    const splitEndsAt = getSplitEndsAtFromDb() || null;
-    const v = validateRoundTerms(req.body?.rounds, { splitEndsAt });
+    const v = validateRoundTerms(req.body?.rounds);
     if (!v.ok) return res.status(400).json({ error: v.error, warnings: v.warnings });
 
     const upsert = db().prepare(`
@@ -362,7 +357,6 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     return res.json({
       split,
       currentSplit,
-      gateFromSplit: parseGateSetting(getAppSetting(GATE_SETTING_KEY)),
       lastSyncAt: lastSync,
       degraded: {
         noEvents: mandates.length === 0,

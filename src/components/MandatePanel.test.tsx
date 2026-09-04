@@ -22,8 +22,8 @@ const base: MandateView = {
   basis: 'current_split', referenceRate: 0.256, indicativeFor: null,
 };
 
-const info = (mandates: MandateView[], gateActive = true): MandateInfo => ({
-  nonBinding: true, note: '', gateActive, currentSplit: 9, mandates,
+const info = (mandates: MandateView[]): MandateInfo => ({
+  nonBinding: true, note: '', currentSplit: 9, mandates,
 });
 
 describe('the indicative figure', () => {
@@ -81,8 +81,10 @@ describe('proposing before the date', () => {
     expect(timingLine(r2)).toBe('Opened early by the treasury');
   });
 
-  it('is left to the server when the gate is off or no mandate exists', () => {
-    expect(proposalGate(info([{ ...base, state: 'not_open' }], false)).allowed).toBe(true);
+  it('is left to the server when no mandate exists', () => {
+    // A mandate that is not open is NOT left to the server — the button is
+    // disabled until the round date (covered above). Only the absence of any
+    // mandate defers to the server's NO_MANDATE review.
     expect(proposalGate(info([])).allowed).toBe(true);
     expect(proposalGate(null).allowed).toBe(true);
   });

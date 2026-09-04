@@ -106,6 +106,5 @@ export function addColumnIfMissing(db: Database.Database, alterSql: string): boo
  * takes the path it takes today; a split number = from that split on, a
  * LanaPays.Us proposal is judged against the round mandates.
  */
-export const GATE_SETTING_KEY = 'acq_round_mandates_from_split';
 /** ISO timestamp of the last relay sync that returned at least one verified mandate. */
 export const LAST_SYNC_SETTING_KEY = 'acq_mandates_last_sync_at';

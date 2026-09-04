@@ -16,12 +16,12 @@
  * A submission is not an order and creates no right to execution; every path
  * out of `/offers` can be a refusal.
  *
- * TWO PATHS THROUGH /offers, chosen by the gate `acq_round_mandates_from_split`:
+ * TWO PATHS THROUGH /offers, chosen by the wallet class:
  *
- *   legacy   what the endpoint has always done — class-based discount,
- *            per-currency mandate settings. Unchanged, so the UI that exists
- *            today keeps working until the round-aware one ships.
- *   mandate  LanaPays.Us wallets once the gate's split is reached: the
+ *   other    non-financer wallets — class-based discount, per-currency
+ *            mandate settings, as before.
+ *   mandate  every LanaPays.Us wallet (the owner retired the uncapped
+ *            path on 2026-09-04: rounds are the only way): the
  *            proposal must be signed by its hex, the wallet must be on that
  *            hex's signed KIND 30889 list, and the amount is judged against
  *            the financing-round mandate (lib/roundMandate.ts) INSIDE the same
@@ -40,7 +40,6 @@ import {
   getSplitFromDb, getElectrumServersFromDb, getExchangeRatesFromDb,
   insertBuybackTransaction, getDbHandle,
 } from '../db/index.js';
-import { GATE_SETTING_KEY } from '../db/roundMandateSchema.js';
 import {
   decideAcquisition, readMandateSettings, CLASS_LABELS, type WalletClass,
 } from '../lib/treasuryMandate.js';
@@ -57,7 +56,7 @@ import { fetchBatchBalances as realFetchBatchBalances, type WalletBalance } from
 import { requireAdmin } from '../lib/adminAuth.js';
 import { verifyRequestSignature, type ReplayCache } from '../lib/requestSignature.js';
 import {
-  evaluateRoundMandate, roundState, parseGateSetting, isGateActive, remainingOf,
+  evaluateRoundMandate, roundState, remainingOf,
   mandateInWindow, EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS,
   type MandateCandidate, type RoundTerms,
 } from '../lib/roundMandate.js';
@@ -268,14 +267,13 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       }
 
       const walletClass = eligibility.walletClass!;
-      const gateFromSplit = parseGateSetting(getAppSetting(GATE_SETTING_KEY));
-      if (walletClass === 'lanapays' && isGateActive(gateFromSplit, currentSplitNumber())) {
+      if (walletClass === 'lanapays') {
         return await proposeUnderMandate(req, res, {
           hexId, senderAddress, lanaAmount, currency, eligibility: eligibility.evidence || null,
         });
       }
 
-      // ── legacy path — unchanged ──────────────────────────────────
+      // ── other wallets — class-based mandate settings, unchanged ──
       const priced = price(lanaAmount, currency, walletClass);
       if (!priced) return res.status(400).json({ error: `No reference price for ${currency}` });
 
@@ -401,7 +399,6 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       const terms = windowSplit === null ? [] : loadRoundTerms(handle, windowSplit);
       const dTags = candidates.map(c => c.dTag);
       const verdict = evaluateRoundMandate({
-        gateFromSplit: parseGateSetting(getAppSetting(GATE_SETTING_KEY)),
         currentSplit,
         hexId, wallet: senderAddress, requestedLanoshis,
         candidates, terms,
@@ -409,12 +406,6 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         consumed: consumedByMandate(handle, dTags),
         now: now(),
       });
-      if (verdict === 'legacy') {
-        // The gate flipped between the check above and here; the caller
-        // re-proposes and takes the legacy path.
-        return { kind: 'error', status: 409, body: { error: 'Please submit this proposal again.', code: 'GATE_CHANGED' } };
-      }
-
       const offerRef = generateOfferRef(handle);
       const legacyPriced = price(lanaAmount, currency, 'lanapays');
       const base = {
@@ -532,8 +523,6 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
 
     const handle = db();
     const currentSplit = currentSplitNumber();
-    const gateFromSplit = parseGateSetting(getAppSetting(GATE_SETTING_KEY));
-    const gateActive = isGateActive(gateFromSplit, currentSplit);
     const candidates = listMandatesForHex(handle, hexId)
       .filter(c => c.wallets.some(w => sameAddress(w.address, wallet)))
       .sort((a, b) => (a.split - b.split) || (a.round - b.round));
@@ -593,7 +582,6 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
     return res.json({
       nonBinding: true,
       note: 'Indicative figures are projections, not a price, rate or guarantee. Only a Purchase Price accepted on lana.discount binds (BEF P08 §4).',
-      gateActive,
       currentSplit,
       mandates,
     });

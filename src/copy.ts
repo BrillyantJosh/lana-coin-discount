@@ -398,7 +398,6 @@ export const OFFER_ERRORS: Record<string, string> = {
     'This wallet holds more than the amount the treasury agreed to acquire, so it cannot be emptied into this ' +
     'acquisition. Transfer the agreed amount only.',
   BALANCE_UNVERIFIABLE: 'The wallet balance could not be read right now. Please try again shortly.',
-  GATE_CHANGED: 'Please submit this proposal again.',
   BELOW_MINIMUM: 'This proposal is below the minimum acquisition value.',
   MANDATE_EXHAUSTED: 'This mandate has been used up: the treasury has acquired everything it covers. Nothing more can be proposed under it.',
   ALREADY_SETTLED: 'This acquisition has already been settled. Nothing is outstanding on it.',
@@ -416,16 +415,12 @@ export const ADMIN_ROUNDS = {
   splitLabel: 'Split',
   liveSplit: 'Split {split} — live window',
   upcomingSplit: 'Split {split} — upcoming (opens after the Split)',
-  splitEndsAt: 'Split ends at',
   opensLabel: 'Opens (UTC)',
   discountLabel: 'Acquisition discount %',
   prefill: 'Prefill from Direct Fund',
   prefillNone: 'Direct Fund suggests nothing for the empty fields.',
   prefillUnreachable: 'Direct Fund could not be reached; no suggestions.',
-  gateLabel: 'Round mandates from Split',
-  gateHint: 'Empty = round mandates off (legacy path). A split number turns the gate on from that Split.',
   bandWarning: 'Outside the BEF P08 §4 orientation band of {min}–{max} %.',
-  beforeEndWarning: 'Before the Split ends — the mandate cannot open before the Split anyway.',
   save: 'Save round terms',
   saved: 'Round terms saved',
 } as const;
@@ -578,7 +573,6 @@ export const ROUND_DATES = {
     'The treasury acquires from financing budgets round by round. Each round opens on the date below; from ' +
     'then on the treasury accepts proposals from that round, up to the LANA each budget received. A date ' +
     'opens a mandate — it is not a right to sell, and no price is fixed by it.',
-  splitEndsAt: 'Split ends',
   opensLabel: 'Opens',
   noDate: 'No date published yet',
   mandates: 'Mandates',
