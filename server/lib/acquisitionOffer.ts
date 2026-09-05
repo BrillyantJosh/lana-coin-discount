@@ -271,6 +271,33 @@ export function consumedByMandate(db: Database.Database, dTags: string[]): Map<s
   return out;
 }
 
+/**
+ * The offer rows the funding view needs: one line per offer, with its currency,
+ * so money can be totalled per round AND per currency. `live` marks an
+ * 'offered' row that has not lapsed — reserved against the mandate, exactly as
+ * consumedByMandate counts it.
+ */
+export function offerRowsForFunding(db: Database.Database, dTags: string[]): Array<{
+  mandateRef: string; currency: string; status: string; lanoshis: number; purchasePriceFiat: number | null; live: boolean;
+}> {
+  if (!dTags || dTags.length === 0) return [];
+  const placeholders = dTags.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT mandate_ref, currency, status, lana_amount_lanoshis, purchase_price_fiat,
+           CASE WHEN offer_expires_at IS NOT NULL AND offer_expires_at > datetime('now') THEN 1 ELSE 0 END AS live
+      FROM acquisition_offers
+     WHERE mandate_ref IN (${placeholders})
+  `).all(...dTags) as any[];
+  return rows.map(r => ({
+    mandateRef: r.mandate_ref,
+    currency: String(r.currency || '').toUpperCase(),
+    status: r.status,
+    lanoshis: Number(r.lana_amount_lanoshis) || 0,
+    purchasePriceFiat: r.purchase_price_fiat === null || r.purchase_price_fiat === undefined ? null : Number(r.purchase_price_fiat),
+    live: r.live === 1,
+  }));
+}
+
 export interface MandateOfferTotals {
   /** Live purchase offers (offered, not lapsed) — reserved, not yet ours. */
   proposed: number;

@@ -23,7 +23,7 @@
 import { Router, type Request, type Response } from 'express';
 import {
   getDbHandle, getAppSetting, getSplitFromDb,
-  getElectrumServersFromDb, getRelaysFromDb,
+  getElectrumServersFromDb, getRelaysFromDb, getExchangeRatesFromDb,
 } from '../db/index.js';
 import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
 import { requireAdmin } from '../lib/adminAuth.js';
@@ -34,7 +34,8 @@ import {
   roundState, validateRoundTerms, remainingOf, type RoundTerms,
 } from '../lib/roundMandate.js';
 import { ingestMandateEvent, pullRoundMandates, listMandatesForSplit, loadRoundTerms, loadReleases } from '../lib/roundMandateSync.js';
-import { consumedByMandate, offerTotalsByMandate } from '../lib/acquisitionOffer.js';
+import { consumedByMandate, offerRowsForFunding, offerTotalsByMandate } from '../lib/acquisitionOffer.js';
+import { fundingByRound } from '../lib/roundFunding.js';
 import { BUYBACK_SPLIT_OFFSET } from '../lib/buybackSplit.js';
 
 const db = () => getDbHandle();
@@ -252,7 +253,8 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
 
     const terms = loadRoundTerms(db(), split);
     const termsByRound = new Map<number, RoundTerms>(terms.map(t => [t.round, t]));
-    let mandates = listMandatesForSplit(db(), split);
+    const allForSplit = listMandatesForSplit(db(), split);
+    let mandates = allForSplit;
     if (roundFilter) mandates = mandates.filter(m => m.round === roundFilter);
     if (currencyFilter) mandates = mandates.filter(m => m.wallets.some(w => w.currency === currencyFilter));
     const dTags = mandates.map(m => m.dTag);
@@ -352,6 +354,19 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
       };
     });
 
+    const fundingDTags = allForSplit.filter(m => m.status === 'announced').map(m => m.dTag);
+    const funding = fundingByRound({
+      split,
+      currentSplit,
+      mandates: allForSplit.map(m => ({
+        dTag: m.dTag, round: m.round, split: m.split, status: m.status,
+        wallets: m.wallets.map(w => ({ currency: w.currency, lanaLanoshis: w.lanaLanoshis })),
+      })),
+      offers: offerRowsForFunding(db(), fundingDTags),
+      terms: terms.map(t => ({ round: t.round, discountPercent: t.discountPercent })),
+      rates: getExchangeRatesFromDb(),
+    });
+
     const lastSync = getAppSetting(LAST_SYNC_SETTING_KEY) || null;
     const lastSyncMs = lastSync ? Date.parse(lastSync) : NaN;
     return res.json({
@@ -373,6 +388,9 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         const t = termsByRound.get(round);
         return { round, opensAt: t?.opensAt ? new Date(t.opensAt * 1000).toISOString() : null, discountPercent: t?.discountPercent ?? null };
       }),
+      // What each round costs, per currency, over the whole Split — unaffected
+      // by the round/currency filters above.
+      funding,
       mandates: rows,
       updated_at: new Date().toISOString(),
     });

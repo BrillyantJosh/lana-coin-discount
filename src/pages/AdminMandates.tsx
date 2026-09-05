@@ -42,6 +42,31 @@ interface MandateOffer {
   mandateCode: string | null;
 }
 
+interface CurrencyFunding {
+  currency: string;
+  lanaExpected: number;
+  lanaRemaining: number;
+  lanaProposed: number;
+  lanaAccepted: number;
+  lanaSettled: number;
+  referenceRate: number | null;
+  basis: 'projected_next_split' | 'current_split' | null;
+  discountPercent: number | null;
+  pricePerLana: number | null;
+  fiatExpected: number | null;
+  fiatRemaining: number | null;
+  fiatAccepted: number;
+  fiatSettled: number;
+  gaps: Array<'NO_RATE' | 'NO_DISCOUNT' | 'NO_REFERENCE'>;
+}
+
+interface RoundFunding {
+  round: number;
+  mandateCount: number;
+  currencies: CurrencyFunding[];
+  totalsByCurrency: Record<string, number | null>;
+}
+
 interface MandateRow {
   mandateRef: string;
   eventId: string;
@@ -71,6 +96,7 @@ interface MandatesResponse {
   degraded: { noEvents: boolean; noTerms: boolean; splitUnknown: boolean; staleSync: boolean; balancesPartial: boolean };
   totals: { expectedLana: number; remainingLana: number; proposedLana: number; acceptedLana: number; settledLana: number };
   rounds: Array<{ round: number; opensAt: string | null; discountPercent: number | null }>;
+  funding: RoundFunding[];
   mandates: MandateRow[];
   updated_at: string;
 }
@@ -83,6 +109,28 @@ const fmtUtc = (iso: string | null | undefined) => {
   if (!iso) return '—';
   const d = new Date(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(iso) ? `${iso.replace(' ', 'T')}Z` : iso);
   return isNaN(d.getTime()) ? iso : `${d.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
+};
+
+/** A money figure, or an em dash when there is no honest number to show. */
+const fmtFiat = (n: number | null | undefined, currency: string) => {
+  if (n === null || n === undefined) return '—';
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(n);
+  } catch {
+    return `${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+  }
+};
+
+/** Why the treasury cannot be told what a round costs. */
+const GAP_TEXT: Record<string, string> = {
+  NO_RATE: 'no reference rate for this currency in KIND 38888',
+  NO_DISCOUNT: 'no discount set for this round',
+  NO_REFERENCE: 'this Split is outside the mandate window — no reference to quote',
+};
+
+const BASIS_TEXT: Record<string, string> = {
+  projected_next_split: 'at twice the current rate (this Split has not landed yet)',
+  current_split: 'at the current rate (the Split has landed)',
 };
 
 const STATE_TONE: Record<string, string> = {
@@ -260,92 +308,9 @@ export default function AdminMandates() {
     [ADMIN_MANDATES.tiles.settled, data?.totals.settledLana],
   ];
 
-  return (
-    <div className="min-h-screen bg-background flex flex-col">
-      <AdminNav />
-      <div className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-12 max-w-6xl">
-        <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-2 min-w-0">
-            <h1 className="text-3xl font-bold text-foreground">{ADMIN_MANDATES.title}</h1>
-            <p className="text-muted-foreground">{ADMIN_MANDATES.intro}</p>
-            <p className="text-xs text-muted-foreground">
-              Last sync: {fmtUtc(data?.lastSyncAt)}
-            </p>
-          </div>
-          <button
-            onClick={sync}
-            disabled={syncing}
-            className="rounded-lg border border-border px-4 py-2 text-sm font-bold text-foreground hover:bg-accent transition-colors disabled:opacity-50"
-          >
-            {syncing ? ADMIN_MANDATES.syncing : ADMIN_MANDATES.sync}
-          </button>
-        </div>
-
-        {banners.length > 0 && (
-          <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 space-y-1">
-            {banners.map((b, i) => <p key={i} className="text-xs text-amber-800 dark:text-amber-300">{b}</p>)}
-          </div>
-        )}
-
-        {/* Tiles */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
-          {tiles.map(([label, value]) => (
-            <div key={label} className="rounded-xl border border-border bg-card p-3">
-              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">{label}</p>
-              <p className="font-mono text-base font-bold text-foreground">{fmtLana(value)} <span className="text-xs font-normal text-muted-foreground">LANA</span></p>
-            </div>
-          ))}
-        </div>
-
-        {/* Filters */}
-        <div className="flex flex-wrap items-center gap-3 mb-4">
-          {splitOptions.length > 0 ? (
-            <select value={split ?? ''} onChange={e => setSplit(Number(e.target.value))}
-              className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
-              {splitOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-              {split !== null && !splitOptions.some(o => o.value === split) && <option value={split}>Split {split}</option>}
-            </select>
-          ) : (
-            <input type="number" min="1" value={split ?? ''} onChange={e => setSplit(e.target.value ? Number(e.target.value) : null)}
-              className="w-28 rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono" placeholder="Split" />
-          )}
-          <select value={currency} onChange={e => setCurrency(e.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
-            <option value="">All currencies</option>
-            {currencies.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <select value={round} onChange={e => setRound(e.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
-            <option value="">All rounds</option>
-            {[1, 2, 3].map(r => <option key={r} value={r}>Round {r}</option>)}
-          </select>
-          <span className="text-xs text-muted-foreground">
-            {(data?.rounds || []).map(r => `R${r.round}: ${r.opensAt ? fmtUtc(r.opensAt) : 'no date'} / ${r.discountPercent ?? '—'}%`).join(' · ')}
-          </span>
-        </div>
-
-        {loading && !data ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          </div>
-        ) : (
-          <div className="overflow-x-auto rounded-2xl border-2 border-border bg-card">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-[11px] uppercase tracking-wider text-muted-foreground border-b border-border">
-                  <th className="px-3 py-2">Financer</th>
-                  <th className="px-3 py-2">Round</th>
-                  <th className="px-3 py-2">Wallets</th>
-                  <th className="px-3 py-2 text-right">Expected</th>
-                  <th className="px-3 py-2 text-right">Remaining</th>
-                  <th className="px-3 py-2">State</th>
-                  <th className="px-3 py-2">Event</th>
-                  <th className="px-3 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {(data?.mandates || []).length === 0 && (
-                  <tr><td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">No mandates for this selection.</td></tr>
-                )}
-                {(data?.mandates || []).map(m => {
+  // One list, cut into rounds: each round carries its own header, its own rows
+  // and its own money line, so round 1 and round 2 are never read as one pile.
+  const renderMandateRow = (m: MandateRow) => {
                   const isOpen = expanded === m.mandateRef;
                   return (
                     <Fragment key={m.mandateRef}>
@@ -445,6 +410,218 @@ export default function AdminMandates() {
                           </td>
                         </tr>
                       )}
+                    </Fragment>
+    );
+  };
+
+  const mandatesOfRound = (r: number) => (data?.mandates || []).filter(m => m.round === r);
+  const fundingOfRound = (r: number) => (data?.funding || []).find(f => f.round === r) || null;
+  const roundsShown = [...new Set([
+    ...(data?.mandates || []).map(m => m.round),
+    ...(data?.funding || []).filter(f => f.mandateCount > 0).map(f => f.round),
+  ])].sort((a, b) => a - b);
+
+  /** What one round still has to pay, per currency, under the list of its mandates. */
+  const renderFunding = (f: RoundFunding | null) => {
+    if (!f || f.currencies.length === 0) {
+      return <p className="text-xs text-muted-foreground">{ADMIN_MANDATES.funding.none}</p>;
+    }
+    return (
+      <div className="space-y-2">
+        <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+          {fill(ADMIN_MANDATES.funding.heading, { round: f.round })}
+        </p>
+        <div className="flex flex-wrap gap-3">
+          {f.currencies.map(c => (
+            <div key={c.currency} className="min-w-[15rem] flex-1 rounded-xl border border-border bg-background p-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-xs font-bold text-foreground">{c.currency}</span>
+                <span className="font-mono text-lg font-bold text-foreground">{fmtFiat(c.fiatRemaining, c.currency)}</span>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {ADMIN_MANDATES.funding.stillToPay} · {fmtLana(c.lanaRemaining)} LANA
+              </p>
+              {c.gaps.length > 0 && (
+                <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                  {c.gaps.map(g => GAP_TEXT[g] || g).join(' · ')}
+                </p>
+              )}
+              <dl className="mt-2 space-y-0.5 text-[11px] text-muted-foreground">
+                <div className="flex justify-between gap-3">
+                  <dt>{ADMIN_MANDATES.funding.wholeRound}</dt>
+                  <dd className="font-mono">{fmtFiat(c.fiatExpected, c.currency)} · {fmtLana(c.lanaExpected)} LANA</dd>
+                </div>
+                {c.lanaAccepted > 0 && (
+                  <div className="flex justify-between gap-3">
+                    <dt>{ADMIN_MANDATES.funding.agreed}</dt>
+                    <dd className="font-mono">{fmtFiat(c.fiatAccepted, c.currency)} · {fmtLana(c.lanaAccepted)} LANA</dd>
+                  </div>
+                )}
+                {c.lanaSettled > 0 && (
+                  <div className="flex justify-between gap-3">
+                    <dt>{ADMIN_MANDATES.funding.paid}</dt>
+                    <dd className="font-mono">{fmtFiat(c.fiatSettled, c.currency)} · {fmtLana(c.lanaSettled)} LANA</dd>
+                  </div>
+                )}
+                {c.pricePerLana !== null && (
+                  <div className="flex justify-between gap-3">
+                    <dt>{ADMIN_MANDATES.funding.perLana}</dt>
+                    <dd className="font-mono" title={c.basis ? BASIS_TEXT[c.basis] : undefined}>
+                      {c.pricePerLana.toFixed(4)} {c.currency}
+                      {c.discountPercent !== null && <span className="ml-1">({c.discountPercent}% off {c.referenceRate?.toFixed(4)})</span>}
+                    </dd>
+                  </div>
+                )}
+              </dl>
+              {c.basis && <p className="mt-1 text-[10px] text-muted-foreground">{BASIS_TEXT[c.basis]}</p>}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  /** Everything still owed across the rounds, so the Split has one bottom line. */
+  const splitTotals = (() => {
+    const out = new Map<string, { value: number; complete: boolean }>();
+    for (const f of data?.funding || []) {
+      for (const c of f.currencies) {
+        const cell = out.get(c.currency) || { value: 0, complete: true };
+        if (c.fiatRemaining === null) cell.complete = false;
+        else cell.value += c.fiatRemaining;
+        out.set(c.currency, cell);
+      }
+    }
+    return [...out.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
+  })();
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col">
+      <AdminNav />
+      <div className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-12 max-w-6xl">
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-2 min-w-0">
+            <h1 className="text-3xl font-bold text-foreground">{ADMIN_MANDATES.title}</h1>
+            <p className="text-muted-foreground">{ADMIN_MANDATES.intro}</p>
+            <p className="text-xs text-muted-foreground">
+              Last sync: {fmtUtc(data?.lastSyncAt)}
+            </p>
+          </div>
+          <button
+            onClick={sync}
+            disabled={syncing}
+            className="rounded-lg border border-border px-4 py-2 text-sm font-bold text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+          >
+            {syncing ? ADMIN_MANDATES.syncing : ADMIN_MANDATES.sync}
+          </button>
+        </div>
+
+        {banners.length > 0 && (
+          <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 space-y-1">
+            {banners.map((b, i) => <p key={i} className="text-xs text-amber-800 dark:text-amber-300">{b}</p>)}
+          </div>
+        )}
+
+        {/* What the whole Split still owes, before the per-round detail */}
+        {splitTotals.length > 0 && (
+          <div className="mb-4 rounded-2xl border-2 border-border bg-card p-4">
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">{ADMIN_MANDATES.funding.splitTotal}</p>
+            <div className="mt-1 flex flex-wrap items-baseline gap-x-6 gap-y-1">
+              {splitTotals.map(([currency, cell]) => (
+                <span key={currency} className="font-mono text-2xl font-bold text-foreground">
+                  {fmtFiat(cell.value, currency)}
+                  {!cell.complete && <span className="ml-1 align-middle text-xs font-normal text-amber-700 dark:text-amber-400">+ unpriced</span>}
+                </span>
+              ))}
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">{ADMIN_MANDATES.funding.projection}</p>
+          </div>
+        )}
+
+        {/* Tiles */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
+          {tiles.map(([label, value]) => (
+            <div key={label} className="rounded-xl border border-border bg-card p-3">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">{label}</p>
+              <p className="font-mono text-base font-bold text-foreground">{fmtLana(value)} <span className="text-xs font-normal text-muted-foreground">LANA</span></p>
+            </div>
+          ))}
+        </div>
+
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          {splitOptions.length > 0 ? (
+            <select value={split ?? ''} onChange={e => setSplit(Number(e.target.value))}
+              className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
+              {splitOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {split !== null && !splitOptions.some(o => o.value === split) && <option value={split}>Split {split}</option>}
+            </select>
+          ) : (
+            <input type="number" min="1" value={split ?? ''} onChange={e => setSplit(e.target.value ? Number(e.target.value) : null)}
+              className="w-28 rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono" placeholder="Split" />
+          )}
+          <select value={currency} onChange={e => setCurrency(e.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
+            <option value="">All currencies</option>
+            {currencies.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={round} onChange={e => setRound(e.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
+            <option value="">All rounds</option>
+            {[1, 2, 3].map(r => <option key={r} value={r}>Round {r}</option>)}
+          </select>
+          <span className="text-xs text-muted-foreground">
+            {(data?.rounds || []).map(r => `R${r.round}: ${r.opensAt ? fmtUtc(r.opensAt) : 'no date'} / ${r.discountPercent ?? '—'}%`).join(' · ')}
+          </span>
+        </div>
+
+        {loading && !data ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-2xl border-2 border-border bg-card">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wider text-muted-foreground border-b border-border">
+                  <th className="px-3 py-2">Financer</th>
+                  <th className="px-3 py-2">Round</th>
+                  <th className="px-3 py-2">Wallets</th>
+                  <th className="px-3 py-2 text-right">Expected</th>
+                  <th className="px-3 py-2 text-right">Remaining</th>
+                  <th className="px-3 py-2">State</th>
+                  <th className="px-3 py-2">Event</th>
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {roundsShown.length === 0 && (
+                  <tr><td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">No mandates for this selection.</td></tr>
+                )}
+                {roundsShown.map(r => {
+                  const terms = (data?.rounds || []).find(x => x.round === r);
+                  const f = fundingOfRound(r);
+                  const rows = mandatesOfRound(r);
+                  return (
+                    <Fragment key={`round-${r}`}>
+                      <tr className="border-y-2 border-border bg-muted/50">
+                        <td colSpan={8} className="px-3 py-2">
+                          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                            <span className="text-base font-bold text-foreground">{fill(MANDATE.roundLabel, { round: r })}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {f ? fill(ADMIN_MANDATES.funding.mandateCount, { count: f.mandateCount }) : ''}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {terms?.opensAt ? fmtUtc(terms.opensAt) : ADMIN_MANDATES.funding.noDate}
+                              {terms?.discountPercent !== null && terms?.discountPercent !== undefined ? ` · ${terms.discountPercent}%` : ''}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                      {rows.length === 0 ? (
+                        <tr><td colSpan={8} className="px-3 py-4 text-center text-xs text-muted-foreground">{ADMIN_MANDATES.funding.filteredOut}</td></tr>
+                      ) : rows.map(renderMandateRow)}
+                      <tr className="border-b-2 border-border bg-muted/20">
+                        <td colSpan={8} className="px-3 py-3">{renderFunding(f)}</td>
+                      </tr>
                     </Fragment>
                   );
                 })}

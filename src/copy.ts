@@ -447,6 +447,22 @@ export const ADMIN_MANDATES = {
     balancesPartial: 'Some on-chain balances could not be read.',
   },
   acceptedExceedsReceived: 'Accepted exceeds received — a re-allocation shrank this budget after acceptance.',
+  funding: {
+    heading: 'What round {round} still has to pay',
+    stillToPay: 'still to pay',
+    wholeRound: 'Whole round',
+    agreed: 'Agreed, not yet paid',
+    paid: 'Already paid',
+    perLana: 'Per LANA',
+    mandateCount: '{count} mandates',
+    noDate: 'no date',
+    none: 'No mandates in this round, so nothing to pay.',
+    filteredOut: 'No mandates in this round match the filter above.',
+    splitTotal: 'Still to pay across all rounds of this Split',
+    projection:
+      'A projection at today\'s reference, not a price: only an accepted purchase price binds. ' +
+      'Money already agreed or paid is taken from the offers themselves.',
+  },
 } as const;
 
 // ─── the two status vocabularies ──────────────────────────────────────────
