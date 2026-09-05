@@ -243,10 +243,25 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
 
   // ── admin: worklist ─────────────────────────────────────────────────
 
+  /**
+   * The default split is the one whose mandates are in the window — but only if
+   * it has terms. Split 7 was settled the old way and deliberately has none, so
+   * opening on it showed an empty page and a zero cost for the whole treasury.
+   * When the live-window split has no terms and the upcoming one does, the
+   * upcoming one is the useful answer. An explicit ?split= always wins.
+   */
+  const defaultAdminSplit = (currentSplit: number | null): number | null => {
+    if (currentSplit === null) return null;
+    const liveWindow = currentSplit - BUYBACK_SPLIT_OFFSET;
+    if (termsRows(liveWindow).length > 0) return liveWindow;
+    if (termsRows(currentSplit).length > 0) return currentSplit;
+    return liveWindow;
+  };
+
   router.get('/admin/mandates', async (req: Request, res: Response) => {
     if (!requireAdmin(req, res)) return;
     const currentSplit = currentSplitNumber();
-    const split = parseSplitParam(req.query.split, currentSplit === null ? null : currentSplit - BUYBACK_SPLIT_OFFSET);
+    const split = parseSplitParam(req.query.split, defaultAdminSplit(currentSplit));
     if (split === null) return res.status(400).json({ error: 'split must be a positive integer' });
     const currencyFilter = String(req.query.currency || '').toUpperCase() || null;
     const roundFilter = req.query.round ? Number(req.query.round) : null;

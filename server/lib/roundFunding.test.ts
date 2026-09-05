@@ -177,3 +177,19 @@ describe('fundingByRound', () => {
     expect(round(out, 1).currencies).toEqual([]);
   });
 });
+
+/**
+ * The default split of the admin worklist is chosen in the route, but the
+ * reason lives here: a split with no terms cannot be priced, so landing on it
+ * shows a zero that reads as "this Split costs nothing".
+ */
+describe('an unpriced split', () => {
+  it('reports every round as unpriced rather than free', () => {
+    const out = fundingByRound(input({ terms: [] }));
+    const eur = out[0].currencies.find(c => c.currency === 'EUR')!;
+    expect(eur.fiatRemaining).toBeNull();
+    expect(eur.fiatExpected).toBeNull();
+    expect(eur.gaps).toContain('NO_DISCOUNT');
+    expect(eur.lanaRemaining).toBe(1000);   // the LANA is still counted
+  });
+});
