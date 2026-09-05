@@ -453,6 +453,10 @@ export const ADMIN_MANDATES = {
     paidIn: 'Paid in',
     payout: 'Will receive',
     paidInRound: 'Financers paid in',
+    model: 'the discount implies +{model}%',
+    offModel:
+      'This budget paid in more than the LANA on the mandate accounts for (the discount implies +{model}%). ' +
+      'Part of the money is not in settled purchases — a re-allocation, or purchases still in flight.',
   },
   funding: {
     heading: 'What round {round} still has to pay',

@@ -26,6 +26,27 @@ import { resolveReferenceBasis, type ReferenceBasis } from './referenceBasis.js'
 
 const LANOSHI = 100_000_000;
 
+/**
+ * direct.lana.fund's own projection (src/lib/projection.ts): a financer pays
+ * the reference plus a 20 % total commission, and the Split doubles the LANA,
+ * so a round at discount d returns ((2 / 1.2) x (1 - d/100) - 1). 22 % gives
+ * +30 %, 25 % gives +25 %.
+ *
+ * It is the yardstick, not a promise: a financer whose actual figure sits far
+ * from it has paid in money that is not yet in settled purchases, and that is
+ * worth seeing on the row rather than averaging away.
+ */
+export const TOTAL_COMMISSION_FACTOR = 1.2;
+export const SPLIT_MULTIPLIER = 2;
+
+export function modelReturnPercent(discountPercent: number | null | undefined): number | null {
+  if (!(typeof discountPercent === 'number' && Number.isFinite(discountPercent))) return null;
+  return Math.round((((SPLIT_MULTIPLIER / TOTAL_COMMISSION_FACTOR) * (1 - discountPercent / 100)) - 1) * 1000) / 10;
+}
+
+/** How far a financer's own figure may sit from the model before it is flagged, in points. */
+export const OFF_MODEL_POINTS = 1;
+
 /** Cents, half-up, the way priceAcquisition does it. */
 const cents = (n: number) => Math.round(n * 100) / 100;
 
@@ -86,6 +107,8 @@ export interface CurrencyFunding {
 export interface RoundFunding {
   round: number;
   mandateCount: number;
+  /** What this round's discount implies, for comparison with the real figures. */
+  modelReturnPercent: number | null;
   currencies: CurrencyFunding[];
   /** Sum over currencies of what is still outstanding, for a one-line read. */
   totalsByCurrency: Record<string, number | null>;
@@ -248,6 +271,7 @@ export function fundingByRound(input: FundingInput): RoundFunding[] {
     return {
       round,
       mandateCount: mandatesPerRound.get(round) || 0,
+      modelReturnPercent: modelReturnPercent(discountPercent),
       currencies,
       totalsByCurrency,
     };

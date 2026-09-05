@@ -65,6 +65,7 @@ interface CurrencyFunding {
 interface RoundFunding {
   round: number;
   mandateCount: number;
+  modelReturnPercent: number | null;
   currencies: CurrencyFunding[];
   totalsByCurrency: Record<string, number | null>;
 }
@@ -77,6 +78,10 @@ interface MandateMoney {
   /** What the treasury would pay for the whole mandate at today's reference. */
   payout: number | null;
   returnPercent: number | null;
+  /** What the round's discount implies, for comparison. */
+  modelReturnPercent: number | null;
+  /** The two do not agree: money paid in that is not in settled purchases. */
+  offModel: boolean;
 }
 
 interface MandateRow {
@@ -362,7 +367,12 @@ export default function AdminMandates() {
                             <div key={x.currency} className="font-mono text-[12px]">
                               {x.payout === null ? <span className="text-muted-foreground">—</span> : fmtFiat(x.payout, x.currency)}
                               {x.returnPercent !== null && (
-                                <span className={`ml-1 text-[10px] font-bold ${x.returnPercent >= 0 ? 'text-green-700 dark:text-green-400' : 'text-red-600'}`}>
+                                <span
+                                  title={x.offModel && x.modelReturnPercent !== null ? fill(ADMIN_MANDATES.money.offModel, { model: x.modelReturnPercent.toFixed(1) }) : undefined}
+                                  className={`ml-1 text-[10px] font-bold ${
+                                    x.offModel ? 'text-amber-700 dark:text-amber-400 underline decoration-dotted'
+                                      : x.returnPercent >= 0 ? 'text-green-700 dark:text-green-400' : 'text-red-600'}`}
+                                >
                                   {x.returnPercent >= 0 ? '+' : ''}{x.returnPercent.toFixed(1)}%
                                 </span>
                               )}
@@ -651,6 +661,9 @@ export default function AdminMandates() {
                             <span className="text-xs text-muted-foreground">
                               {terms?.opensAt ? fmtUtc(terms.opensAt) : ADMIN_MANDATES.funding.noDate}
                               {terms?.discountPercent !== null && terms?.discountPercent !== undefined ? ` · ${terms.discountPercent}%` : ''}
+                              {f?.modelReturnPercent !== null && f?.modelReturnPercent !== undefined
+                                ? ` · ${fill(ADMIN_MANDATES.money.model, { model: f.modelReturnPercent.toFixed(1) })}`
+                                : ''}
                             </span>
                           </div>
                         </td>

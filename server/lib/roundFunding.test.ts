@@ -13,7 +13,7 @@
  * "this round costs nothing".
  */
 import { describe, it, expect } from 'vitest';
-import { fundingByRound, projectPrice, type BudgetPaidIn, type FundingInput, type FundingMandate, type FundingOffer } from './roundFunding';
+import { fundingByRound, modelReturnPercent, projectPrice, type BudgetPaidIn, type FundingInput, type FundingMandate, type FundingOffer } from './roundFunding';
 
 const LANA = 100_000_000;
 const lanoshis = (lana: number) => Math.round(lana * LANA);
@@ -267,3 +267,17 @@ describe('paid in, and what comes back', () => {
   });
 });
 
+
+describe('the yardstick', () => {
+  it('turns a round discount into the return direct.lana.fund publishes', () => {
+    expect(modelReturnPercent(22)).toBe(30);
+    expect(modelReturnPercent(25)).toBe(25);
+    expect(modelReturnPercent(null)).toBeNull();
+  });
+
+  it("carries it on the round, so a financer's own figure can be compared with it", () => {
+    const out = fundingByRound(input());
+    expect(round(out, 1).modelReturnPercent).toBe(30);
+    expect(round(out, 2).modelReturnPercent).toBe(25);
+  });
+});

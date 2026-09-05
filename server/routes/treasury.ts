@@ -35,7 +35,7 @@ import {
 } from '../lib/roundMandate.js';
 import { ingestMandateEvent, pullRoundMandates, listMandatesForSplit, loadRoundTerms, loadReleases } from '../lib/roundMandateSync.js';
 import { consumedByMandate, offerRowsForFunding, offerTotalsByMandate } from '../lib/acquisitionOffer.js';
-import { fundingByRound, projectPrice, referenceForCurrency } from '../lib/roundFunding.js';
+import { fundingByRound, modelReturnPercent, OFF_MODEL_POINTS, projectPrice, referenceForCurrency } from '../lib/roundFunding.js';
 import { fetchBudgetMoney, type BudgetMoneyIndex } from '../lib/fundBudgets.js';
 import { BUYBACK_SPLIT_OFFSET } from '../lib/buybackSplit.js';
 
@@ -378,14 +378,20 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
           }
           paidIn = complete ? Math.round(sum * 100) / 100 : null;
         }
+        const returnPercent = paidIn !== null && paidIn > 0 && payout !== null
+          ? Math.round(((payout / paidIn) - 1) * 1000) / 10
+          : null;
+        const model = modelReturnPercent(discountPercent);
         return {
           currency,
           lana,
           paidIn,
           payout,
-          returnPercent: paidIn !== null && paidIn > 0 && payout !== null
-            ? Math.round(((payout / paidIn) - 1) * 1000) / 10
-            : null,
+          returnPercent,
+          modelReturnPercent: model,
+          // Paid in, but the LANA behind it is not all in settled purchases:
+          // a re-allocation, or purchases still in flight. Worth a look.
+          offModel: returnPercent !== null && model !== null && Math.abs(returnPercent - model) > OFF_MODEL_POINTS,
         };
       });
 
