@@ -34,7 +34,13 @@ export interface FundingMandate {
   round: number;
   split: number;
   status: 'announced' | 'closed';
-  wallets: Array<{ currency: string; lanaLanoshis: number }>;
+  wallets: Array<{ currency: string; lanaLanoshis: number; fundSettingId?: string | number | null }>;
+}
+
+/** What one financing budget paid in, from direct.lana.fund. */
+export interface BudgetPaidIn {
+  currency: string;
+  investedAmount: number;
 }
 
 export interface FundingOffer {
@@ -52,6 +58,10 @@ export type FundingGap = 'NO_RATE' | 'NO_DISCOUNT' | 'NO_REFERENCE';
 
 export interface CurrencyFunding {
   currency: string;
+  /** What the financers of this round paid in, in this currency. */
+  fiatPaidIn: number | null;
+  /** ((payout / paid in) − 1) × 100 for the whole round, when both are known. */
+  returnPercent: number | null;
   /** LANA the round may still acquire, and what it was granted in total. */
   lanaExpected: number;
   lanaRemaining: number;
@@ -81,6 +91,36 @@ export interface RoundFunding {
   totalsByCurrency: Record<string, number | null>;
 }
 
+/**
+ * The purchase price of an amount of LANA, built the way priceAcquisition
+ * builds a real one: gross to the cent, the round's discount to the cent, then
+ * the difference. Null when either half of the input is missing — an unpriced
+ * figure must stay unpriced rather than fall back to zero.
+ */
+export function projectPrice(
+  lana: number,
+  rate: number | null | undefined,
+  discountPercent: number | null | undefined,
+): number | null {
+  if (!(typeof rate === 'number' && rate > 0)) return null;
+  if (!(typeof discountPercent === 'number' && Number.isFinite(discountPercent))) return null;
+  const gross = cents(lana * rate);
+  const discount = cents(gross * discountPercent / 100);
+  return cents(gross - discount);
+}
+
+/** The reference a mandate's Split stands on right now, for one currency. */
+export function referenceForCurrency(input: {
+  currency: string;
+  split: number;
+  currentSplit: number | null;
+  rates: Record<string, number>;
+}) {
+  return resolveReferenceBasis({
+    mandateSplit: input.split, currentSplit: input.currentSplit, fx: input.rates[input.currency],
+  });
+}
+
 export interface FundingInput {
   /** The Split the mandates were published for. */
   split: number;
@@ -91,6 +131,11 @@ export interface FundingInput {
   terms: Array<{ round: number; discountPercent: number | null }>;
   /** KIND 38888 exchange_rates: fiat per LANA at the CURRENT Split. */
   rates: Record<string, number>;
+  /**
+   * fund_setting_id → what that budget paid in, from direct.lana.fund. Absent
+   * when it could not be read; then the paid-in figures are null, never zero.
+   */
+  paidByBudget?: Map<number, BudgetPaidIn> | null;
 }
 
 /**
@@ -106,9 +151,13 @@ export function fundingByRound(input: FundingInput): RoundFunding[] {
   type Tally = {
     expected: number; consumed: number; proposed: number; accepted: number; settled: number;
     fiatAccepted: number; fiatSettled: number;
+    paidIn: number; paidInKnown: boolean; budgets: Set<number>;
   };
   const tally = new Map<number, Map<string, Tally>>();
-  const blank = (): Tally => ({ expected: 0, consumed: 0, proposed: 0, accepted: 0, settled: 0, fiatAccepted: 0, fiatSettled: 0 });
+  const blank = (): Tally => ({
+    expected: 0, consumed: 0, proposed: 0, accepted: 0, settled: 0, fiatAccepted: 0, fiatSettled: 0,
+    paidIn: 0, paidInKnown: true, budgets: new Set<number>(),
+  });
   const cell = (round: number, currency: string): Tally => {
     if (!tally.has(round)) tally.set(round, new Map());
     const row = tally.get(round)!;
@@ -119,7 +168,18 @@ export function fundingByRound(input: FundingInput): RoundFunding[] {
   const mandatesPerRound = new Map<number, number>();
   for (const m of live) {
     mandatesPerRound.set(m.round, (mandatesPerRound.get(m.round) || 0) + 1);
-    for (const w of m.wallets) cell(m.round, w.currency).expected += w.lanaLanoshis;
+    for (const w of m.wallets) {
+      const c = cell(m.round, w.currency);
+      c.expected += w.lanaLanoshis;
+      if (!input.paidByBudget) { c.paidInKnown = false; continue; }
+      const id = Number(w.fundSettingId);
+      if (!Number.isInteger(id)) { c.paidInKnown = false; continue; }
+      if (c.budgets.has(id)) continue;              // a budget pays in once
+      const paid = input.paidByBudget.get(id);
+      if (!paid) { c.paidInKnown = false; continue; }
+      c.budgets.add(id);
+      c.paidIn += paid.investedAmount;
+    }
   }
 
   for (const o of input.offers) {
@@ -153,14 +213,9 @@ export function fundingByRound(input: FundingInput): RoundFunding[] {
         const expected = lana(t.expected);
         const remaining = lana(Math.max(0, t.expected - t.consumed));
 
-        // gross → discount → price, each rounded to the cent, exactly as a
-        // real purchase price is built.
-        const priceFor = (amount: number): number | null => {
-          if (!reference || discountPercent === null) return null;
-          const gross = cents(amount * reference.rate);
-          const discount = cents(gross * discountPercent / 100);
-          return cents(gross - discount);
-        };
+        const priceFor = (amount: number): number | null => projectPrice(amount, reference?.rate ?? null, discountPercent);
+        const fiatPaidIn = t.paidInKnown ? cents(t.paidIn) : null;
+        const fiatExpected = priceFor(expected);
 
         return {
           currency,
@@ -175,7 +230,11 @@ export function fundingByRound(input: FundingInput): RoundFunding[] {
           pricePerLana: reference && discountPercent !== null
             ? reference.rate * (1 - discountPercent / 100)
             : null,
-          fiatExpected: priceFor(expected),
+          fiatPaidIn,
+          returnPercent: fiatPaidIn !== null && fiatPaidIn > 0 && fiatExpected !== null
+            ? Math.round(((fiatExpected / fiatPaidIn) - 1) * 1000) / 10
+            : null,
+          fiatExpected,
           fiatRemaining: priceFor(remaining),
           fiatAccepted: cents(t.fiatAccepted),
           fiatSettled: cents(t.fiatSettled),

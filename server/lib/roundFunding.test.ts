@@ -13,7 +13,7 @@
  * "this round costs nothing".
  */
 import { describe, it, expect } from 'vitest';
-import { fundingByRound, type FundingInput, type FundingMandate, type FundingOffer } from './roundFunding';
+import { fundingByRound, projectPrice, type BudgetPaidIn, type FundingInput, type FundingMandate, type FundingOffer } from './roundFunding';
 
 const LANA = 100_000_000;
 const lanoshis = (lana: number) => Math.round(lana * LANA);
@@ -193,3 +193,77 @@ describe('an unpriced split', () => {
     expect(eur.lanaRemaining).toBe(1000);   // the LANA is still counted
   });
 });
+
+/**
+ * "They paid X, we pay Y" — the line the treasury reads for a feel of the
+ * whole thing. The paid-in half comes from direct.lana.fund, so the only ways
+ * it can be wrong are counting a budget twice and quietly turning a missing
+ * budget into a zero.
+ */
+describe('paid in, and what comes back', () => {
+  const paid = (entries: Array<[number, number, string?]>) =>
+    new Map<number, BudgetPaidIn>(entries.map(([id, amount, currency]) => [id, { currency: currency || 'EUR', investedAmount: amount }]));
+
+  it('adds up what the round paid in, per currency, and the return on it', () => {
+    const out = fundingByRound(input({
+      mandates: [mandate({
+        dTag: '8:1:a', round: 1,
+        wallets: [
+          { currency: 'EUR', lanaLanoshis: lanoshis(1000), fundSettingId: 52 },
+          { currency: 'GBP', lanaLanoshis: lanoshis(500), fundSettingId: 53 },
+        ],
+      })],
+      paidByBudget: paid([[52, 153.6], [53, 66, 'GBP']]),
+    }));
+    const eur = cur(out, 1, 'EUR');
+    // 153.60 paid, 199.68 back: the projection direct.lana.fund publishes for
+    // a 22 % round, (2 / 1.2) x 0.78 - 1 = +30 %.
+    expect(eur.fiatPaidIn).toBe(153.6);
+    expect(eur.fiatExpected).toBe(199.68);
+    expect(eur.returnPercent).toBe(30);
+    expect(cur(out, 1, 'GBP').fiatPaidIn).toBe(66);
+  });
+
+  it('counts a budget once even when two wallet lines carry it', () => {
+    const out = fundingByRound(input({
+      mandates: [mandate({
+        dTag: '8:1:a', round: 1,
+        wallets: [
+          { currency: 'EUR', lanaLanoshis: lanoshis(600), fundSettingId: 52 },
+          { currency: 'EUR', lanaLanoshis: lanoshis(400), fundSettingId: 52 },
+        ],
+      })],
+      paidByBudget: paid([[52, 153.6]]),
+    }));
+    expect(cur(out, 1, 'EUR').fiatPaidIn).toBe(153.6);
+    expect(cur(out, 1, 'EUR').lanaExpected).toBe(1000);
+  });
+
+  it('says nothing rather than zero when a budget or the whole source is missing', () => {
+    const missingOne = fundingByRound(input({
+      mandates: [mandate({
+        dTag: '8:1:a', round: 1,
+        wallets: [
+          { currency: 'EUR', lanaLanoshis: lanoshis(500), fundSettingId: 52 },
+          { currency: 'EUR', lanaLanoshis: lanoshis(500), fundSettingId: 999 },
+        ],
+      })],
+      paidByBudget: paid([[52, 153.6]]),
+    }));
+    expect(cur(missingOne, 1, 'EUR').fiatPaidIn).toBeNull();
+    expect(cur(missingOne, 1, 'EUR').returnPercent).toBeNull();
+
+    const noSource = fundingByRound(input({ paidByBudget: null }));
+    expect(cur(noSource, 1, 'EUR').fiatPaidIn).toBeNull();
+    // The LANA and the payout are unaffected by a missing paid-in source.
+    expect(cur(noSource, 1, 'EUR').fiatExpected).toBe(199.68);
+  });
+
+  it('projectPrice refuses to price without a rate or a discount', () => {
+    expect(projectPrice(1000, 0.256, 22)).toBe(199.68);
+    expect(projectPrice(1000, null, 22)).toBeNull();
+    expect(projectPrice(1000, 0.256, null)).toBeNull();
+    expect(projectPrice(1000, 0, 22)).toBeNull();
+  });
+});
+

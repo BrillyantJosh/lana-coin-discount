@@ -445,8 +445,15 @@ export const ADMIN_MANDATES = {
     splitUnknown: 'The current Split is unknown (no KIND 38888). No window can be judged.',
     staleSync: 'The last verified relay sync is older than 24 hours.',
     balancesPartial: 'Some on-chain balances could not be read.',
+    paidInUnavailable: 'direct.lana.fund did not answer, so the paid-in column is empty. The LANA figures are unaffected.',
+    paidInStale: 'The paid-in figures are the last ones direct.lana.fund gave; it did not answer just now.',
   },
   acceptedExceedsReceived: 'Accepted exceeds received — a re-allocation shrank this budget after acceptance.',
+  money: {
+    paidIn: 'Paid in',
+    payout: 'Will receive',
+    paidInRound: 'Financers paid in',
+  },
   funding: {
     heading: 'What round {round} still has to pay',
     stillToPay: 'still to pay',

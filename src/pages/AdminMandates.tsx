@@ -44,6 +44,8 @@ interface MandateOffer {
 
 interface CurrencyFunding {
   currency: string;
+  fiatPaidIn: number | null;
+  returnPercent: number | null;
   lanaExpected: number;
   lanaRemaining: number;
   lanaProposed: number;
@@ -67,6 +69,16 @@ interface RoundFunding {
   totalsByCurrency: Record<string, number | null>;
 }
 
+interface MandateMoney {
+  currency: string;
+  lana: number;
+  /** Fiat this financer paid into the budgets behind this mandate. */
+  paidIn: number | null;
+  /** What the treasury would pay for the whole mandate at today's reference. */
+  payout: number | null;
+  returnPercent: number | null;
+}
+
 interface MandateRow {
   mandateRef: string;
   eventId: string;
@@ -81,6 +93,7 @@ interface MandateRow {
   acceptedLana: number;
   settledLana: number;
   remainingLana: number;
+  money: MandateMoney[];
   state: RoundState;
   opensAt: string | null;
   discountPercent: number | null;
@@ -93,7 +106,10 @@ interface MandatesResponse {
   split: number;
   currentSplit: number | null;
   lastSyncAt: string | null;
-  degraded: { noEvents: boolean; noTerms: boolean; splitUnknown: boolean; staleSync: boolean; balancesPartial: boolean };
+  degraded: {
+    noEvents: boolean; noTerms: boolean; splitUnknown: boolean; staleSync: boolean; balancesPartial: boolean;
+    paidInUnavailable?: boolean; paidInStale?: boolean;
+  };
   totals: { expectedLana: number; remainingLana: number; proposedLana: number; acceptedLana: number; settledLana: number };
   rounds: Array<{ round: number; opensAt: string | null; discountPercent: number | null }>;
   funding: RoundFunding[];
@@ -299,6 +315,8 @@ export default function AdminMandates() {
   if (degraded?.noTerms) banners.push(ADMIN_MANDATES.degraded.noTerms);
   if (degraded?.staleSync) banners.push(ADMIN_MANDATES.degraded.staleSync);
   if (degraded?.balancesPartial) banners.push(ADMIN_MANDATES.degraded.balancesPartial);
+  if (degraded?.paidInUnavailable) banners.push(ADMIN_MANDATES.degraded.paidInUnavailable);
+  if (degraded?.paidInStale) banners.push(ADMIN_MANDATES.degraded.paidInStale);
 
   const tiles: Array<[string, number | undefined]> = [
     [ADMIN_MANDATES.tiles.expected, data?.totals.expectedLana],
@@ -332,6 +350,25 @@ export default function AdminMandates() {
                         </td>
                         <td className="px-3 py-3 text-right font-mono whitespace-nowrap">{fmtLana(m.expectedLana)}</td>
                         <td className="px-3 py-3 text-right font-mono whitespace-nowrap font-bold">{fmtLana(m.remainingLana)}</td>
+                        <td className="px-3 py-3 text-right whitespace-nowrap">
+                          {m.money.length === 0 ? <span className="text-muted-foreground">—</span> : m.money.map(x => (
+                            <div key={x.currency} className="font-mono text-[12px]">
+                              {x.paidIn === null ? <span className="text-muted-foreground">—</span> : fmtFiat(x.paidIn, x.currency)}
+                            </div>
+                          ))}
+                        </td>
+                        <td className="px-3 py-3 text-right whitespace-nowrap">
+                          {m.money.length === 0 ? <span className="text-muted-foreground">—</span> : m.money.map(x => (
+                            <div key={x.currency} className="font-mono text-[12px]">
+                              {x.payout === null ? <span className="text-muted-foreground">—</span> : fmtFiat(x.payout, x.currency)}
+                              {x.returnPercent !== null && (
+                                <span className={`ml-1 text-[10px] font-bold ${x.returnPercent >= 0 ? 'text-green-700 dark:text-green-400' : 'text-red-600'}`}>
+                                  {x.returnPercent >= 0 ? '+' : ''}{x.returnPercent.toFixed(1)}%
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </td>
                         <td className="px-3 py-3">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${STATE_TONE[m.state] || STATE_TONE.split_unknown}`}>
                             {MANDATE.states[m.state] || m.state}
@@ -371,7 +408,7 @@ export default function AdminMandates() {
                       </tr>
                       {isOpen && (
                         <tr className="border-b border-border/50 bg-muted/20">
-                          <td colSpan={8} className="px-3 py-3">
+                          <td colSpan={10} className="px-3 py-3">
                             {m.offers.length === 0 ? (
                               <p className="text-xs text-muted-foreground">No offers against this mandate.</p>
                             ) : (
@@ -587,6 +624,8 @@ export default function AdminMandates() {
                   <th className="px-3 py-2">Wallets</th>
                   <th className="px-3 py-2 text-right">Expected</th>
                   <th className="px-3 py-2 text-right">Remaining</th>
+                  <th className="px-3 py-2 text-right">{ADMIN_MANDATES.money.paidIn}</th>
+                  <th className="px-3 py-2 text-right">{ADMIN_MANDATES.money.payout}</th>
                   <th className="px-3 py-2">State</th>
                   <th className="px-3 py-2">Event</th>
                   <th className="px-3 py-2"></th>
@@ -594,7 +633,7 @@ export default function AdminMandates() {
               </thead>
               <tbody>
                 {roundsShown.length === 0 && (
-                  <tr><td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">No mandates for this selection.</td></tr>
+                  <tr><td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">No mandates for this selection.</td></tr>
                 )}
                 {roundsShown.map(r => {
                   const terms = (data?.rounds || []).find(x => x.round === r);
@@ -603,7 +642,7 @@ export default function AdminMandates() {
                   return (
                     <Fragment key={`round-${r}`}>
                       <tr className="border-y-2 border-border bg-muted/50">
-                        <td colSpan={8} className="px-3 py-2">
+                        <td colSpan={10} className="px-3 py-2">
                           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
                             <span className="text-base font-bold text-foreground">{fill(MANDATE.roundLabel, { round: r })}</span>
                             <span className="text-xs text-muted-foreground">
@@ -617,10 +656,10 @@ export default function AdminMandates() {
                         </td>
                       </tr>
                       {rows.length === 0 ? (
-                        <tr><td colSpan={8} className="px-3 py-4 text-center text-xs text-muted-foreground">{ADMIN_MANDATES.funding.filteredOut}</td></tr>
+                        <tr><td colSpan={10} className="px-3 py-4 text-center text-xs text-muted-foreground">{ADMIN_MANDATES.funding.filteredOut}</td></tr>
                       ) : rows.map(renderMandateRow)}
                       <tr className="border-b-2 border-border bg-muted/20">
-                        <td colSpan={8} className="px-3 py-3">{renderFunding(f)}</td>
+                        <td colSpan={10} className="px-3 py-3">{renderFunding(f)}</td>
                       </tr>
                     </Fragment>
                   );

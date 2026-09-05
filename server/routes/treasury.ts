@@ -35,7 +35,8 @@ import {
 } from '../lib/roundMandate.js';
 import { ingestMandateEvent, pullRoundMandates, listMandatesForSplit, loadRoundTerms, loadReleases } from '../lib/roundMandateSync.js';
 import { consumedByMandate, offerRowsForFunding, offerTotalsByMandate } from '../lib/acquisitionOffer.js';
-import { fundingByRound } from '../lib/roundFunding.js';
+import { fundingByRound, projectPrice, referenceForCurrency } from '../lib/roundFunding.js';
+import { fetchBudgetMoney, type BudgetMoneyIndex } from '../lib/fundBudgets.js';
 import { BUYBACK_SPLIT_OFFSET } from '../lib/buybackSplit.js';
 
 const db = () => getDbHandle();
@@ -321,6 +322,16 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
       }
     }
 
+    // What the financers paid in. direct.lana.fund's own record — the mandate
+    // events never carry fiat. A failure leaves the columns empty, never zero.
+    let budgetMoney: BudgetMoneyIndex | null = null;
+    try {
+      budgetMoney = await fetchBudgetMoney();
+    } catch {
+      budgetMoney = null;
+    }
+    const rates = getExchangeRatesFromDb();
+
     const now = Math.floor(Date.now() / 1000);
     const agg = { expected: 0, remaining: 0, proposed: 0, accepted: 0, settled: 0 };
     const rows = mandates.map(m => {
@@ -340,6 +351,44 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         agg.expected += m.lanaReceivedLanoshis; agg.remaining += remaining;
         agg.proposed += tot.proposed; agg.accepted += tot.accepted; agg.settled += tot.settled;
       }
+      // "They paid X, we pay Y" for THIS financer, per currency: the paid-in
+      // side from direct.lana.fund, the payout side at the same reference and
+      // round discount the round block uses.
+      const byCurrency = new Map<string, { lanaLanoshis: number; budgets: Set<number> }>();
+      for (const w of m.wallets) {
+        if (!byCurrency.has(w.currency)) byCurrency.set(w.currency, { lanaLanoshis: 0, budgets: new Set<number>() });
+        const cell = byCurrency.get(w.currency)!;
+        cell.lanaLanoshis += w.lanaLanoshis;
+        const id = Number(w.fundSettingId);
+        if (Number.isInteger(id)) cell.budgets.add(id);
+      }
+      const discountPercent = termsByRound.get(m.round)?.discountPercent ?? null;
+      const money = [...byCurrency.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([currency, cell]) => {
+        const reference = referenceForCurrency({ currency, split: m.split, currentSplit, rates });
+        const lana = toLana(cell.lanaLanoshis);
+        const payout = projectPrice(lana, reference?.rate ?? null, discountPercent);
+        let paidIn: number | null = null;
+        if (budgetMoney) {
+          let sum = 0;
+          let complete = cell.budgets.size > 0;
+          for (const id of cell.budgets) {
+            const b = budgetMoney.byId.get(id);
+            if (!b) { complete = false; break; }
+            sum += b.investedAmount;
+          }
+          paidIn = complete ? Math.round(sum * 100) / 100 : null;
+        }
+        return {
+          currency,
+          lana,
+          paidIn,
+          payout,
+          returnPercent: paidIn !== null && paidIn > 0 && payout !== null
+            ? Math.round(((payout / paidIn) - 1) * 1000) / 10
+            : null,
+        };
+      });
+
       return {
         mandateRef: m.dTag,
         eventId: m.eventId,
@@ -364,6 +413,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         opensAt: state.opensAt === null ? null : new Date(state.opensAt * 1000).toISOString(),
         discountPercent: state.discountPercent,
         released: release ? { by: release.released_by, reason: release.reason, at: release.released_at } : null,
+        money,
         warnings,
         offers: offersByRef.get(m.dTag) || [],
       };
@@ -375,11 +425,14 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
       currentSplit,
       mandates: allForSplit.map(m => ({
         dTag: m.dTag, round: m.round, split: m.split, status: m.status,
-        wallets: m.wallets.map(w => ({ currency: w.currency, lanaLanoshis: w.lanaLanoshis })),
+        wallets: m.wallets.map(w => ({ currency: w.currency, lanaLanoshis: w.lanaLanoshis, fundSettingId: w.fundSettingId })),
       })),
       offers: offerRowsForFunding(db(), fundingDTags),
       terms: terms.map(t => ({ round: t.round, discountPercent: t.discountPercent })),
-      rates: getExchangeRatesFromDb(),
+      rates,
+      paidByBudget: budgetMoney
+        ? new Map([...budgetMoney.byId].map(([id, b]) => [id, { currency: b.currency, investedAmount: b.investedAmount }]))
+        : null,
     });
 
     const lastSync = getAppSetting(LAST_SYNC_SETTING_KEY) || null;
@@ -394,6 +447,8 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         splitUnknown: currentSplit === null,
         staleSync: !Number.isFinite(lastSyncMs) || Date.now() - lastSyncMs > STALE_SYNC_MS,
         balancesPartial,
+        paidInUnavailable: budgetMoney === null,
+        paidInStale: budgetMoney?.stale === true,
       },
       totals: {
         expectedLana: toLana(agg.expected), remainingLana: toLana(agg.remaining),
