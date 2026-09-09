@@ -4,7 +4,7 @@
  * account still get its LANA out by any route".
  */
 import { describe, it, expect } from 'vitest';
-import { evaluateFreeze, walletListSignal, parseRegistrarBody, OWN_PROCESS_FREEZE, type FreezeSignal } from './freeze';
+import { evaluateFreeze, walletListSignal, parseRegistrarBody, freezeStopsSale, OWN_PROCESS_FREEZE, type FreezeSignal } from './freeze';
 
 const reg = (frozen: boolean, reachable = true): FreezeSignal =>
   ({ source: 'registrar', reachable, frozen, detail: frozen ? 'registrar: wallet frozen' : undefined });
@@ -297,5 +297,40 @@ describe('reading the registrar body', () => {
     const sig = parseRegistrarBody({ frozen: true, wallet_type: LANAPAYS });
     expect(sig.freezeReason).toBeUndefined();
     expect(evaluateFreeze([sig], LANAPAYS).blocked).toBe(true);
+  });
+});
+
+describe('freezeStopsSale — the one rule the wallet list is built from', () => {
+  it('lets an OWN-process freeze on a LanaPays.Us wallet through', () => {
+    expect(freezeStopsSale(OWN_PROCESS_FREEZE, 'LanaPays.Us')).toBe(false);
+    expect(freezeStopsSale(OWN_PROCESS_FREEZE, 'lanapays.us')).toBe(false);
+  });
+
+  it('stops it on every other class', () => {
+    for (const t of ['Main Wallet', 'Wallet', 'Lana8Wonder', 'Business Wallet', '', null, undefined]) {
+      expect(freezeStopsSale(OWN_PROCESS_FREEZE, t as any), String(t)).toBe(true);
+    }
+  });
+
+  it('stops every other reason, LanaPays.Us or not', () => {
+    for (const r of ['frozen_max_cap', 'frozen_too_wild', 'frozen_unreg_Lanas', 'frozen_l8w', 'frozen']) {
+      expect(freezeStopsSale(r, 'LanaPays.Us'), r).toBe(true);
+    }
+  });
+
+  it('is not a freeze at all when there is no status', () => {
+    for (const empty of ['', '   ', null, undefined]) {
+      expect(freezeStopsSale(empty as any, 'LanaPays.Us')).toBe(false);
+    }
+  });
+
+  it('agrees with the gate on the same inputs', () => {
+    // The list offers exactly what the gate would allow, and nothing else.
+    for (const reason of [OWN_PROCESS_FREEZE, 'frozen_max_cap', 'frozen']) {
+      for (const type of ['LanaPays.Us', 'Main Wallet']) {
+        const sig: FreezeSignal = { source: 'registrar', reachable: true, frozen: true, freezeReason: reason, walletType: type };
+        expect(evaluateFreeze([sig], type).blocked, `${reason} on ${type}`).toBe(freezeStopsSale(reason, type));
+      }
+    }
   });
 });

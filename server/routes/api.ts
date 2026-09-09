@@ -7,6 +7,7 @@ import { fetchKind38888, fetchKind0, fetchUserWallets, signAndPublishEvent, fetc
 import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze.js';
 import { evaluateBuybackSplit, isScopedWalletType } from '../lib/buybackSplit.js';
 import { isSellableWalletType } from '../lib/sellableWallet.js';
+import { freezeStopsSale } from '../lib/freeze.js';
 import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from '../lib/sendLock.js';
 import { buildLiquiditySeries, type FlowRow } from '../lib/liquidity.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
@@ -248,7 +249,13 @@ router.get('/user/:hexId/wallets', async (req: Request, res: Response) => {
 
     const allWallets = await fetchUserWallets(String(hexId), relays, lanaRegistrar);
 
-    const wallets = allWallets.filter(w => isSellableWalletType(w.walletType));
+    // Whether each freeze actually stops a sale is decided HERE, with the same
+    // function the gate refuses by — not in the browser, where it drifted into
+    // "any freeze status means untouchable" and made an OWN-process freeze look
+    // like something the seller could go and undo.
+    const wallets = allWallets
+      .filter(w => isSellableWalletType(w.walletType))
+      .map(w => ({ ...w, freezeStops: freezeStopsSale(w.freezeStatus, w.walletType) }));
 
     return res.json({ wallets });
   } catch (error) {

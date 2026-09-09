@@ -261,6 +261,11 @@ export const OFFER = {
     'A counterparty must have no open obligations of their own before Lana.discount will consider a proposal. ' +
     'Settle what is outstanding and this page opens again.',
   walletFrozen: 'A frozen wallet cannot transfer LANA. Unfreeze it first, then come back.',
+  // A freeze that does not stop a sale. The OWN process freezes a person, not
+  // their coins, and pointing them at unfreeze.lanapays.us offered a door they
+  // cannot open.
+  walletFrozenSellable:
+    'This wallet is frozen by the OWN process. That does not stop a financing-round sale — you may propose from it.',
   walletOutOfScopeTitle: 'We are not acquiring from this wallet',
   consolidateTitle: 'This wallet needs consolidating first',
   consolidateBody:

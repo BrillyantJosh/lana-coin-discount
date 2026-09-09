@@ -75,6 +75,24 @@ export interface FreezeSignal {
  */
 export const OWN_PROCESS_FREEZE = 'frozen_own_person';
 
+/**
+ * Does a freeze on THIS wallet stop it being sold from?
+ *
+ * The same rule the gate applies, exported so the wallet list can be built from
+ * it too. The sell page used to grey out anything carrying a freeze status and
+ * never asked the server at all, so a wallet the gate would have allowed was
+ * unreachable — the seller saw only "unfreeze it first, then come back", which
+ * for an OWN-process freeze is advice they cannot act on.
+ *
+ * One definition, two callers: the gate that refuses, and the list that offers.
+ */
+export function freezeStopsSale(freezeStatus: string | null | undefined, walletType: string | null | undefined): boolean {
+  const status = String(freezeStatus || '').trim();
+  if (!status) return false;
+  if (status !== OWN_PROCESS_FREEZE) return true;
+  return !isScopedWalletType(walletType);
+}
+
 /** Does this signal's freeze stand, given what is being sold from? */
 function freezeStands(s: FreezeSignal, sellingWalletType: string | undefined): boolean {
   if (!s.reachable || !s.frozen) return false;

@@ -41,6 +41,12 @@ interface RegisteredWallet {
   amountUnregistered?: string;
   status?: string;
   freezeStatus?: string;
+  /**
+   * Whether that freeze actually stops a sale. Decided by the server, with the
+   * same function the gate refuses by — the browser must not have its own
+   * opinion about which freezes count. Absent (an older server) means it does.
+   */
+  freezeStops?: boolean;
 }
 
 interface WalletBalance {
@@ -844,20 +850,26 @@ const SubmitOffer = () => {
                     <div className="space-y-3">
                       {wallets.map(w => {
                         const isFrozen = !!w.freezeStatus;
+                        // Not every freeze stops a sale. An OWN-process freeze
+                        // on a LanaPays.Us wallet does not, and telling that
+                        // seller to "unfreeze it first" pointed them at
+                        // something they cannot undo. The server decides;
+                        // absent (an older server) still means blocked.
+                        const blocked = isFrozen && w.freezeStops !== false;
                         return (
                           <button
                             key={w.walletId}
                             // A frozen wallet cannot transfer, so it cannot be
                             // offered from. The server refuses it too; this
                             // only stops the walk into a dead end.
-                            disabled={isFrozen}
-                            title={isFrozen ? OFFER.walletFrozen : undefined}
-                            onClick={() => { if (!isFrozen) setSelectedWallet(w.walletId); }}
+                            disabled={blocked}
+                            title={blocked ? OFFER.walletFrozen : undefined}
+                            onClick={() => { if (!blocked) setSelectedWallet(w.walletId); }}
                             className={`w-full rounded-xl border-2 px-4 sm:px-5 py-4 text-left transition-all ${
                               selectedWallet === w.walletId
                                 ? 'border-primary bg-primary/5'
                                 : 'border-border hover:border-muted-foreground/30'
-                            } ${isFrozen ? 'opacity-60 cursor-not-allowed hover:border-border' : ''}`}
+                            } ${blocked ? 'opacity-60 cursor-not-allowed hover:border-border' : ''}`}
                           >
                             <div className="flex items-start gap-3 sm:gap-4">
                               <div className="flex-1 min-w-0">
@@ -871,12 +883,16 @@ const SubmitOffer = () => {
                                     {w.walletId.slice(0, 10)}...{w.walletId.slice(-6)}
                                   </span>
                                   {isFrozen && (
-                                    <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
-                                      Frozen
+                                    <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                                      blocked
+                                        ? 'bg-blue-100 text-blue-700'
+                                        : 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
+                                    }`}>
+                                      {blocked ? 'Frozen' : 'Frozen · can sell'}
                                     </span>
                                   )}
                                 </div>
-                                {isFrozen && (
+                                {isFrozen && blocked && (
                                   <p className="text-xs text-blue-700 mb-1">
                                     {OFFER.walletFrozen}{' '}
                                     <a
@@ -888,6 +904,11 @@ const SubmitOffer = () => {
                                     >
                                       unfreeze.lanapays.us
                                     </a>
+                                  </p>
+                                )}
+                                {isFrozen && !blocked && (
+                                  <p className="text-xs text-green-700 dark:text-green-400 mb-1">
+                                    {OFFER.walletFrozenSellable}
                                   </p>
                                 )}
                                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
