@@ -1811,6 +1811,10 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
         exchangeRate: o.exchange_rate,
         txHash: o.tx_hash,
         status: o.status,
+        // Which gate released this leg. The page needs it to tell an order
+        // that is about to go out from one that nothing will ever pick up.
+        brainAuthorized: o.brain_authorized === 1,
+        batchRef: o.batch_ref || null,
         createdAt: o.created_at,
       })),
       localBatches: localBatches.map((b: any) => ({

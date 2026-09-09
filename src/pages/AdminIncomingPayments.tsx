@@ -63,6 +63,8 @@ interface LanaOrder {
   exchangeRate: number;
   txHash: string | null;
   status: string;
+  brainAuthorized: boolean;
+  batchRef: string | null;
   createdAt: string;
 }
 
@@ -82,13 +84,33 @@ interface BatchGroup {
   localBatch: LocalBatch | null;
 }
 
-type TabId = 'pending_direct' | 'incoming' | 'received' | 'lana_bought' | 'lana_sent';
+/** What the batch row actually holds. Four values, unchanged. */
+type BatchStatus = 'incoming' | 'received' | 'lana_bought' | 'lana_sent';
+/** What the operator is shown. 'received' and 'lana_bought' are one view. */
+type TabId = 'pending_direct' | 'incoming' | 'awaiting_lana' | 'lana_sent';
+
+/**
+ * 'received' and 'lana_bought' used to be two tabs with a button each, and the
+ * owner walked a batch through both by hand. Neither click decided anything:
+ * confirming the FIAT is what releases the LANA, and the rest is bookkeeping
+ * that now closes itself from the evidence. Two steps that always happen
+ * together, instantly, are one step — so they are one tab.
+ *
+ * 'lana_bought' survives in the data as the manual release for the day the
+ * brain does not answer. It is offered per batch, only when it is needed,
+ * rather than standing in the road of every batch that does not need it.
+ */
+const STATUS_TAB: Record<BatchStatus, TabId> = {
+  incoming: 'incoming',
+  received: 'awaiting_lana',
+  lana_bought: 'awaiting_lana',
+  lana_sent: 'lana_sent',
+};
 
 const tabs: { id: TabId; label: string; desc: string; color: string }[] = [
   { id: 'pending_direct', label: 'Pending Direct', desc: 'Awaiting payment on Lana Direct Fund — not yet sent by investors', color: 'text-gray-500' },
   { id: 'incoming', label: 'Incoming', desc: 'FIAT payments sent by investors', color: 'text-amber-500' },
-  { id: 'received', label: 'Received', desc: 'FIAT confirmed on bank account', color: 'text-blue-500' },
-  { id: 'lana_bought', label: 'Pending to Send LANA', desc: 'LANA purchased with received FIAT — ready to distribute', color: 'text-purple-500' },
+  { id: 'awaiting_lana', label: 'Awaiting LANA', desc: 'FIAT confirmed on the bank account — the LANA goes out on its own, and the batch closes itself once every leg is on chain', color: 'text-blue-500' },
   { id: 'lana_sent', label: 'LANA Sent', desc: 'LANA distributed to recipients', color: 'text-emerald-500' },
 ];
 
@@ -298,7 +320,7 @@ const AdminIncomingPayments = () => {
     return () => clearInterval(t);
   }, [fetchData]);
 
-  const updateBatchStatus = async (batch: BatchGroup, newStatus: TabId) => {
+  const updateBatchStatus = async (batch: BatchGroup, newStatus: BatchStatus) => {
     if (!session) return;
     setUpdating(batch.batchRef);
     try {
@@ -477,11 +499,11 @@ const AdminIncomingPayments = () => {
     return lastActivityAt(b).localeCompare(lastActivityAt(a));
   });
 
-  // Filter by active tab
-  const filteredBatches = allBatches.filter(b => {
-    const ds = b.discountStatus || 'incoming';
-    return ds === activeTab;
-  });
+  // Filter by active tab. A batch's status is one of four; the tabs are one
+  // fewer, because 'received' and 'lana_bought' are the same waiting room.
+  const filteredBatches = allBatches.filter(
+    b => STATUS_TAB[(b.discountStatus || 'incoming') as BatchStatus] === activeTab
+  );
 
   // Paginate the filtered batches (default 100 per page).
   const totalBatches = filteredBatches.length;
@@ -490,9 +512,9 @@ const AdminIncomingPayments = () => {
   const paginatedBatches = filteredBatches.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   // Summary per tab
-  const tabCounts: Record<TabId, number> = { pending_direct: 0, incoming: 0, received: 0, lana_bought: 0, lana_sent: 0 };
+  const tabCounts: Record<TabId, number> = { pending_direct: 0, incoming: 0, awaiting_lana: 0, lana_sent: 0 };
   const tabTotals: Record<TabId, Map<string, number>> = {
-    pending_direct: new Map(), incoming: new Map(), received: new Map(), lana_bought: new Map(), lana_sent: new Map(),
+    pending_direct: new Map(), incoming: new Map(), awaiting_lana: new Map(), lana_sent: new Map(),
   };
 
   // Count pending_direct orders (not grouped into batches)
@@ -502,19 +524,36 @@ const AdminIncomingPayments = () => {
   }
 
   for (const b of allBatches) {
-    const ds = (b.discountStatus || 'incoming') as TabId;
-    if (tabCounts[ds] !== undefined) {
-      tabCounts[ds]++;
-      tabTotals[ds].set(b.currency, (tabTotals[ds].get(b.currency) || 0) + b.totalFiat);
+    const tab = STATUS_TAB[(b.discountStatus || 'incoming') as BatchStatus];
+    if (tab && tabCounts[tab] !== undefined) {
+      tabCounts[tab]++;
+      tabTotals[tab].set(b.currency, (tabTotals[tab].get(b.currency) || 0) + b.totalFiat);
     }
   }
 
-  const nextAction: Record<TabId, { label: string; next: TabId }> = {
-    pending_direct: { label: '', next: 'pending_direct' },
-    incoming: { label: 'Confirm Received', next: 'received' },
-    received: { label: 'Mark LANA Bought', next: 'lana_bought' },
-    lana_bought: { label: 'Mark LANA Sent', next: 'lana_sent' },
-    lana_sent: { label: '', next: 'lana_sent' },
+  // The only click left. Everything after it is the system's own work.
+  const confirmReceived = activeTab === 'incoming';
+
+  /**
+   * How far a batch's LANA has actually got, read from its own legs. This is
+   * what belongs on an "Awaiting LANA" row: not a button, but progress — and,
+   * where the brain has released nothing, the one case where a hand is needed.
+   */
+  const legsFor = (batch: BatchGroup) => {
+    const refs = new Set(batch.orders.map(o => o.transactionRef).filter(Boolean));
+    const legs = lanaOrders.filter(lo => refs.has(lo.transactionRef));
+    const pending = legs.filter(lo => lo.status === 'pending');
+    const sent = legs.filter(lo => lo.status === 'sent');
+    return {
+      total: legs.length,
+      sent: sent.length,
+      pending: pending.length,
+      pendingLanoshis: pending.reduce((s2, lo) => s2 + lo.lanaAmount, 0),
+      // Nothing will pick these up: the brain never released them and the batch
+      // is not marked bought either. This is when the manual release earns its
+      // keep — and the only time it is shown.
+      unreleased: pending.filter(lo => !lo.brainAuthorized).length,
+    };
   };
 
   // LANA we still owe = every order the wallet has not sent yet, whatever batch
@@ -541,7 +580,7 @@ const AdminIncomingPayments = () => {
         </p>
 
         {/* 4 Tabs */}
-        <div className="grid grid-cols-5 gap-1 bg-muted rounded-xl p-1">
+        <div className="grid grid-cols-4 gap-1 bg-muted rounded-xl p-1">
           {tabs.map(tab => {
             const count = tabCounts[tab.id];
             const totals = tabTotals[tab.id];
@@ -770,8 +809,8 @@ const AdminIncomingPayments = () => {
             </div>
             {paginatedBatches.map(batch => {
               const isExpanded = expandedKey === batch.batchRef;
-              const action = nextAction[activeTab];
               const types = [...new Set(batch.orders.map(o => o.orderType || 'unknown'))];
+              const legs = activeTab === 'awaiting_lana' ? legsFor(batch) : null;
 
               return (
                 <div key={batch.batchRef} className="rounded-xl border overflow-hidden">
@@ -807,22 +846,48 @@ const AdminIncomingPayments = () => {
                         <div className="text-right">
                           <p className="text-xl font-bold tabular-nums">{formatFiat(batch.totalFiat, batch.currency)}</p>
                         </div>
-                        {activeTab === 'lana_bought' ? (
+                        {confirmReceived ? (
                           <button
-                            onClick={e => { e.stopPropagation(); sendBatchLana(batch); }}
-                            disabled={updating === batch.batchRef}
-                            className="px-3 py-2 rounded-lg text-xs font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 whitespace-nowrap"
-                          >
-                            {updating === batch.batchRef ? 'Sending...' : 'Send LANA'}
-                          </button>
-                        ) : action.label ? (
-                          <button
-                            onClick={e => { e.stopPropagation(); updateBatchStatus(batch, action.next); }}
+                            onClick={e => { e.stopPropagation(); updateBatchStatus(batch, 'received'); }}
                             disabled={updating === batch.batchRef}
                             className="px-3 py-2 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 whitespace-nowrap"
                           >
-                            {updating === batch.batchRef ? '...' : action.label}
+                            {updating === batch.batchRef ? '...' : 'Confirm Received'}
                           </button>
+                        ) : legs ? (
+                          <div className="text-right min-w-[7.5rem]">
+                            {legs.total === 0 ? (
+                              <p className="text-[11px] text-muted-foreground">no LANA legs yet</p>
+                            ) : legs.pending === 0 ? (
+                              <p className="text-[11px] text-emerald-500 font-semibold">
+                                {legs.sent}/{legs.total} sent · closing
+                              </p>
+                            ) : (
+                              <p className="text-[11px] text-amber-500 font-semibold tabular-nums">
+                                {legs.sent}/{legs.total} sent · {formatLana(legs.pendingLanoshis)} LANA to go
+                              </p>
+                            )}
+                            {/* Only when nothing else will move it. */}
+                            {legs.unreleased > 0 && batch.discountStatus === 'received' && (
+                              <button
+                                onClick={e => { e.stopPropagation(); updateBatchStatus(batch, 'lana_bought'); }}
+                                disabled={updating === batch.batchRef}
+                                className="mt-1 px-2 py-1 rounded text-[10px] font-semibold border border-amber-500/50 text-amber-500 hover:bg-amber-500/10 disabled:opacity-50 whitespace-nowrap"
+                                title="The brain has not released these legs. This releases them by hand."
+                              >
+                                {updating === batch.batchRef ? '...' : 'Release by hand'}
+                              </button>
+                            )}
+                            {batch.discountStatus === 'lana_bought' && legs.pending > 0 && (
+                              <button
+                                onClick={e => { e.stopPropagation(); sendBatchLana(batch); }}
+                                disabled={updating === batch.batchRef}
+                                className="mt-1 px-2 py-1 rounded text-[10px] font-semibold bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 whitespace-nowrap"
+                              >
+                                {updating === batch.batchRef ? 'Sending...' : 'Send now'}
+                              </button>
+                            )}
+                          </div>
                         ) : null}
                       </div>
                     </div>
@@ -896,8 +961,8 @@ const AdminIncomingPayments = () => {
                         );
                       })}
 
-                      {/* LANA Recipients breakdown (for lana_bought and lana_sent tabs) */}
-                      {(activeTab === 'lana_bought' || activeTab === 'lana_sent') && (() => {
+                      {/* LANA Recipients breakdown */}
+                      {(activeTab === 'awaiting_lana' || activeTab === 'lana_sent') && (() => {
                         const txRefs = [...new Set(batch.orders.map(o => o.transactionRef).filter(Boolean))];
                         const recipients = lanaOrders.filter(lo => txRefs.includes(lo.transactionRef));
                         if (recipients.length === 0) return null;
