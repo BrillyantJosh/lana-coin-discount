@@ -145,7 +145,7 @@ const AdminIncomingPayments = () => {
   const [orders, setOrders] = useState<FiatOrder[]>([]);
   const [lanaOrders, setLanaOrders] = useState<LanaOrder[]>([]);
   const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; balanceLana: number; confirmedLana?: number; unconfirmedLana?: number }>({ wallet: '', balanceLana: 0 });
-  const [heartbeatInfo, setHeartbeatInfo] = useState<{ nextAutoSendMin: number; nextHeartbeatSec: number; pendingLanaOrders: number; pendingLanoshis: number; lastAutoSendAt: string | null }>({ nextAutoSendMin: 0, nextHeartbeatSec: 60, pendingLanaOrders: 0, pendingLanoshis: 0, lastAutoSendAt: null });
+  const [heartbeatInfo, setHeartbeatInfo] = useState<{ nextAutoSendMin: number; nextHeartbeatSec: number; pendingLanaOrders: number; pendingLanoshis: number; sendableLanaOrders: number; strandedLanaOrders: number; strandedLanoshis: number; lastAutoSendAt: string | null }>({ nextAutoSendMin: 0, nextHeartbeatSec: 60, pendingLanaOrders: 0, pendingLanoshis: 0, sendableLanaOrders: 0, strandedLanaOrders: 0, strandedLanoshis: 0, lastAutoSendAt: null });
   const [countdown, setCountdown] = useState(0);
   const [hbCountdown, setHbCountdown] = useState(60);
   const [lanaObligations, setLanaObligations] = useState<{ pendingLanoshis: number; sentLanoshis: number }>({ pendingLanoshis: 0, sentLanoshis: 0 });
@@ -581,10 +581,10 @@ const AdminIncomingPayments = () => {
           <div className="rounded-xl border bg-card p-4">
             {/* Heartbeat status */}
             <div className="flex items-center justify-center gap-4 mb-3 pb-3 border-b text-xs">
-              {heartbeatInfo.pendingLanaOrders > 0 ? (
+              {heartbeatInfo.sendableLanaOrders > 0 ? (
                 <div className="flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
-                  <span className="text-muted-foreground">Auto-send {heartbeatInfo.pendingLanaOrders} pending order{heartbeatInfo.pendingLanaOrders !== 1 ? 's' : ''} in</span>
+                  <span className="text-muted-foreground">Auto-send {heartbeatInfo.sendableLanaOrders} pending order{heartbeatInfo.sendableLanaOrders !== 1 ? 's' : ''} in</span>
                   <span className="font-bold tabular-nums text-amber-500">
                     {countdown > 0 ? `${Math.floor(countdown / 60)}:${(countdown % 60).toString().padStart(2, '0')}` : 'sending...'}
                   </span>
@@ -594,6 +594,17 @@ const AdminIncomingPayments = () => {
                   <div className="h-2 w-2 rounded-full bg-emerald-500" />
                   <span className="text-muted-foreground">No pending LANA orders</span>
                 </div>
+              )}
+              {/* Owed, but no run will ever pick it up: not authorised by the
+                  brain and in no batch marked bought. Said quietly and apart, so
+                  the amber badge above keeps meaning "coins are about to move". */}
+              {heartbeatInfo.strandedLanaOrders > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">|</span>
+                  <span className="text-muted-foreground">
+                    {heartbeatInfo.strandedLanaOrders} order{heartbeatInfo.strandedLanaOrders !== 1 ? 's' : ''} ({(heartbeatInfo.strandedLanoshis / 100_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })} LANA) not authorised — no send will pick {heartbeatInfo.strandedLanaOrders !== 1 ? 'them' : 'it'} up
+                  </span>
+                </>
               )}
               <span className="text-muted-foreground/50">|</span>
               <span className="text-muted-foreground">

@@ -91,6 +91,19 @@ app.get('/api/heartbeat-status', (_req, res) => {
   const pending = db.prepare(
     "SELECT COUNT(*) AS c, COALESCE(SUM(lana_amount), 0) AS lanoshis FROM brain_lana_orders WHERE status = 'pending'"
   ).get() as any;
+  // What the next send will actually attempt — the same gate autoSendPendingLana
+  // uses. Not every pending order is one of them: three caretaker legs from June
+  // and July were never authorised and no run has ever picked them up. Counting
+  // them in the badge would light it amber for ever and teach the operator to
+  // ignore it, which is how they stayed invisible in the first place. So they
+  // are reported apart, as stranded.
+  const sendable = db.prepare(`
+    SELECT COUNT(*) AS c, COALESCE(SUM(blo.lana_amount), 0) AS lanoshis
+    FROM brain_lana_orders blo
+    LEFT JOIN incoming_batches ib ON blo.batch_ref = ib.batch_ref
+    WHERE blo.status = 'pending'
+      AND (blo.brain_authorized = 1 OR ib.status = 'lana_bought')
+  `).get() as any;
   // Seconds until the next heartbeat (60s cycle)
   const now = Date.now();
   const elapsedSinceLastHb = now % HEARTBEAT_INTERVAL;
@@ -105,6 +118,10 @@ app.get('/api/heartbeat-status', (_req, res) => {
     lastAutoSendAt,
     pendingLanaOrders: pending.c as number,
     pendingLanoshis: pending.lanoshis as number,
+    sendableLanaOrders: sendable.c as number,
+    sendableLanoshis: sendable.lanoshis as number,
+    strandedLanaOrders: (pending.c as number) - (sendable.c as number),
+    strandedLanoshis: (pending.lanoshis as number) - (sendable.lanoshis as number),
   });
 });
 
