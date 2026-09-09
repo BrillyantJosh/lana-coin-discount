@@ -4,7 +4,7 @@
  * account still get its LANA out by any route".
  */
 import { describe, it, expect } from 'vitest';
-import { evaluateFreeze, walletListSignal, parseRegistrarBody, type FreezeSignal } from './freeze';
+import { evaluateFreeze, walletListSignal, parseRegistrarBody, OWN_PROCESS_FREEZE, type FreezeSignal } from './freeze';
 
 const reg = (frozen: boolean, reachable = true): FreezeSignal =>
   ({ source: 'registrar', reachable, frozen, detail: frozen ? 'registrar: wallet frozen' : undefined });
@@ -196,5 +196,106 @@ describe('walletListSignal', () => {
     expect(s.reachable).toBe(true);
     expect(s.frozen).toBe(false);
     expect(s.detail).toMatch(/not on account list/);
+  });
+});
+
+/**
+ * THE ONE FREEZE THAT DOES NOT STOP A FINANCING-ROUND SALE.
+ *
+ * The owner's decision, 9 Sep 2026: a person frozen by the OWN process may
+ * still sell what they financed. Every other freeze is a statement about the
+ * COINS and still stops the sale — so these tests are mostly about what is NOT
+ * waived, because that is where the money is.
+ */
+const LANAPAYS = 'LanaPays.Us';
+const frozenBecause = (reason: string, source = 'registrar'): FreezeSignal =>
+  ({ source, reachable: true, frozen: true, detail: `frozen (${reason})`, freezeReason: reason, walletType: LANAPAYS });
+
+describe('an OWN-process freeze', () => {
+  it('does not stop a sale from a LanaPays.Us wallet', () => {
+    const v = evaluateFreeze([frozenBecause(OWN_PROCESS_FREEZE)], LANAPAYS);
+    expect(v.blocked).toBe(false);
+    expect(v.code).toBe('OK');
+  });
+
+  it('still stops a sale from any other wallet class', () => {
+    for (const type of ['Main Wallet', 'Wallet', 'Lana8Wonder', 'Business Wallet', 'Retail']) {
+      const v = evaluateFreeze([frozenBecause(OWN_PROCESS_FREEZE)], type);
+      expect(v.blocked, type).toBe(true);
+      expect(v.code).toBe('WALLET_FROZEN');
+    }
+  });
+
+  it('is waived for nobody when we do not know what class is being sold', () => {
+    // A gate that guesses is not a gate. With no class from the caller and none
+    // on the signal, the freeze stands.
+    const bare: FreezeSignal = { source: 'registrar', reachable: true, frozen: true, freezeReason: OWN_PROCESS_FREEZE };
+    expect(evaluateFreeze([bare]).blocked).toBe(true);
+  });
+
+  it('takes the class off the signal when the caller passes none', () => {
+    expect(evaluateFreeze([frozenBecause(OWN_PROCESS_FREEZE)]).blocked).toBe(false);
+  });
+});
+
+describe('every other freeze still stops the sale', () => {
+  it('whatever the wallet class', () => {
+    for (const reason of ['frozen_max_cap', 'frozen_too_wild', 'frozen_unreg_Lanas', 'frozen_l8w', 'frozen']) {
+      const v = evaluateFreeze([frozenBecause(reason)], LANAPAYS);
+      expect(v.blocked, reason).toBe(true);
+      expect(v.code).toBe('WALLET_FROZEN');
+    }
+  });
+
+  it('including a freeze that carries NO reason at all', () => {
+    // This is the state of the world until the registrar ships freeze_reason.
+    // An unexplained freeze must keep blocking, or deploying the reader before
+    // the writer would open the gate for everyone.
+    const noReason: FreezeSignal = { source: 'registrar', reachable: true, frozen: true, walletType: LANAPAYS };
+    expect(evaluateFreeze([noReason], LANAPAYS).blocked).toBe(true);
+  });
+
+  it('and one frozen source is not cleared by another that is happy', () => {
+    const clean: FreezeSignal = { source: 'wallet-list', reachable: true, frozen: false };
+    expect(evaluateFreeze([frozenBecause('frozen_max_cap'), clean], LANAPAYS).blocked).toBe(true);
+  });
+});
+
+describe('the sibling rule, under the waiver', () => {
+  const w = (walletId: string, freezeStatus?: string) => ({ walletId, status: 'active', freezeStatus });
+
+  it('a sibling frozen by the OWN process no longer stops the sale', () => {
+    const sig = walletListSignal([w('LSelling'), w('LOther', OWN_PROCESS_FREEZE)], 'LSelling');
+    expect(sig.frozen).toBe(false);
+  });
+
+  it('a sibling frozen for any other reason still does', () => {
+    const sig = walletListSignal([w('LSelling'), w('LOther', 'frozen_max_cap')], 'LSelling');
+    expect(sig.frozen).toBe(true);
+    expect(sig.detail).toContain('frozen_max_cap');
+  });
+
+  it('the SELLING wallet frozen by the OWN process carries the reason forward', () => {
+    const sig = walletListSignal([w('LSelling', OWN_PROCESS_FREEZE)], 'LSelling');
+    expect(sig.frozen).toBe(true);
+    expect(sig.freezeReason).toBe(OWN_PROCESS_FREEZE);
+    // …and only the class decides whether it stands.
+    expect(evaluateFreeze([sig], LANAPAYS).blocked).toBe(false);
+    expect(evaluateFreeze([sig], 'Main Wallet').blocked).toBe(true);
+  });
+});
+
+describe('reading the registrar body', () => {
+  it('carries freeze_reason through, flattened or nested', () => {
+    expect(parseRegistrarBody({ frozen: true, freeze_reason: OWN_PROCESS_FREEZE, wallet_type: LANAPAYS }).freezeReason)
+      .toBe(OWN_PROCESS_FREEZE);
+    expect(parseRegistrarBody({ wallet: { frozen: true, freeze_reason: 'frozen_max_cap', wallet_type: LANAPAYS } }).freezeReason)
+      .toBe('frozen_max_cap');
+  });
+
+  it('leaves it undefined when the registrar does not send one', () => {
+    const sig = parseRegistrarBody({ frozen: true, wallet_type: LANAPAYS });
+    expect(sig.freezeReason).toBeUndefined();
+    expect(evaluateFreeze([sig], LANAPAYS).blocked).toBe(true);
   });
 });

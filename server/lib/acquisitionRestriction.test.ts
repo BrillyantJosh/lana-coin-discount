@@ -102,9 +102,11 @@ describe('what restriction does to a verdict', () => {
     expect(open.outcome).toBe('accept');
 
     const held = evaluateRoundMandate(input({ restricted: { reason: 'under review by agreement' } }));
-    expect(held.outcome).toBe('review');
-    expect(held.code).toBe('RESTRICTED');
-    expect(held.reason).toBe(restrictionReason('under review by agreement'));
+    expect(held).toMatchObject({
+      outcome: 'review',
+      code: 'RESTRICTED',
+      reason: restrictionReason('under review by agreement'),
+    });
   });
 
   it('turns a counteroffer into a review too — no automatic price at all', () => {

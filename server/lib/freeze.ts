@@ -27,6 +27,8 @@
  * list, which would also block legitimate sales from a newly added wallet.
  */
 
+import { isScopedWalletType } from './buybackSplit.js';
+
 export interface FreezeSignal {
   source: string;        // 'registrar' | 'wallet-list'
   reachable: boolean;    // did we get an answer at all?
@@ -45,6 +47,42 @@ export interface FreezeSignal {
    * answer that says which kind this is.
    */
   walletType?: string;
+  /**
+   * WHY this source says frozen — the registrar's own `freeze_reason`, or the
+   * per-wallet code carried in the KIND 30889 `w` tag. Freezes are not all the
+   * same statement, and one of them is waived below.
+   */
+  freezeReason?: string;
+}
+
+/**
+ * The OWN process freezing a person, and the one freeze that does not stop a
+ * financing-round sale.
+ *
+ * The other codes are statements about the COINS — unregistered LANA on the
+ * wallet (`frozen_unreg_Lanas`), a balance over the published cap
+ * (`frozen_max_cap`), a Lana8Wonder finding (`frozen_l8w`), a wallet moving in
+ * ways the registrar would not vouch for (`frozen_too_wild`). Letting any of
+ * those sell would walk the treasury straight past the finding.
+ *
+ * `frozen_own_person` is not about the coins. It is a sanction inside the OWN
+ * process against a PERSON, and the owner's decision (9 Sep 2026) is that it
+ * must not also take away what they financed: someone whose whole account is
+ * frozen this way may still sell from a LanaPays.Us wallet when their financing
+ * round is open. It is waived for that wallet class and nothing else — a
+ * frozen_own_person Main Wallet still cannot sell, and a wallet frozen for any
+ * other reason still cannot sell whatever class it is.
+ */
+export const OWN_PROCESS_FREEZE = 'frozen_own_person';
+
+/** Does this signal's freeze stand, given what is being sold from? */
+function freezeStands(s: FreezeSignal, sellingWalletType: string | undefined): boolean {
+  if (!s.reachable || !s.frozen) return false;
+  if (s.freezeReason !== OWN_PROCESS_FREEZE) return true;
+  // Waived only for the wallet class the financing-round mandates are about,
+  // judged by the same test the buyback window uses so the two can never
+  // disagree about what a LanaPays.Us wallet is.
+  return !isScopedWalletType(sellingWalletType);
 }
 
 export interface FreezeVerdict {
@@ -63,8 +101,12 @@ export interface FreezeVerdict {
  * Note the asymmetry: one "frozen" outvotes any number of "not frozen", because
  * the sources guard different things and neither can clear the other's freeze.
  */
-export function evaluateFreeze(signals: FreezeSignal[]): FreezeVerdict {
-  const frozen = signals.filter(s => s.reachable && s.frozen);
+export function evaluateFreeze(signals: FreezeSignal[], sellingWalletType?: string): FreezeVerdict {
+  // The class being sold FROM decides whether an OWN-process freeze stands.
+  // When no class was passed, or the registrar never told us one, nothing is
+  // waived — a gate that guesses is not a gate.
+  const type = sellingWalletType ?? signals.find(s => s.walletType)?.walletType;
+  const frozen = signals.filter(s => freezeStands(s, type));
   if (frozen.length > 0) {
     const detail = frozen.map(s => s.detail).filter(Boolean).join('; ');
     return {
@@ -105,6 +147,8 @@ export function parseRegistrarBody(data: any): FreezeSignal {
   // mobile proxy.
   const rawSplit = data?.split_created ?? data?.wallet?.split_created;
   const rawType = data?.wallet_type ?? data?.wallet?.wallet_type;
+  const rawReason = data?.freeze_reason ?? data?.wallet?.freeze_reason;
+  const freezeReason = typeof rawReason === 'string' && rawReason.trim() ? rawReason.trim() : undefined;
   const walletType = typeof rawType === 'string' && rawType.trim() ? rawType.trim() : undefined;
   const splitCreated = Number.isFinite(Number(rawSplit)) && rawSplit !== null && rawSplit !== ''
     ? Number(rawSplit)
@@ -113,7 +157,11 @@ export function parseRegistrarBody(data: any): FreezeSignal {
   // An explicit freeze is definitive on its own and needs no registration
   // status to be believed.
   if (frozen) {
-    return { source: 'registrar', reachable: true, frozen: true, detail: 'registrar: wallet frozen', splitCreated, walletType };
+    return {
+      source: 'registrar', reachable: true, frozen: true,
+      detail: freezeReason ? `registrar: wallet frozen (${freezeReason})` : 'registrar: wallet frozen',
+      splitCreated, walletType, freezeReason,
+    };
   }
   if (data?.registered === true) {
     return { source: 'registrar', reachable: true, frozen: false, splitCreated, walletType };
@@ -160,9 +208,17 @@ export function walletListSignal(
     return { source: 'wallet-list', reachable: false, frozen: false };
   }
 
+  // An account frozen as a whole. The OWN-process monitor deliberately leaves
+  // the profile status 'active' and marks the wallets instead, so this path is
+  // some OTHER freeze and carries no waiver: if every wallet on the list is
+  // marked frozen_own_person we take that as the reason, and otherwise none.
   const accountFrozen = wallets.some(w => w.status === 'frozen');
   if (accountFrozen) {
-    return { source: 'wallet-list', reachable: true, frozen: true, detail: 'account status: frozen' };
+    const allOwnProcess = wallets.length > 0 && wallets.every(w => w.freezeStatus === OWN_PROCESS_FREEZE);
+    return {
+      source: 'wallet-list', reachable: true, frozen: true, detail: 'account status: frozen',
+      freezeReason: allOwnProcess ? OWN_PROCESS_FREEZE : undefined,
+    };
   }
 
   // Match case-insensitively: wallet ids travel through QR scans, manual entry
@@ -170,7 +226,7 @@ export function walletListSignal(
   const target = String(senderWalletId || '').trim().toLowerCase();
   const mine = wallets.find(w => String(w.walletId || '').trim().toLowerCase() === target);
   if (mine?.freezeStatus) {
-    return { source: 'wallet-list', reachable: true, frozen: true, detail: `wallet: ${mine.freezeStatus}` };
+    return { source: 'wallet-list', reachable: true, frozen: true, detail: `wallet: ${mine.freezeStatus}`, freezeReason: mine.freezeStatus };
   }
 
   // A freeze on ANY wallet of the account stops the sale, not only one on the
@@ -178,13 +234,18 @@ export function walletListSignal(
   // unregistered LANA on it, and that is a statement about the holder, not
   // about one address: selling from a clean sibling wallet would walk straight
   // past the finding. The owner asked for this explicitly on 2026-08-28.
-  const frozenSibling = wallets.find(w => w.freezeStatus);
+  //
+  // A sibling frozen by the OWN PROCESS is not such a finding — it says
+  // something about the person, not about any coins — so it is skipped here and
+  // the sale is judged on the wallet actually being sold from.
+  const frozenSibling = wallets.find(w => w.freezeStatus && w.freezeStatus !== OWN_PROCESS_FREEZE);
   if (frozenSibling) {
     return {
       source: 'wallet-list',
       reachable: true,
       frozen: true,
       detail: `another wallet on this account is frozen (${String(frozenSibling.walletId || '').slice(0, 10)}…: ${frozenSibling.freezeStatus})`,
+      freezeReason: frozenSibling.freezeStatus,
     };
   }
 

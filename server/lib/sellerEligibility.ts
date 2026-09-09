@@ -100,7 +100,18 @@ export async function checkSellerEligibility(
         .catch(() => [] as Awaited<ReturnType<typeof fetchUserWallets>>),
     ]);
     const walletList = walletListSignal(listedWallets, senderAddress);
-    const freeze = evaluateFreeze([registrar, walletList]);
+
+    // What class is being sold FROM. Computed here rather than after the freeze
+    // gate because the gate needs it: an OWN-process freeze is waived for a
+    // LanaPays.Us wallet and for nothing else. Being in scope is the stricter
+    // reading, so a wallet only escapes the buyback window — and only carries
+    // the waiver — when the sources agree it is one.
+    const listedType = listedWallets.find(
+      w => String(w.walletId || '').trim().toLowerCase() === senderAddress.trim().toLowerCase(),
+    )?.walletType;
+    const scopedType = [registrar.walletType, listedType].find(isScopedWalletType) ?? null;
+
+    const freeze = evaluateFreeze([registrar, walletList], scopedType ?? undefined);
     if (freeze.blocked) {
       console.log(
         `[lana-discount] Blocked (${freeze.code}): ${hexId.slice(0, 12)}… wallet ${senderAddress.slice(0, 10)}… — ` +
@@ -111,13 +122,6 @@ export async function checkSellerEligibility(
         detail: freeze.code === 'WALLET_FROZEN' ? { unfreezeUrl: 'https://unfreeze.lanapays.us' } : undefined,
       };
     }
-
-    const listedType = listedWallets.find(
-      w => String(w.walletId || '').trim().toLowerCase() === senderAddress.trim().toLowerCase(),
-    )?.walletType;
-    // Being in scope is the stricter reading, so a wallet only escapes the
-    // buyback window when NEITHER source calls it a LanaPays.Us one.
-    const scopedType = [registrar.walletType, listedType].find(isScopedWalletType) ?? null;
 
     const split = evaluateBuybackSplit({
       walletSplit: registrar.splitCreated ?? null,
