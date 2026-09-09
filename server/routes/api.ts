@@ -1305,6 +1305,38 @@ function refreshKind0InBackground(hexId: string): void {
     .finally(() => profileRefreshing.delete(hexId));
 }
 
+/**
+ * MANY NAMES IN ONE REQUEST.
+ *
+ * The admin pages show ~70 counterparties at a time and used to ask for each
+ * name on its own. On 9 Sept 2026 that put 15,520 requests through one IP in a
+ * day and spent the whole rate-limit budget, which then answered the operator's
+ * own page load with "Too many requests" — the pages had throttled themselves.
+ *
+ * Reads the cached KIND 0 copies only: no relay call, no background refresh.
+ * A name that is not cached simply does not come back, and the caller shows the
+ * hex, exactly as it did before.
+ */
+router.post('/users/profiles', (req: Request, res: Response) => {
+  const raw = Array.isArray(req.body?.hexes) ? req.body.hexes : null;
+  if (!raw) return res.status(400).json({ error: 'hexes array required' });
+  const hexes: string[] = [...new Set(raw.map((h: unknown) => String(h || '').toLowerCase()))]
+    .filter((h): h is string => typeof h === 'string' && /^[0-9a-f]{64}$/.test(h))
+    .slice(0, 300);
+  if (hexes.length === 0) return res.json({ names: {} });
+
+  const rows = db.prepare(
+    `SELECT nostr_hex_id, display_name, full_name FROM users WHERE nostr_hex_id IN (${hexes.map(() => '?').join(',')})`
+  ).all(...hexes) as any[];
+
+  const names: Record<string, string> = {};
+  for (const r of rows) {
+    const name = (r.full_name || r.display_name || '').trim();
+    if (name) names[r.nostr_hex_id] = name;
+  }
+  return res.json({ names });
+});
+
 router.get('/user/:hexId/profile', async (req: Request, res: Response) => {
   const hexId = req.params.hexId;
   // STALE-WHILE-REVALIDATE: serve the cached DB copy instantly (names rarely

@@ -48,11 +48,17 @@ app.use(express.json({ limit: '50kb' }));
 // Registered BEFORE the rate limiter so 429 (Too Many Requests) responses ARE logged.
 installRequestLogging(app, db);
 
-// Rate limit per IP. The admin/buyback page polls incoming-payments + heartbeat-status +
-// profile (and re-fetches on every send-batch action), which under the old 300/15min cap
-// could exhaust the budget → 429 on the polls AND on send-batch-lana, so the operator
-// couldn't process payouts. 1500/15min (≈100/min) gives ample headroom while capping abuse.
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1500, standardHeaders: true, legacyHeaders: false }));
+// Rate limit per IP, ON THE API ONLY. It used to sit in front of everything,
+// so an operator who spent their budget on polls could not load the site at
+// all: /login answered "Too many requests, please try again later." in plain
+// text, with no page, no styling and no way back in (seen 9 Sept 2026, after
+// the admin pages resolved ~70 names one request at a time). Serving HTML and
+// assets costs nothing worth defending; the API is what abuse would target.
+//
+// 1500/15min (≈100/min) stays: the admin pages poll incoming-payments,
+// heartbeat-status and profiles, and a tighter cap once blocked send-batch-lana
+// in the middle of a payout run.
+app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, max: 1500, standardHeaders: true, legacyHeaders: false }));
 
 // API routes
 app.use('/api', apiRouter);

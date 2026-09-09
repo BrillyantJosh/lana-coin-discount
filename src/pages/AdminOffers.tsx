@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
+import { knownNames, resolveNames } from '@/lib/counterpartyNames';
 import AdminNav, { OFFERS_COUNT_EVENT } from '@/components/AdminNav';
 import { CLASS_LABELS, type WalletClass } from '../../server/lib/treasuryMandate';
 
@@ -24,23 +25,6 @@ import { CLASS_LABELS, type WalletClass } from '../../server/lib/treasuryMandate
  * refuses to send an empty one, because the counterparty reads it. The verify
  * screen hardcodes "Rejected by admin", which tells nobody anything.
  */
-
-/** Display names from KIND 0, a few at a time; a miss simply shows the hex. */
-async function resolveNames(hexes: string[]): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
-  const CONCURRENCY = 6;
-  for (let i = 0; i < hexes.length; i += CONCURRENCY) {
-    await Promise.all(hexes.slice(i, i + CONCURRENCY).map(async hex => {
-      try {
-        const r = await fetch(`/api/user/${hex}/profile`);
-        const j = await r.json();
-        const name = j.fullName || j.displayName || null;
-        if (name) out[hex] = String(name).trim();
-      } catch { /* the hex is enough */ }
-    }));
-  }
-  return out;
-}
 
 interface QueueOffer {
   offerRef: string;
@@ -104,7 +88,7 @@ const AdminOffers = () => {
   const navigate = useNavigate();
 
   const [offers, setOffers] = useState<QueueOffer[]>([]);
-  const [names, setNames] = useState<Record<string, string>>({});
+  const [names, setNames] = useState<Record<string, string>>(() => knownNames());
   const [loading, setLoading] = useState(true);
 
   // One row at a time may be mid-decision; the ref doubles as the busy flag so

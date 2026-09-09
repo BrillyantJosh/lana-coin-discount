@@ -1243,17 +1243,30 @@ const SubmitOffer = () => {
                       </div>
                     </div>
 
+                    {/* A proposal under review parks this page on it, so without a
+                        way out the seller cannot propose anything else at all —
+                        which is exactly where one stood on 9 Sept 2026. */}
+                    <p className="text-xs text-muted-foreground leading-relaxed">{OFFER.reviewWithdrawNote}</p>
+
                     <div className="flex flex-col-reverse sm:flex-row sm:justify-between gap-3">
                       <Link to="/dashboard" className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-center text-muted-foreground hover:text-foreground transition-colors">
                         Back to Dashboard
                       </Link>
-                      <button
-                        onClick={refreshDecision}
-                        disabled={refreshingDecision}
-                        className="rounded-xl border border-primary/30 bg-primary/5 px-6 py-3 text-sm font-semibold text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
-                      >
-                        {refreshingDecision ? 'Checking…' : 'Check again'}
-                      </button>
+                      <div className="flex flex-col-reverse sm:flex-row gap-3">
+                        <button
+                          onClick={declineOffer}
+                          className="rounded-xl border border-border px-6 py-3 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          {OFFER.reviewWithdraw}
+                        </button>
+                        <button
+                          onClick={refreshDecision}
+                          disabled={refreshingDecision}
+                          className="rounded-xl border border-primary/30 bg-primary/5 px-6 py-3 text-sm font-semibold text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
+                        >
+                          {refreshingDecision ? 'Checking…' : 'Check again'}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ) : offer.status === 'declined' && offer.mandateCode === 'MANDATE_NOT_OPEN' ? (

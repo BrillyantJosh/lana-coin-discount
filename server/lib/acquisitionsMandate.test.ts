@@ -394,6 +394,29 @@ describe('accept', () => {
 });
 
 describe('withdraw', () => {
+  /**
+   * A proposal under review parks the seller's page on it. Without a way out
+   * they cannot propose anything else at all — where one seller stood on
+   * 9 Sept 2026, waiting on a proposal his wallet could not even back.
+   */
+  it('a proposal still UNDER REVIEW can be withdrawn, and the seller is free again', async () => {
+    setSetting(db, 'acq_EUR_lanapays_auto_cap', '0');       // MANUAL_ONLY → under review
+    const proposed = await propose(500);
+    const ref = proposed.body.offer.offerRef;
+    expect(row(ref).status).toBe('under_review');
+
+    const gone = await signedPost(`/api/acquisitions/${ref}/withdraw`, { hexId: seller.pub });
+    expect(gone.status).toBe(200);
+    expect(row(ref).status).toBe('withdrawn');
+
+    // …and the next proposal goes in as if the first had never happened.
+    setSetting(db, 'acq_EUR_lanapays_auto_cap', '10000');
+    const again = await propose(400);
+    expect(again.status).toBe(200);
+    expect(again.body.offer.offerRef).not.toBe(ref);
+  });
+
+
   it('a mandate-bound offer withdraws only when signed; the cap is free after', async () => {
     const ref = (await propose(1000)).body.offer.offerRef;
     const unsigned = await post(`/api/acquisitions/${ref}/withdraw`, { hexId: seller.pub });

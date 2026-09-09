@@ -219,6 +219,10 @@ export const OFFER = {
     'Your proposal is with our treasury. We will make a purchase offer, decline, or come back with a ' +
     'counteroffer. Nothing has been transferred and nothing is owed either way.',
   reviewRef: 'Your reference',
+  reviewWithdraw: 'Withdraw and propose something else',
+  reviewWithdrawNote:
+    'A proposal under review holds your place on this page until it is decided. Withdrawing it changes ' +
+    'nothing that has been transferred and leaves you free to propose a different amount straight away.',
 
   declinedTitle: 'Not acquiring this at the moment',
   declinedBody:

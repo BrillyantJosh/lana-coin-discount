@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { ADMIN_MANDATES, MANDATE, OFFER_STATUS_LABELS } from '@/copy';
 import { fill } from '@/components/MandatePanel';
+import { knownNames, resolveNames } from '@/lib/counterpartyNames';
 import type { RoundState } from '../../server/lib/roundMandate';
 
 /**
@@ -166,23 +167,6 @@ const STATE_TONE: Record<string, string> = {
   split_unknown: 'bg-muted text-muted-foreground',
 };
 
-/** Names from the users cache (KIND 0), a few at a time; a miss shows the hex. */
-async function resolveNames(hexes: string[]): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
-  const CONCURRENCY = 6;
-  for (let i = 0; i < hexes.length; i += CONCURRENCY) {
-    await Promise.all(hexes.slice(i, i + CONCURRENCY).map(async hex => {
-      try {
-        const r = await fetch(`/api/user/${hex}/profile`);
-        const j = await r.json();
-        const name = j.fullName || j.displayName || null;
-        if (name) out[hex] = name;
-      } catch { /* the hex is enough */ }
-    }));
-  }
-  return out;
-}
-
 export default function AdminMandates() {
   const { session, isLoading: authLoading, isAdmin } = useAuth();
   const navigate = useNavigate();
@@ -193,7 +177,7 @@ export default function AdminMandates() {
   const [split, setSplit] = useState<number | null>(null);
   const [currency, setCurrency] = useState('');
   const [round, setRound] = useState('');
-  const [names, setNames] = useState<Record<string, string>>({});
+  const [names, setNames] = useState<Record<string, string>>(() => knownNames());
   const [expanded, setExpanded] = useState<string | null>(null);
 
   // Release dialog
