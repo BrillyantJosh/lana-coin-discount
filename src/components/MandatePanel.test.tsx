@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import {
-  MandatePanel, indicativeFiat, proposalGate, counterBody, timingLine, fmtUtc,
+  MandatePanel, indicativeFiat, proposalGate, counterBody, timingLine, fmtUtc, availabilityOf,
   type MandateView, type MandateInfo,
 } from './MandatePanel';
 import { OFFER } from '@/copy';
@@ -106,5 +106,85 @@ describe('a counteroffer', () => {
   it('the open line names the remaining cap', () => {
     expect(timingLine(base)).toBe('Round 1 is open — you may propose up to 32,527.97 LANA');
     expect(fmtUtc(null)).toBe('—');
+  });
+});
+
+/**
+ * HOW MUCH CAN GO INTO A SALE TODAY.
+ *
+ * The owner's point (9 Sep 2026): somebody holding LANA from round 1 and round 2
+ * cannot sell all of it during round 1, and nothing on the page said so. These
+ * pin the number and, just as much, what it must NOT include.
+ */
+const r2 = (over: Partial<MandateView> = {}): MandateView => ({
+  ...base, mandateRef: '8:2:' + 'a'.repeat(64), round: 2, state: 'not_open',
+  opensAt: '2026-10-26T22:00:00.000Z', discountPercent: 25,
+  expectedLana: 800, remainingLana: 800, walletShareLana: 800, ...over,
+});
+const r1 = (over: Partial<MandateView> = {}): MandateView => ({
+  ...base, expectedLana: 1000, remainingLana: 1000, walletShareLana: 1000, ...over,
+});
+
+describe('what the holder may propose now', () => {
+  it('counts the open round only — a later round is not on the table', () => {
+    const a = availabilityOf(info([r1(), r2()]))!;
+    expect(a.nowLana).toBe(1000);
+    expect(a.laterLana).toBe(800);
+    expect(a.perProposalLana).toBe(1000);
+    expect(a.perProposalRound).toBe(1);
+  });
+
+  it('counts a released round as open, whatever its date says', () => {
+    const a = availabilityOf(info([r1(), r2({ state: 'released', released: true })]))!;
+    expect(a.nowLana).toBe(1800);
+    expect(a.laterLana).toBe(0);
+    expect(a.anyReleased).toBe(true);
+  });
+
+  it('with two rounds open, one proposal still carries only the first', () => {
+    const a = availabilityOf(info([r1(), r2({ state: 'open' })]))!;
+    expect(a.nowLana).toBe(1800);
+    expect(a.perProposalLana).toBe(1000);
+    expect(a.perProposalRound).toBe(1);
+  });
+
+  it('counts what REMAINS, not what the budget received', () => {
+    const a = availabilityOf(info([r1({ remainingLana: 250, acceptedLana: 750 })]))!;
+    expect(a.nowLana).toBe(250);
+  });
+
+  it('leaves out what is spent, gone or closed — that is not waiting on a date', () => {
+    const a = availabilityOf(info([
+      r1({ state: 'fully_acquired', remainingLana: 0 }),
+      r2({ state: 'window_passed' }),
+      { ...r2(), mandateRef: 'x', round: 3, state: 'closed' },
+    ]))!;
+    expect(a.nowLana).toBe(0);
+    expect(a.laterLana).toBe(0);
+    expect(a.laterRounds).toHaveLength(0);
+  });
+
+  it('says nothing at all when there is no mandate', () => {
+    expect(availabilityOf(info([]))).toBeNull();
+    expect(availabilityOf(null)).toBeNull();
+  });
+
+  it('shows the number, the wait and its date on the panel', () => {
+    render(<MandatePanel info={info([r1(), r2()])} loading={false} error={null} lanaAmount={null} currency="EUR" showIndicative={false} />);
+    expect(screen.getByTestId('available-now').textContent).toContain('1,000');
+    const later = screen.getByTestId('available-later').textContent || '';
+    expect(later).toContain('800');
+    expect(later).toContain('round 2');
+    expect(later).toContain(fmtUtc('2026-10-26T22:00:00.000Z'));
+  });
+
+  it('spells out the one-round-per-proposal limit only when it bites', () => {
+    const { unmount } = render(<MandatePanel info={info([r1(), r2({ state: 'open' })])} loading={false} error={null} lanaAmount={null} currency="EUR" showIndicative={false} />);
+    expect(screen.getByTestId('per-proposal').textContent).toContain('1,000');
+    unmount();
+    // One open round: what is open and what one proposal carries are the same
+    // number, and saying it twice would only muddy it.
+    render(<MandatePanel info={info([r1(), r2()])} loading={false} error={null} lanaAmount={null} currency="EUR" showIndicative={false} />);
+    expect(screen.queryByTestId('per-proposal')).toBeNull();
   });
 });

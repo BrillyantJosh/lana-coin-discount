@@ -118,6 +118,56 @@ export function proposalGate(info: MandateInfo | null): ProposalGate {
   return { allowed: false, reason: timingLine(blocked) };
 }
 
+/**
+ * How much of this wallet's LANA the treasury will actually take a proposal for
+ * TODAY, and how much has to wait.
+ *
+ * This is the question a holder cannot answer from the round rows on their own,
+ * and getting it wrong costs them a rejected proposal. Rounds open one date at a
+ * time, and a proposal draws on ONE round — the lowest-numbered open one. So
+ * somebody holding LANA from round 1 and round 2 during round 1's window can
+ * sell the round-1 share and not a lanoshi more, however much the wallet holds.
+ * Unless the treasury released a round early, in which case it counts as open
+ * like any other.
+ *
+ * `now` is what is open across every open round; `perProposal` is what a single
+ * proposal can carry. They differ when two rounds are open at once, and the
+ * difference is worth saying out loud rather than letting someone discover it
+ * as a counteroffer.
+ */
+export interface Availability {
+  nowLana: number;
+  laterLana: number;
+  perProposalLana: number;
+  perProposalRound: number | null;
+  openRounds: MandateView[];
+  laterRounds: MandateView[];
+  /** True when at least one open round is open only because it was released. */
+  anyReleased: boolean;
+}
+
+export function availabilityOf(info: MandateInfo | null): Availability | null {
+  if (!info || info.mandates.length === 0) return null;
+  const sorted = [...info.mandates].sort((a, b) => (a.split - b.split) || (a.round - b.round));
+  const openRounds = sorted.filter(m => (m.state === 'open' || m.state === 'released') && m.remainingLana > 0);
+  // Waiting on a date, not spent and not gone: 'fully_acquired', 'window_passed'
+  // and 'closed' are none of the holder's remaining business.
+  const laterRounds = sorted.filter(
+    m => (m.state === 'not_open' || m.state === 'upcoming_split' || m.state === 'terms_missing') && m.remainingLana > 0,
+  );
+  const sum = (rows: MandateView[]) => rows.reduce((t, m) => t + m.remainingLana, 0);
+  const first = openRounds[0] || null;
+  return {
+    nowLana: sum(openRounds),
+    laterLana: sum(laterRounds),
+    perProposalLana: first ? first.remainingLana : 0,
+    perProposalRound: first ? first.round : null,
+    openRounds,
+    laterRounds,
+    anyReleased: openRounds.some(m => m.state === 'released' || m.released),
+  };
+}
+
 const STATE_TONE: Record<string, string> = {
   open: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
   released: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
@@ -170,6 +220,7 @@ export function MandatePanel({ info, loading, error, lanaAmount, currency, showI
 
   const mandates = [...info.mandates].sort((a, b) => (a.split - b.split) || (a.round - b.round));
   const gate = proposalGate(info);
+  const availability = availabilityOf(info);
   // The indicative figure is for the round a proposal would land in: the open
   // one if any, otherwise the first upcoming one — still a projection.
   const indicativeRound = gate.openRound || mandates.find(m => m.basis && m.referenceRate && m.discountPercent !== null) || null;
@@ -185,6 +236,64 @@ export function MandatePanel({ info, loading, error, lanaAmount, currency, showI
         <h3 className="text-base font-semibold text-foreground">{MANDATE.title}</h3>
         <p className="mt-1 text-xs text-muted-foreground leading-relaxed">{MANDATE.intro}</p>
       </div>
+
+      {availability && (
+        <div
+          className={`rounded-xl border-2 p-3 sm:p-4 space-y-2 ${
+            availability.nowLana > 0
+              ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-950/30'
+              : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30'
+          }`}
+          data-testid="availability"
+        >
+          <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{MANDATE.availabilityTitle}</p>
+
+          <p className="text-2xl font-bold font-mono text-foreground" data-testid="available-now">
+            {fmtLana(availability.nowLana)} <span className="text-sm font-sans font-semibold">LANA</span>
+          </p>
+          <p className="text-xs text-foreground">
+            {availability.nowLana > 0
+              ? fill(MANDATE.availableNow, {
+                  rounds: availability.openRounds.map(m => m.round).join(', '),
+                  count: availability.openRounds.length,
+                })
+              : MANDATE.availableNone}
+          </p>
+
+          {availability.anyReleased && availability.nowLana > 0 && (
+            <p className="text-xs font-medium text-green-800 dark:text-green-300">{MANDATE.availableReleased}</p>
+          )}
+
+          {/* Two rounds open at once still means one round per proposal. */}
+          {availability.perProposalLana > 0 && availability.perProposalLana < availability.nowLana && (
+            <p className="text-xs text-muted-foreground" data-testid="per-proposal">
+              {fill(MANDATE.availablePerProposal, {
+                amount: fmtLana(availability.perProposalLana),
+                round: availability.perProposalRound,
+              })}
+            </p>
+          )}
+
+          {availability.laterRounds.length > 0 && (
+            <div className="pt-1 border-t border-border/60 space-y-1" data-testid="available-later">
+              <p className="text-xs font-semibold text-foreground">
+                {fill(MANDATE.availableLater, { amount: fmtLana(availability.laterLana) })}
+              </p>
+              {availability.laterRounds.map(m => (
+                <p key={m.mandateRef} className="text-[11px] text-muted-foreground">
+                  {fill(MANDATE.availableLaterRound, {
+                    amount: fmtLana(m.remainingLana),
+                    round: m.round,
+                    when: m.state === 'not_open' && m.opensAt ? fmtUtc(m.opensAt)
+                      : m.state === 'upcoming_split' ? MANDATE.availableAfterSplit
+                      : MANDATE.availableTermsPending,
+                  })}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="space-y-3">
         {mandates.map(m => (

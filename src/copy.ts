@@ -373,6 +373,21 @@ export const MANDATE = {
     split_unknown: 'Unknown',
   } as Record<string, string>,
 
+  // How much can actually go into a sale today. A holder cannot work this out
+  // from the round rows: rounds open one date at a time and a proposal draws on
+  // ONE round, so LANA from a later round is simply not on the table yet.
+  availabilityTitle: 'How much you can propose now',
+  availableNow: 'Open for proposals today, from round {rounds}.',
+  availableNone: 'None of your LANA is open for proposals yet.',
+  availableReleased: 'The treasury opened a round ahead of its date, so that part is available now.',
+  availablePerProposal:
+    'One proposal draws on one round, so a single proposal can carry up to {amount} LANA (round {round}). ' +
+    'Propose again for the rest.',
+  availableLater: '{amount} LANA is not on the table yet:',
+  availableLaterRound: '{amount} LANA from round {round} — {when}',
+  availableAfterSplit: 'after the Split, on the round date',
+  availableTermsPending: 'the treasury has not published this round\'s terms yet',
+
   noMandateTitle: 'No financing-round mandate for this wallet',
   noMandateBody:
     'The treasury has published no mandate for this wallet. A proposal from it is not judged against a round: ' +
