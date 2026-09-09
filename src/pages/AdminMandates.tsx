@@ -104,6 +104,7 @@ interface MandateRow {
   opensAt: string | null;
   discountPercent: number | null;
   released: { by: string; reason: string; at: string } | null;
+  restricted: { reason: string; by: string; at: string } | null;
   warnings: string[];
   offers: MandateOffer[];
 }
@@ -180,6 +181,12 @@ export default function AdminMandates() {
   const [names, setNames] = useState<Record<string, string>>(() => knownNames());
   const [expanded, setExpanded] = useState<string | null>(null);
 
+  // Restrict dialog — a counterparty, not a mandate: it applies to every
+  // proposal they make, under any round.
+  const [restrictFor, setRestrictFor] = useState<MandateRow | null>(null);
+  const [restrictReason, setRestrictReason] = useState('');
+  const [restricting, setRestricting] = useState(false);
+
   // Release dialog
   const [releaseFor, setReleaseFor] = useState<MandateRow | null>(null);
   const [releaseReason, setReleaseReason] = useState('');
@@ -238,6 +245,29 @@ export default function AdminMandates() {
       toast.error(err.message || 'Sync failed');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const submitRestrict = async (restricted: boolean) => {
+    if (!session || !restrictFor) return;
+    const reason = restrictReason.trim();
+    if (restricted && !reason) { toast.error(ADMIN_MANDATES.restrictReasonRequired); return; }
+    setRestricting(true);
+    try {
+      const res = await fetch(`/api/treasury/admin/restrictions/${encodeURIComponent(restrictFor.financerHex)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        body: JSON.stringify({ restricted, reason }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Could not save');
+      toast.success(restricted ? ADMIN_MANDATES.restrictDone : ADMIN_MANDATES.restrictLifted);
+      setRestrictFor(null); setRestrictReason('');
+      await load();
+    } catch (err: any) {
+      toast.error(err.message || 'Could not save');
+    } finally {
+      setRestricting(false);
     }
   };
 
@@ -325,6 +355,15 @@ export default function AdminMandates() {
                         <td className="px-3 py-3 min-w-[10rem]">
                           <div className="font-medium text-foreground">{names[m.financerHex] || `${m.financerHex.slice(0, 12)}…`}</div>
                           <div className="font-mono text-[11px] text-muted-foreground" title={m.financerHex}>{m.financerHex.slice(0, 12)}…</div>
+                          {m.restricted && (
+                            <div
+                              className="mt-1 inline-flex flex-col rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 px-2 py-1 text-[11px] text-amber-800 dark:text-amber-300"
+                              title={`${m.restricted.by} · ${m.restricted.at}`}
+                            >
+                              <span className="font-bold uppercase tracking-wider">{ADMIN_MANDATES.restrictedBadge}</span>
+                              <span>{m.restricted.reason}</span>
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-3 font-bold whitespace-nowrap">R{m.round} <span className="text-[11px] font-normal text-muted-foreground">S{m.split}</span></td>
                         <td className="px-3 py-3">
@@ -388,6 +427,12 @@ export default function AdminMandates() {
                               className="rounded border border-border px-2 py-1 text-[11px] font-bold hover:bg-accent"
                             >
                               {isOpen ? 'Hide' : `Offers (${m.offers.length})`}
+                            </button>
+                            <button
+                              onClick={() => { setRestrictFor(m); setRestrictReason(m.restricted?.reason || ''); }}
+                              className={`rounded px-2 py-1 text-[11px] font-bold border ${m.restricted ? 'border-amber-400 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/40' : 'border-border text-muted-foreground hover:bg-accent'}`}
+                            >
+                              {m.restricted ? ADMIN_MANDATES.restrictLift : ADMIN_MANDATES.restrictNow}
                             </button>
                             {m.status === 'announced' && (
                               <button
@@ -669,6 +714,42 @@ export default function AdminMandates() {
       </div>
 
       {/* Release dialog */}
+      {restrictFor && (
+        <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4" onClick={() => !restricting && setRestrictFor(null)}>
+          <div className="w-full max-w-md rounded-2xl border-2 border-border bg-card p-5 space-y-3" onClick={e => e.stopPropagation()}>
+            <h2 className="text-lg font-bold text-foreground">
+              {restrictFor.restricted ? ADMIN_MANDATES.restrictLiftTitle : ADMIN_MANDATES.restrictTitle}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {names[restrictFor.financerHex] || restrictFor.financerHex.slice(0, 12) + '…'}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {restrictFor.restricted ? ADMIN_MANDATES.restrictLiftBody : ADMIN_MANDATES.restrictBody}
+            </p>
+            <label className="block text-xs font-bold text-foreground">{ADMIN_MANDATES.restrictReason}</label>
+            <textarea rows={2} value={restrictReason} onChange={e => setRestrictReason(e.target.value)}
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setRestrictFor(null)} disabled={restricting}
+                className="rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground hover:text-foreground">Cancel</button>
+              {restrictFor.restricted && (
+                <button onClick={() => submitRestrict(false)} disabled={restricting}
+                  className="rounded-lg border border-border px-4 py-2 text-sm font-bold hover:bg-accent disabled:opacity-50">
+                  {restricting ? 'Saving…' : ADMIN_MANDATES.restrictLift}
+                </button>
+              )}
+              <button
+                onClick={() => submitRestrict(true)}
+                disabled={restricting || !restrictReason.trim()}
+                className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                {restricting ? 'Saving…' : restrictFor.restricted ? ADMIN_MANDATES.restrictUpdate : ADMIN_MANDATES.restrictNow}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {releaseFor && (
         <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4" onClick={() => !releasing && setReleaseFor(null)}>
           <div className="w-full max-w-md rounded-2xl border-2 border-border bg-card p-5 space-y-3" onClick={e => e.stopPropagation()}>

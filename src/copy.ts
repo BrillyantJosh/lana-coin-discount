@@ -443,6 +443,24 @@ export const ADMIN_MANDATES = {
   releaseBody: 'The financer may propose from this budget immediately. A reason is required and is recorded.',
   releaseRound1Confirm: 'I understand this opens a round-1 mandate before the published date.',
   releaseReason: 'Reason',
+  // Restriction — a counterparty, not a mandate. It withholds the automatic
+  // answer and nothing else: what the rules refuse stays refused, and what they
+  // allow waits for a person instead of being priced on the spot.
+  restrictedBadge: 'Restricted',
+  restrictNow: 'Restrict',
+  restrictUpdate: 'Update reason',
+  restrictLift: 'Lift restriction',
+  restrictTitle: 'Send every proposal from this counterparty to review',
+  restrictLiftTitle: 'Lift this restriction',
+  restrictBody:
+    'While this is in place, no proposal from this counterparty is priced and offered automatically — each one waits ' +
+    'here for a person to decide. It takes nothing away: what the rules refuse is still refused for its own reason.',
+  restrictLiftBody:
+    'Their proposals will be answered by the rules again, as they are for everyone else.',
+  restrictReason: 'Reason',
+  restrictReasonRequired: 'A reason is required.',
+  restrictDone: 'Restriction saved',
+  restrictLifted: 'Restriction lifted',
   degraded: {
     noEvents: 'No mandate events for this Split. Nothing has been published, or the sync has not run.',
     noTerms: 'No round dates or discounts are set for this Split — no round can open.',

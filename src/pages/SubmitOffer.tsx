@@ -154,13 +154,37 @@ const formatDay = (ts: string | null | undefined) => {
   return d ? d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 };
 
+/**
+ * An offer the machine made stands 30 minutes; one a person decided stands 8
+ * days. So the moment needs its date once it is not today — "expires at 14:20"
+ * with no day is worse than useless on a week-long offer.
+ */
 const formatMoment = (ts: string | null | undefined) => {
   const d = parseSqliteUtc(ts);
-  return d ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '—';
+  if (!d) return '—';
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? time : `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${time}`;
 };
 
+/**
+ * The same clock has to read sensibly at eight days and at eight seconds. Minutes
+ * and seconds alone would print "11520:00" for a week — a number nobody reads as
+ * time — so the unit follows the size of what is left.
+ */
 const formatLeft = (ms: number) => {
   const total = Math.max(0, Math.floor(ms / 1000));
+  if (total >= 86400) {
+    const d = Math.floor(total / 86400);
+    const h = Math.floor((total % 86400) / 3600);
+    return `${d}d ${h}h`;
+  }
+  if (total >= 3600) {
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    return `${h}h ${String(m).padStart(2, '0')}m`;
+  }
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${String(s).padStart(2, '0')}`;

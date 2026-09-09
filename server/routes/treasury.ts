@@ -38,6 +38,7 @@ import { consumedByMandate, offerRowsForFunding, offerTotalsByMandate } from '..
 import { fundingByRound, modelReturnPercent, OFF_MODEL_POINTS, projectPrice, referenceForCurrency } from '../lib/roundFunding.js';
 import { fetchBudgetMoney, type BudgetMoneyIndex } from '../lib/fundBudgets.js';
 import { BUYBACK_SPLIT_OFFSET } from '../lib/buybackSplit.js';
+import { activeRestrictionSet, listRestrictions, restrict, liftRestriction } from '../lib/acquisitionRestriction.js';
 
 const db = () => getDbHandle();
 const LANA = 100_000_000;
@@ -81,6 +82,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     const dTags = mandates.map(m => m.dTag);
     const consumed = consumedByMandate(db(), dTags);
     const totals = offerTotalsByMandate(db(), dTags);
+    const restrictions = activeRestrictionSet(db());
     const now = Math.floor(Date.now() / 1000);
 
     const rounds = [1, 2, 3].map(round => {
@@ -276,6 +278,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     const dTags = mandates.map(m => m.dTag);
     const consumed = consumedByMandate(db(), dTags);
     const totals = offerTotalsByMandate(db(), dTags);
+    const restrictions = activeRestrictionSet(db());
     const releases = new Map<string, any>(
       (dTags.length
         ? db().prepare(`SELECT * FROM acquisition_mandate_releases WHERE d_tag IN (${dTags.map(() => '?').join(',')})`).all(...dTags)
@@ -395,6 +398,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         };
       });
 
+      const restrictionRow = restrictions.get(String(m.financerHex || '').toLowerCase()) || null;
       return {
         mandateRef: m.dTag,
         eventId: m.eventId,
@@ -402,6 +406,11 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         split: m.split,
         round: m.round,
         financerHex: m.financerHex,
+        // Under restriction, every proposal from this counterparty waits for a
+        // person. Shown per row because that is where the operator meets them.
+        restricted: restrictionRow
+          ? { reason: restrictionRow.reason, by: restrictionRow.restricted_by, at: restrictionRow.restricted_at }
+          : null,
         wallets: m.wallets.map(w => ({
           address: w.address, currency: w.currency, fundSettingId: w.fundSettingId,
           lanaReceived: toLana(w.lanaLanoshis),
@@ -495,6 +504,53 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     console.log(`[lana-discount] Mandate ${dTag} ${released ? 'released' : 'release withdrawn'} by ${adminHex.slice(0, 12)}…: ${reason}`);
     const row = db().prepare('SELECT * FROM acquisition_mandate_releases WHERE d_tag = ?').get(dTag) as any;
     return res.json({ ok: true, dTag, released: !!row, release: row ? { by: row.released_by, reason: row.reason, at: row.released_at } : null });
+  });
+
+  /**
+   * Put a counterparty under restriction, or lift one.
+   *
+   * Restriction does not refuse anything. It withholds the automatic yes, so
+   * every proposal this counterparty makes waits in the review queue for a
+   * person — including one the rules would have priced and offered on the spot.
+   * A reason is required, and lifting keeps the row rather than deleting it, so
+   * the record reads back later.
+   *
+   * Body: { restricted: boolean, reason?: string }
+   */
+  router.post('/admin/restrictions/:hexId', (req: Request, res: Response) => {
+    const adminHex = requireAdmin(req, res);
+    if (!adminHex) return;
+    const hexId = String(req.params.hexId || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hexId)) return res.status(400).json({ error: 'hexId must be 64 hex characters' });
+
+    if (req.body?.restricted === false) {
+      const lifted = liftRestriction(db(), hexId, adminHex);
+      console.log(`[lana-discount] Restriction ${lifted ? 'lifted' : 'already absent'} for ${hexId.slice(0, 8)}… by ${adminHex.slice(0, 8)}…`);
+      return res.json({ ok: true, restricted: null, changed: lifted });
+    }
+
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (!reason) return res.status(400).json({ error: 'A reason is required to restrict a counterparty.', code: 'REASON_REQUIRED' });
+    try {
+      const row = restrict(db(), hexId, reason, adminHex);
+      console.log(`[lana-discount] Restriction set for ${hexId.slice(0, 8)}… by ${adminHex.slice(0, 8)}… — ${reason}`);
+      return res.json({ ok: true, restricted: { reason: row.reason, by: row.restricted_by, at: row.restricted_at }, changed: true });
+    } catch (err: any) {
+      if (err.message === 'INVALID_HEX') return res.status(400).json({ error: 'hexId must be 64 hex characters' });
+      if (err.message === 'REASON_REQUIRED') return res.status(400).json({ error: 'A reason is required.', code: 'REASON_REQUIRED' });
+      throw err;
+    }
+  });
+
+  /** Everyone ever restricted, active first. */
+  router.get('/admin/restrictions', (req: Request, res: Response) => {
+    if (!requireAdmin(req, res)) return;
+    return res.json({
+      restrictions: listRestrictions(db()).map(r => ({
+        hexId: r.hex_id, reason: r.reason, by: r.restricted_by, at: r.restricted_at,
+        liftedAt: r.lifted_at, liftedBy: r.lifted_by, active: r.lifted_at === null,
+      })),
+    });
   });
 
   router.post('/admin/mandates/sync', async (req: Request, res: Response) => {

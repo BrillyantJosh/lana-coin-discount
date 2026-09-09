@@ -59,6 +59,21 @@ export const ROUND_MANDATE_SCHEMA_SQL = `
     reason TEXT NOT NULL,
     released_at TEXT DEFAULT (datetime('now'))
   );
+
+  -- A counterparty whose proposals the treasury will not answer by machine.
+  -- Restriction takes no rights away and grants none: it only withholds the
+  -- automatic YES, so every proposal that would have been priced and offered
+  -- on the spot waits in the review queue for a person instead. The reason is
+  -- mandatory, and a lifted restriction is kept (lifted_at set, row not
+  -- deleted) so the history reads back.
+  CREATE TABLE IF NOT EXISTS acquisition_restrictions (
+    hex_id TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    restricted_by TEXT NOT NULL,
+    restricted_at TEXT NOT NULL DEFAULT (datetime('now')),
+    lifted_at TEXT,
+    lifted_by TEXT
+  );
 `;
 
 /**

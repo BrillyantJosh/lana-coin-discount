@@ -47,8 +47,10 @@ import {
   generateOfferRef, insertOffer, getOfferByRef, sqliteFuture, markOffered,
   markDeclined, markAccepted, markSettled, markWithdrawn, listOffersForReview,
   listOffersForUser, assertTransferable, consumedByMandate, markExpiredWithReason,
-  offerTotalsByMandate, markVoidedByAdmin, OFFER_VALIDITY_MINUTES, type OfferRow,
+  offerTotalsByMandate, markVoidedByAdmin, OFFER_VALIDITY_MINUTES, MANUAL_OFFER_VALIDITY_DAYS,
+  type OfferRow,
 } from '../lib/acquisitionOffer.js';
+import { activeRestriction, restrictionReason, RESTRICTED_CODE } from '../lib/acquisitionRestriction.js';
 import { checkSellerEligibility as realCheckSellerEligibility } from '../lib/sellerEligibility.js';
 import { sendLanaTransaction as realSendLanaTransaction } from '../lib/transaction.js';
 import { fetchUserWallets as realFetchUserWallets } from '../lib/nostr.js';
@@ -315,12 +317,19 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
 
       // ── the treasury's own decision ──────────────────────────────
       const settings = readMandateSettings(getAllAppSettings(), currency, walletClass);
-      const mandate = decideAcquisition({
+      const decided = decideAcquisition({
         walletClass,
         currency,
         fiatValue: priced.grossFiat,
         settings,
       });
+      // Restriction withholds the automatic yes and only that: a decline keeps
+      // its own reason, and a proposal already heading for review is left
+      // exactly where it was going.
+      const restriction = activeRestriction(db(), hexId);
+      const mandate = restriction && decided.outcome === 'accept'
+        ? { outcome: 'review' as const, code: RESTRICTED_CODE, reason: restrictionReason(restriction.reason) }
+        : decided;
 
       const offerRef = generateOfferRef(db());
       const base = {
@@ -429,6 +438,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       const windowSplit = currentSplit === null ? null : currentSplit - BUYBACK_SPLIT_OFFSET;
       const terms = windowSplit === null ? [] : loadRoundTerms(handle, windowSplit);
       const dTags = candidates.map(c => c.dTag);
+      const restriction = activeRestriction(handle, hexId);
       const verdict = evaluateRoundMandate({
         currentSplit,
         hexId, wallet: senderAddress, requestedLanoshis,
@@ -436,6 +446,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         released: loadReleases(handle, dTags),
         consumed: consumedByMandate(handle, dTags),
         now: now(),
+        restricted: restriction ? { reason: restriction.reason } : null,
       });
       const offerRef = generateOfferRef(handle);
       const legacyPriced = price(lanaAmount, currency, 'lanapays');
@@ -450,10 +461,20 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       };
 
       if (verdict.outcome === 'review') {
-        // IN QUEUE — a person looks, with the class discount as a reference only.
+        // IN QUEUE — a person looks. A proposal parked by RESTRICTED keeps the
+        // mandate the rules had already found for it, so the decide endpoint
+        // re-prices it at that round's discount and re-checks its remaining
+        // cap. NO_MANDATE has no such binding and falls back to the class
+        // discount as a reference only.
         const offer = insertOffer(handle, {
           ...base, status: 'under_review', mandateCode: verdict.code,
-          discountPercent: legacyPriced?.discountPercent ?? null,
+          mandateRef: verdict.mandateRef ?? null,
+          round: verdict.round ?? null,
+          discountPercent: verdict.discountPercent ?? legacyPriced?.discountPercent ?? null,
+          lanaAmountLanoshis: verdict.allowedLanoshis ?? requestedLanoshis,
+          lanaAmountDisplay: (verdict.allowedLanoshis ?? requestedLanoshis) / 100_000_000,
+          proposedLanaLanoshis: verdict.allowedLanoshis !== undefined && verdict.allowedLanoshis !== requestedLanoshis
+            ? requestedLanoshis : null,
           purchasePriceFiat: null, settlementDueAt: null, offerExpiresAt: null,
           decisionReason: verdict.reason,
         });
@@ -956,7 +977,9 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
           ? Math.round((1 - purchasePriceFiat / priced.grossFiat) * 10000) / 100
           : priced.discountPercent,
         settlementDueAt: sqliteFuture(db(), `+${settings.dueDays} days`),
-        offerExpiresAt: sqliteFuture(db(), `+${OFFER_VALIDITY_MINUTES} minutes`),
+        // A person decided this one, so it stands for days rather than
+        // minutes: the seller is not on the page waiting for it.
+        offerExpiresAt: sqliteFuture(db(), `+${MANUAL_OFFER_VALIDITY_DAYS} days`),
         decidedBy: adminHex,
       });
       if (!ok) return res.status(409).json({ error: 'This offer has already been decided.' });

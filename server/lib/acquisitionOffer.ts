@@ -38,8 +38,30 @@ export type OfferStatus =
   | 'withdrawn'
   | 'settled';
 
-/** How long a purchase offer stands before it lapses. */
+/**
+ * How long a purchase offer the machine made stands before it lapses.
+ *
+ * Thirty minutes because the seller is on the page when it is made: they asked,
+ * we priced it at the live reference, and they answer. A window this short is
+ * what lets the price be a real price rather than an option written against a
+ * moving market.
+ */
 export const OFFER_VALIDITY_MINUTES = 30;
+
+/**
+ * How long a purchase offer a PERSON made stands before it lapses.
+ *
+ * A proposal parked for review is not answered while the seller waits — the
+ * treasury may take hours or days over it, and by the time an offer comes back
+ * the seller has long since closed the tab. Thirty minutes would then be an
+ * offer nobody could ever accept; the seller would find it already expired,
+ * every time. Eight days is the owner's decision (9 Sep 2026), and it is a
+ * price the treasury can stand behind because the reference only moves at a
+ * Split: within one Split it does not move at all, and when it does, the
+ * REFERENCE_MOVED guard on acceptance lapses the offer rather than honouring a
+ * stale price.
+ */
+export const MANUAL_OFFER_VALIDITY_DAYS = 8;
 
 /**
  * How long an ACCEPTED offer may sit without its transfer before it lapses.

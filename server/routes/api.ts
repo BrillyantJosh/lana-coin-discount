@@ -2571,6 +2571,10 @@ router.get('/brain/lana-order/:id', (req: Request, res: Response) => {
     to_wallet: order.to_wallet,
     created_at: order.created_at,
     completed_at: order.completed_at,
+    // Why, when the answer is 'cancelled'. The brain mirrors the cancellation
+    // into its own row and keeps this as the note, so the reason survives on
+    // both sides instead of only on ours.
+    cancel_reason: order.cancel_reason || null,
   });
 });
 

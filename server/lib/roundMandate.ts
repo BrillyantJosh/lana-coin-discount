@@ -33,6 +33,7 @@
  * A date OPENS a mandate; it creates no right to sell (P08 §8, P14 §8).
  */
 import { BUYBACK_SPLIT_OFFSET } from './buybackSplit.js';
+import { restrictionReason } from './acquisitionRestriction.js';
 
 export interface MandateWallet {
   address: string;
@@ -64,8 +65,29 @@ export interface RoundTerms {
 
 export type RoundDeclineCode = 'SPLIT_WINDOW' | 'TERMS_MISSING' | 'MANDATE_NOT_OPEN' | 'FULLY_ACQUIRED';
 
+/** Why a proposal is parked for a person instead of answered by the machine. */
+export type RoundReviewCode = 'NO_MANDATE' | 'RESTRICTED';
+
 export type RoundMandateVerdict =
-  | { outcome: 'review'; code: 'NO_MANDATE'; reason: string }
+  | {
+      outcome: 'review';
+      code: RoundReviewCode;
+      reason: string;
+      /**
+       * Present when the mandate rules had already found the round this
+       * proposal belongs to and only the restriction held it back. Carrying it
+       * keeps the parked offer mandate-bound, so the admin decide endpoint
+       * re-prices it at the round's own discount and re-checks the remaining
+       * cap — exactly as it does for a proposal parked by the auto cap.
+       */
+      mandateRef?: string;
+      round?: number;
+      split?: number;
+      discountPercent?: number;
+      allowedLanoshis?: number;
+      remainingLanoshis?: number;
+      released?: boolean;
+    }
   | { outcome: 'decline'; code: RoundDeclineCode; reason: string; opensAt?: number; mandateRef?: string; round?: number }
   | {
       outcome: 'accept' | 'counter';
@@ -96,6 +118,13 @@ export interface EvaluateRoundMandateInput {
   consumed: Map<string, number>;
   /** Unix seconds. */
   now: number;
+  /**
+   * Set when this counterparty is under restriction. It withholds the
+   * automatic yes and nothing else: a decline stays a decline for its own
+   * reason, and the operator is never asked to re-decide what the rules
+   * already settled.
+   */
+  restricted?: { reason: string } | null;
 }
 
 /** Is the mandate's split the one the buyback window is about right now? */
@@ -113,6 +142,25 @@ const sameAddress = (a: string, b: string) =>
 const fmtDate = (unix: number) => new Date(unix * 1000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
 
 export function evaluateRoundMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict {
+  const verdict = decideByMandate(input);
+  if (input.restricted && (verdict.outcome === 'accept' || verdict.outcome === 'counter')) {
+    return {
+      outcome: 'review',
+      code: 'RESTRICTED',
+      reason: restrictionReason(input.restricted.reason),
+      mandateRef: verdict.mandateRef,
+      round: verdict.round,
+      split: verdict.split,
+      discountPercent: verdict.discountPercent,
+      allowedLanoshis: verdict.allowedLanoshis,
+      remainingLanoshis: verdict.remainingLanoshis,
+      released: verdict.released,
+    };
+  }
+  return verdict;
+}
+
+function decideByMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict {
   const hex = String(input.hexId || '').toLowerCase();
   const mine = input.candidates.filter(c =>
     c.status === 'announced' &&
