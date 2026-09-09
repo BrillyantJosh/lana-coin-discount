@@ -12,6 +12,7 @@ import { pullRoundMandates } from './lib/roundMandateSync.js';
 import { fetchKind38888, fetchKind0, Kind38888Data } from './lib/nostr.js';
 import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb } from './db/index.js';
 import { selectWholeGroups } from './lib/autoSendSelection.js';
+import { settleBatchesWithSentLana } from './lib/batchSettlement.js';
 import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from './lib/sendLock.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -78,6 +79,34 @@ app.use('/api/acquisitions', createAcquisitionsRouter({
 // acquisitions router's gate reads; writes nothing that moves money.
 app.use('/api/treasury', createTreasuryRouter());
 app.use('/health', (_req, res) => res.redirect('/api/health'));
+
+// Heartbeat status for the admin page. It MUST be registered before the static
+// files and the SPA catch-all below: an /api route declared after them never
+// runs — express answers with index.html, the page's `res.json()` throws into an
+// empty catch, and the badge silently keeps its initial "no pending orders".
+// That is exactly what happened between 22 Mar and 9 Sep 2026: the endpoint was
+// added after the catch-all and never once answered, so the dashboard reported
+// "No pending LANA orders" while the auto-sender was failing every 3 minutes.
+app.get('/api/heartbeat-status', (_req, res) => {
+  const pending = db.prepare(
+    "SELECT COUNT(*) AS c, COALESCE(SUM(lana_amount), 0) AS lanoshis FROM brain_lana_orders WHERE status = 'pending'"
+  ).get() as any;
+  // Seconds until the next heartbeat (60s cycle)
+  const now = Date.now();
+  const elapsedSinceLastHb = now % HEARTBEAT_INTERVAL;
+  const nextHbSec = Math.ceil((HEARTBEAT_INTERVAL - elapsedSinceLastHb) / 1000);
+
+  res.json({
+    heartbeatCount,
+    heartbeatIntervalSec: HEARTBEAT_INTERVAL / 1000,
+    autoSendCycleMin: AUTO_SEND_CYCLE,
+    nextAutoSendMin: nextAutoSendIn,
+    nextHeartbeatSec: nextHbSec,
+    lastAutoSendAt,
+    pendingLanaOrders: pending.c as number,
+    pendingLanoshis: pending.lanoshis as number,
+  });
+});
 
 // Serve static frontend in production
 const distPath = path.resolve(__dirname, '../dist');
@@ -260,6 +289,21 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
 // Auto-send pending LANA orders (batch up to 30 recipients per TX)
 // ---------------------------------------------------------------------------
 
+/**
+ * Tick off the batches whose LANA has already gone out. The decision is
+ * settleBatchesWithSentLana()'s; this only logs it and never lets a bookkeeping
+ * error take the heartbeat down with it.
+ */
+function settleFinishedBatches(): void {
+  try {
+    for (const b of settleBatchesWithSentLana(db)) {
+      console.log(`[lana-discount] Batch ${b.batchRef} → lana_sent (from '${b.from}', all ${b.orders} LANA orders sent, tx ${b.txHash || 'unknown'})`);
+    }
+  } catch (err: any) {
+    console.error('[lana-discount] Batch settlement error:', err.message);
+  }
+}
+
 async function autoSendPendingLana(): Promise<void> {
   // Prevent concurrent runs
   if (!tryAcquireSendLock('auto-send')) {
@@ -304,40 +348,28 @@ async function autoSendPendingLana(): Promise<void> {
     let pendingOrders = selection.orders;
 
     if (pendingOrders.length === 0) {
-      // Even with no pending orders, check if any stuck batches should be marked as lana_sent
-      // (e.g. batch_ref mismatch — orders were sent via a different batch)
-      const stuckBatches = db.prepare("SELECT * FROM incoming_batches WHERE status = 'lana_bought'").all() as any[];
-      for (const batch of stuckBatches) {
-        const totalForBatch = (db.prepare(
-          "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ?"
-        ).get(batch.batch_ref) as any).c;
-
-        if (totalForBatch > 0) {
-          // Has linked orders — check if all are sent
-          const pendingForBatch = (db.prepare(
-            "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ? AND status = 'pending'"
-          ).get(batch.batch_ref) as any).c;
-          if (pendingForBatch === 0) {
-            const sentOrder = db.prepare(
-              "SELECT tx_hash FROM brain_lana_orders WHERE batch_ref = ? AND status = 'sent' AND tx_hash IS NOT NULL LIMIT 1"
-            ).get(batch.batch_ref) as any;
-            db.prepare(`UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ? WHERE id = ?`)
-              .run(sentOrder?.tx_hash || '', batch.id);
-            console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (all ${totalForBatch} orders sent, detected during idle check)`);
-          }
-        } else {
-          // No linked orders — fallback: if old enough (>10 min), assume sent via other batch
-          const boughtAge = batch.lana_bought_at
-            ? (Date.now() - new Date(batch.lana_bought_at + 'Z').getTime()) / 60000
-            : 0;
-          if (boughtAge > 10) {
-            const recentSent = db.prepare(
-              "SELECT tx_hash FROM brain_lana_orders WHERE status = 'sent' AND tx_hash IS NOT NULL ORDER BY completed_at DESC LIMIT 1"
-            ).get() as any;
-            db.prepare(`UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ? WHERE id = ? AND status = 'lana_bought'`)
-              .run(recentSent?.tx_hash || '', batch.id);
-            console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (no linked orders after ${Math.round(boughtAge)}min, assumed sent via other batch)`);
-          }
+      // Batches whose own orders prove the LANA went out are closed by
+      // settleFinishedBatches() on every cycle, whether or not anything is
+      // pending. What is left here is the one case that function refuses to
+      // touch: a batch the operator marked 'lana_bought' that has NO linked
+      // orders at all, because the batch_ref never matched. That is a guess,
+      // not evidence, so it stays behind the idle check and a 10-minute wait.
+      const orphanBatches = db.prepare(`
+        SELECT ib.* FROM incoming_batches ib
+        WHERE ib.status = 'lana_bought'
+          AND NOT EXISTS (SELECT 1 FROM brain_lana_orders blo WHERE blo.batch_ref = ib.batch_ref)
+      `).all() as any[];
+      for (const batch of orphanBatches) {
+        const boughtAge = batch.lana_bought_at
+          ? (Date.now() - new Date(batch.lana_bought_at + 'Z').getTime()) / 60000
+          : 0;
+        if (boughtAge > 10) {
+          const recentSent = db.prepare(
+            "SELECT tx_hash FROM brain_lana_orders WHERE status = 'sent' AND tx_hash IS NOT NULL ORDER BY completed_at DESC LIMIT 1"
+          ).get() as any;
+          db.prepare(`UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ? WHERE id = ? AND status = 'lana_bought'`)
+            .run(recentSent?.tx_hash || '', batch.id);
+          console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (no linked orders after ${Math.round(boughtAge)}min, assumed sent via other batch)`);
         }
       }
       return;
@@ -709,7 +741,15 @@ async function heartbeatLoop() {
       nextAutoSendIn = AUTO_SEND_CYCLE - ((heartbeatCount % AUTO_SEND_CYCLE) - AUTO_SEND_OFFSET + AUTO_SEND_CYCLE) % AUTO_SEND_CYCLE;
       if (nextAutoSendIn === AUTO_SEND_CYCLE) nextAutoSendIn = 0;
       if (heartbeatCount % AUTO_SEND_CYCLE === AUTO_SEND_OFFSET) {
-        await withTimeout(() => autoSendPendingLana(), 'Auto-send LANA', 45000);
+        try {
+          await withTimeout(() => autoSendPendingLana(), 'Auto-send LANA', 45000);
+        } finally {
+          // Runs even when the send failed, and even when orders are still
+          // pending: a batch whose own LANA has all gone out should not wait on
+          // an unrelated one that has not. Between 5 and 9 September 2026 it
+          // did, because this only ever ran when nothing at all was pending.
+          settleFinishedBatches();
+        }
         lastAutoSendAt = new Date().toISOString();
         nextAutoSendIn = AUTO_SEND_CYCLE;
       }
@@ -744,25 +784,6 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // ---------------------------------------------------------------------------
 // Start server
 // ---------------------------------------------------------------------------
-
-// Heartbeat status endpoint for UI
-app.get('/api/heartbeat-status', (req, res) => {
-  const pendingCount = (db.prepare("SELECT COUNT(*) as c FROM brain_lana_orders WHERE status = 'pending'").get() as any).c;
-  // Calculate seconds until next heartbeat (60s cycle)
-  const now = Date.now();
-  const elapsedSinceLastHb = now % HEARTBEAT_INTERVAL;
-  const nextHbSec = Math.ceil((HEARTBEAT_INTERVAL - elapsedSinceLastHb) / 1000);
-
-  res.json({
-    heartbeatCount,
-    heartbeatIntervalSec: HEARTBEAT_INTERVAL / 1000,
-    autoSendCycleMin: AUTO_SEND_CYCLE,
-    nextAutoSendMin: nextAutoSendIn,
-    nextHeartbeatSec: nextHbSec,
-    lastAutoSendAt,
-    pendingLanaOrders: pendingCount,
-  });
-});
 
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`[lana-discount] Server running on port ${PORT}`);

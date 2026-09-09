@@ -2146,9 +2146,14 @@ router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Respo
     }
   }
 
-  // When batch moves to lana_bought, backfill batch_ref on brain_lana_orders
-  // so auto-send knows which orders are eligible
-  if (status === 'lana_bought') {
+  // Link the batch to its LANA orders. This used to happen only at
+  // 'lana_bought', which meant a batch the operator confirmed but never ticked
+  // again had no link at all — and with no link, nothing could later prove its
+  // LANA had gone out. Doing it at 'received' costs nothing and changes no
+  // money: auto-send eligibility reads `ib.status = 'lana_bought'`, which a
+  // 'received' batch still is not. It only writes down which orders belong to
+  // which batch, so batchSettlement.ts can close the batch from the evidence.
+  if (status === 'received' || status === 'lana_bought') {
     const { payments } = req.body;
     if (Array.isArray(payments)) {
       const txRefs = [...new Set(payments.map((p: any) => p.transactionRef).filter(Boolean))];

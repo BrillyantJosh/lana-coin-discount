@@ -145,7 +145,7 @@ const AdminIncomingPayments = () => {
   const [orders, setOrders] = useState<FiatOrder[]>([]);
   const [lanaOrders, setLanaOrders] = useState<LanaOrder[]>([]);
   const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; balanceLana: number; confirmedLana?: number; unconfirmedLana?: number }>({ wallet: '', balanceLana: 0 });
-  const [heartbeatInfo, setHeartbeatInfo] = useState<{ nextAutoSendMin: number; nextHeartbeatSec: number; pendingLanaOrders: number; lastAutoSendAt: string | null }>({ nextAutoSendMin: 0, nextHeartbeatSec: 60, pendingLanaOrders: 0, lastAutoSendAt: null });
+  const [heartbeatInfo, setHeartbeatInfo] = useState<{ nextAutoSendMin: number; nextHeartbeatSec: number; pendingLanaOrders: number; pendingLanoshis: number; lastAutoSendAt: string | null }>({ nextAutoSendMin: 0, nextHeartbeatSec: 60, pendingLanaOrders: 0, pendingLanoshis: 0, lastAutoSendAt: null });
   const [countdown, setCountdown] = useState(0);
   const [hbCountdown, setHbCountdown] = useState(60);
   const [lanaObligations, setLanaObligations] = useState<{ pendingLanoshis: number; sentLanoshis: number }>({ pendingLanoshis: 0, sentLanoshis: 0 });
@@ -517,16 +517,19 @@ const AdminIncomingPayments = () => {
     lana_sent: { label: '', next: 'lana_sent' },
   };
 
-  // Calculate pending/sent LANA only for orders belonging to lana_bought/lana_sent batches
-  const lanaBoughtBatches = allBatches.filter(b => b.discountStatus === 'lana_bought');
-  const lanaSentBatches = allBatches.filter(b => b.discountStatus === 'lana_sent');
-  const getBatchTxRefs = (batches: BatchGroup[]) =>
-    [...new Set(batches.flatMap(b => b.orders.map(o => o.transactionRef).filter(Boolean)))];
-  const boughtTxRefs = getBatchTxRefs(lanaBoughtBatches);
-  const sentTxRefs = getBatchTxRefs(lanaSentBatches);
-  // Pending LANA = sum from ALL brain_lana_orders for lana_bought batches (pending + sent, includes merchant + cashback)
-  const boughtLanaOrders = lanaOrders.filter(lo => boughtTxRefs.includes(lo.transactionRef));
-  const batchedPendingLana = Math.round(boughtLanaOrders.reduce((s, lo) => s + lo.lanaAmount, 0) / 100_000_000);
+  // LANA we still owe = every order the wallet has not sent yet, whatever batch
+  // it belongs to and whether or not a batch was ever marked "LANA bought".
+  //
+  // This used to count only orders inside batches at status 'lana_bought', and
+  // it counted their SENT orders too. Both halves were wrong. The brain
+  // authorises most orders directly (brain_authorized=1), so they are sent
+  // without the batch ever leaving 'received' — which made the tile read 0
+  // while the auto-sender was short of coins and retrying every 3 minutes.
+  // Rounding is 2 decimals, not whole LANA: a shortfall of 0.72 LANA is enough
+  // to stop a payment, and a whole-LANA tile would have hidden it.
+  const pendingLana = lanaOrders
+    .filter(lo => lo.status === 'pending')
+    .reduce((s, lo) => s + lo.lanaAmount, 0) / 100_000_000;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -611,24 +614,40 @@ const AdminIncomingPayments = () => {
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Buyback Wallet</p>
                 <p className="text-lg font-bold tabular-nums">{buybackBalance.balanceLana.toLocaleString(undefined, { maximumFractionDigits: 2 })} <span className="text-xs text-muted-foreground">LANA</span></p>
-                {(buybackBalance.unconfirmedLana ?? 0) !== 0 && (
-                  <p className="text-[10px] text-amber-500 font-mono">
-                    +{(buybackBalance.unconfirmedLana ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} incoming
-                  </p>
-                )}
+                {/* An unconfirmed balance is negative when it is OUR OWN send
+                    waiting for a block, not money arriving. The old label put a
+                    "+" in front of it and called it incoming, which read as
+                    "+-41.95 incoming". */}
+                {(() => {
+                  const unconfirmed = buybackBalance.unconfirmedLana ?? 0;
+                  if (unconfirmed === 0) return null;
+                  const arriving = unconfirmed > 0;
+                  return (
+                    <p className="text-[10px] text-amber-500 font-mono">
+                      {arriving ? '+' : '−'}{Math.abs(unconfirmed).toLocaleString(undefined, { maximumFractionDigits: 2 })} {arriving ? 'incoming' : 'leaving'}
+                    </p>
+                  );
+                })()}
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500">Pending to Send</p>
-                <p className="text-lg font-bold tabular-nums text-amber-500">{batchedPendingLana.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                <p className="text-lg font-bold tabular-nums text-amber-500">{pendingLana.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Available</p>
                 {(() => {
-                  const available = buybackBalance.balanceLana - batchedPendingLana;
+                  const available = buybackBalance.balanceLana - pendingLana;
                   return (
-                    <p className={`text-lg font-bold tabular-nums ${available >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                      {available.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                    </p>
+                    <>
+                      <p className={`text-lg font-bold tabular-nums ${available >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                        {available.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </p>
+                      {available < 0 && (
+                        <p className="text-[10px] text-red-500 font-semibold">
+                          {Math.abs(available).toLocaleString(undefined, { maximumFractionDigits: 2 })} LANA short — sends are blocked
+                        </p>
+                      )}
+                    </>
                   );
                 })()}
               </div>
