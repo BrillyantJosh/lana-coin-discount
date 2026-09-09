@@ -114,13 +114,29 @@ const tabs: { id: TabId; label: string; desc: string; color: string }[] = [
   { id: 'lana_sent', label: 'LANA Sent', desc: 'LANA distributed to recipients', color: 'text-emerald-500' },
 ];
 
+/**
+ * Two shapes reach these helpers. SQLite columns are naive UTC
+ * ("2026-09-09 18:03:48") and need a 'Z' to be read as UTC rather than as the
+ * viewer's local time. lastAutoSendAt is already a full ISO string from
+ * toISOString(), and appending a second 'Z' to it produced the literal
+ * "Invalid Date Invalid Date" the moment /api/heartbeat-status started
+ * answering. Add the marker only when it is missing.
+ */
+function asUtcDate(stamp: string): Date {
+  const s = stamp.trim();
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(s);
+  return new Date(hasZone ? s : s.replace(' ', 'T') + 'Z');
+}
+
 function formatDate(iso: string): string {
-  const d = new Date(iso + 'Z');
+  const d = asUtcDate(iso);
+  if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
 function formatTime(iso: string): string {
-  const d = new Date(iso + 'Z');
+  const d = asUtcDate(iso);
+  if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
