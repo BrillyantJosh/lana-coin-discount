@@ -25,6 +25,23 @@ import { CLASS_LABELS, type WalletClass } from '../../server/lib/treasuryMandate
  * screen hardcodes "Rejected by admin", which tells nobody anything.
  */
 
+/** Display names from KIND 0, a few at a time; a miss simply shows the hex. */
+async function resolveNames(hexes: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const CONCURRENCY = 6;
+  for (let i = 0; i < hexes.length; i += CONCURRENCY) {
+    await Promise.all(hexes.slice(i, i + CONCURRENCY).map(async hex => {
+      try {
+        const r = await fetch(`/api/user/${hex}/profile`);
+        const j = await r.json();
+        const name = j.fullName || j.displayName || null;
+        if (name) out[hex] = String(name).trim();
+      } catch { /* the hex is enough */ }
+    }));
+  }
+  return out;
+}
+
 interface QueueOffer {
   offerRef: string;
   status: string;
@@ -48,6 +65,10 @@ interface QueueOffer {
   round?: number | null;
   proposedLanaAmount?: number | null;
   isCounteroffer?: boolean;
+  /** What the sending wallet holds on chain. null = could not be read just now. */
+  walletLana?: number | null;
+  /** Whether that covers the offer. null = unknown, which is not the same as false. */
+  backed?: boolean | null;
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -83,6 +104,7 @@ const AdminOffers = () => {
   const navigate = useNavigate();
 
   const [offers, setOffers] = useState<QueueOffer[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
 
   // One row at a time may be mid-decision; the ref doubles as the busy flag so
@@ -147,6 +169,9 @@ const AdminOffers = () => {
       if (data.error) throw new Error(data.error);
       const list: QueueOffer[] = data.offers || [];
       setOffers(list);
+      // A hex says nothing about who is selling; the name does.
+      const missing = [...new Set(list.map(o => o.userHexId))].filter(h => h && names[h] === undefined);
+      if (missing.length) resolveNames(missing).then(found => setNames(prev => ({ ...prev, ...found })));
       // Keep the nav badge honest the instant a decision changes the count.
       window.dispatchEvent(new CustomEvent(OFFERS_COUNT_EVENT, { detail: list.length }));
     } catch (err: any) {
@@ -292,13 +317,25 @@ const AdminOffers = () => {
                   </div>
 
                   <div className="px-4 sm:px-6 py-4 space-y-4">
+                    {offer.backed === false && (
+                      <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                        This wallet holds less LANA than the proposal. It cannot be accepted or countered until the
+                        wallet is funded — the treasury would be agreeing to buy coins that are not there.
+                      </div>
+                    )}
+
                     {/* Who and what */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2">
                       <div className="space-y-1.5 min-w-0">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-xs text-muted-foreground w-24 flex-shrink-0">Counterparty</span>
-                          <span className="font-mono text-xs text-foreground truncate" title={offer.userHexId}>
-                            {truncate(offer.userHexId)}
+                        <div className="flex items-start gap-2 min-w-0">
+                          <span className="text-xs text-muted-foreground w-24 flex-shrink-0 pt-0.5">Counterparty</span>
+                          <span className="min-w-0">
+                            {names[offer.userHexId] && (
+                              <span className="block text-sm font-semibold text-foreground truncate">{names[offer.userHexId]}</span>
+                            )}
+                            <span className="block font-mono text-xs text-muted-foreground truncate" title={offer.userHexId}>
+                              {truncate(offer.userHexId)}
+                            </span>
                           </span>
                         </div>
                         <div className="flex items-center gap-2 min-w-0">
@@ -306,6 +343,16 @@ const AdminOffers = () => {
                           <span className="font-mono text-xs text-foreground truncate" title={offer.senderWallet}>
                             {truncate(offer.senderWallet)}
                           </span>
+                        </div>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-xs text-muted-foreground w-24 flex-shrink-0">Wallet holds</span>
+                          {offer.walletLana === null || offer.walletLana === undefined ? (
+                            <span className="text-xs text-muted-foreground">could not be read</span>
+                          ) : (
+                            <span className={`font-mono text-xs font-semibold ${offer.backed === false ? 'text-destructive' : 'text-foreground'}`}>
+                              {offer.walletLana.toLocaleString(undefined, { maximumFractionDigits: 2 })} LANA
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="text-xs text-muted-foreground w-24 flex-shrink-0">Wallet class</span>

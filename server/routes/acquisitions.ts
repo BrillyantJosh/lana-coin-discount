@@ -53,6 +53,7 @@ import { checkSellerEligibility as realCheckSellerEligibility } from '../lib/sel
 import { sendLanaTransaction as realSendLanaTransaction } from '../lib/transaction.js';
 import { fetchUserWallets as realFetchUserWallets } from '../lib/nostr.js';
 import { fetchBatchBalances as realFetchBatchBalances, type WalletBalance } from '../lib/electrum.js';
+import { verifyBacking, isBacked } from '../lib/acquisitionBacking.js';
 import { requireAdmin } from '../lib/adminAuth.js';
 import { verifyRequestSignature, type ReplayCache } from '../lib/requestSignature.js';
 import {
@@ -178,6 +179,31 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
   const currentSplitNumber = (): number | null => parseInt(getSplitFromDb() || '') || null;
 
   /**
+   * What the chain says this wallet holds, or null when that cannot be
+   * established. Every commitment goes through here first: a proposal for LANA
+   * the wallet does not hold is a promise nobody can keep, and until 9 Sept
+   * 2026 the only thing that noticed was the network, at the very end.
+   */
+  const readBalanceLanoshis = async (wallet: string): Promise<number | null> => {
+    try {
+      const balances = await fetchBatchBalances(getElectrumServersFromDb(), [wallet]);
+      return verifiedBalanceLanoshis(balances, wallet);
+    } catch (err: any) {
+      console.warn('[lana-discount] Balance read failed for', wallet, err?.message || err);
+      return null;
+    }
+  };
+
+  /** Answers the request itself when the wallet cannot back the amount. */
+  const refuseUnbacked = async (res: Response, wallet: string, lanoshis: number): Promise<boolean> => {
+    const verdict = verifyBacking(await readBalanceLanoshis(wallet), lanoshis);
+    if (verdict.ok) return false;
+    const { status, ...body } = verdict as any;
+    res.status(status).json(body);
+    return true;
+  };
+
+  /**
    * The one signature check. PATH is the pathname as routed (mount point +
    * route, no query), BODY is the parsed JSON for a POST and undefined for
    * a GET — exactly what the contract in lib/requestSignature.ts says the
@@ -265,6 +291,11 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
           error: eligibility.error, code: eligibility.code, ...(eligibility.detail || {}),
         });
       }
+
+      // The wallet must actually hold what is being offered. Checked here, for
+      // BOTH paths, so an unbacked proposal never reaches a mandate cap, a
+      // treasury review queue or an obligation.
+      if (await refuseUnbacked(res, senderAddress, Math.floor(lanaAmount * 100_000_000))) return;
 
       const walletClass = eligibility.walletClass!;
       if (walletClass === 'lanapays') {
@@ -589,7 +620,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
 
   // ── 2. Seller accepts our purchase offer ────────────────────────────
 
-  router.post('/:ref/accept', (req: Request, res: Response) => {
+  router.post('/:ref/accept', async (req: Request, res: Response) => {
     const ref = String(req.params.ref);
     const hexId = String(req.body?.hexId || '');
     if (!hexId) return res.status(400).json({ error: 'Missing hexId' });
@@ -598,6 +629,10 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
     if (!offer || offer.user_hex_id.toLowerCase() !== hexId.toLowerCase()) {
       return res.status(404).json({ error: 'No such acquisition offer.' });
     }
+
+    // Balances move between the proposal and this moment. Accepting creates a
+    // settlement obligation with a due date, so it is checked again here.
+    if (await refuseUnbacked(res, offer.sender_wallet_id, offer.lana_amount_lanoshis)) return;
 
     // Accepting a mandate-bound offer is the financer's contract moment and
     // consumes their cap; it must carry their signature. Legacy offers are
@@ -811,9 +846,23 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
 
   // ── 4. Admin: the review queue ──────────────────────────────────────
 
-  router.get('/admin/queue', (req: Request, res: Response) => {
+  router.get('/admin/queue', async (req: Request, res: Response) => {
     if (!requireAdmin(req, res)) return;
-    return res.json({ offers: listOffersForReview(db()).map(o => ({
+    const queue = listOffersForReview(db());
+    // What each wallet actually holds, so the operator sees an unbacked
+    // proposal before deciding on it. Best effort ONLY: a display that cannot
+    // read a balance says so; the decision endpoints refuse instead.
+    const walletBalances = new Map<string, number | null>();
+    const wallets = [...new Set(queue.map(o => o.sender_wallet_id).filter(Boolean))];
+    if (wallets.length) {
+      try {
+        const balances = await fetchBatchBalances(getElectrumServersFromDb(), wallets);
+        for (const w of wallets) walletBalances.set(w, verifiedBalanceLanoshis(balances, w));
+      } catch (err: any) {
+        console.warn('[lana-discount] Queue balance read failed:', err?.message || err);
+      }
+    }
+    return res.json({ offers: queue.map(o => ({
       ...offerView(o),
       userHexId: o.user_hex_id,
       walletClass: o.wallet_class,
@@ -822,6 +871,13 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         ? Math.round((o.gross_fiat - o.gross_fiat * o.discount_percent / 100) * 100) / 100
         : null,
       mandateCode: o.mandate_code,
+      // null = could not be read just now, which is not the same as empty.
+      walletLana: walletBalances.get(o.sender_wallet_id) === null || walletBalances.get(o.sender_wallet_id) === undefined
+        ? null
+        : (walletBalances.get(o.sender_wallet_id) as number) / 100_000_000,
+      backed: walletBalances.has(o.sender_wallet_id)
+        ? isBacked(walletBalances.get(o.sender_wallet_id) as number | null, o.lana_amount_lanoshis)
+        : null,
     })) });
   });
 
@@ -834,7 +890,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
    * re-checked against what is left of its mandate: the admin's acceptance
    * is not a way around the cap.
    */
-  router.post('/admin/:ref/decide', (req: Request, res: Response) => {
+  router.post('/admin/:ref/decide', async (req: Request, res: Response) => {
     const adminHex = requireAdmin(req, res);
     if (!adminHex) return;
 
@@ -854,6 +910,10 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
     }
 
     if (action === 'accept' || action === 'counter') {
+      // Never make an offer for LANA the wallet cannot deliver — including the
+      // rows that were taken in before this was checked at all.
+      if (await refuseUnbacked(res, offer.sender_wallet_id, offer.lana_amount_lanoshis)) return;
+
       let roundDiscount: number | undefined;
       if (offer.mandate_ref && offer.round !== null && offer.round !== undefined) {
         const mandateRow = db().prepare('SELECT * FROM acquisition_mandates WHERE d_tag = ?').get(offer.mandate_ref) as any;

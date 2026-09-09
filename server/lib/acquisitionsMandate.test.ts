@@ -40,10 +40,19 @@ const db: Database.Database = getDbHandle();
 const lanapays = makeKey();
 const seller = makeKey();
 
+/** Enough to back any proposal these tests make; funding is not what they test. */
+const DEFAULT_BALANCE = 1_000_000;
+
 // ── the injected world ──────────────────────────────────────────────────
 const world = {
   eligible: true as boolean,
   listedWallets: [W1] as string[] | 'throw',
+  /**
+   * Explicit balances per wallet. A wallet that is not listed holds
+   * DEFAULT_BALANCE: since 9 Sept 2026 a proposal must be backed by the wallet
+   * it comes from, and these tests are about the mandate, not about funding —
+   * the ones that ARE about funding set their own number.
+   */
   balances: {} as Record<string, number>,
   balancesThrow: false,
   /** When set, the raw electrum answer — for the shapes that must read as unverifiable. */
@@ -66,7 +75,7 @@ app.use('/api/acquisitions', createAcquisitionsRouter({
   fetchBatchBalances: async (_s, addresses) => {
     if (world.balancesThrow) throw new Error('electrum down');
     if (world.balanceShape) return world.balanceShape(addresses);
-    return addresses.map(a => ({ wallet_id: a, balance: world.balances[a] ?? 0, status: 'active' }));
+    return addresses.map(a => ({ wallet_id: a, balance: world.balances[a] ?? DEFAULT_BALANCE, status: 'active' }));
   },
   sendLanaTransaction: async (args) => { world.sent.push(args); return { success: true, txHash: 'ab'.repeat(32), fee: 33600 } as any; },
   // A fresh replay memory for this test server, so nothing leaks in from
@@ -74,7 +83,7 @@ app.use('/api/acquisitions', createAcquisitionsRouter({
   replayCache: createReplayCache(),
 }));
 app.use('/api/treasury', createTreasuryRouter({
-  fetchBatchBalances: async (_s, addresses) => addresses.map(a => ({ wallet_id: a, balance: world.balances[a] ?? 0, status: 'active' })),
+  fetchBatchBalances: async (_s, addresses) => addresses.map(a => ({ wallet_id: a, balance: world.balances[a] ?? DEFAULT_BALANCE, status: 'active' })),
 }));
 
 let server: http.Server;
@@ -640,5 +649,116 @@ describe('/api/treasury', () => {
     expect(ok.status).toBe(200);
     expect(body.warnings).toHaveLength(1);
     expect(body.rounds.find((x: any) => x.round === 1).discount_percent).toBe(21);
+  });
+});
+
+/**
+ * OFF-2026-042, 9 Sept 2026: 20,070 LANA under treasury review from a wallet
+ * holding 2,200.72. Nothing had ever asked whether the wallet could deliver —
+ * the network would have refused the transfer at the very end, long after the
+ * treasury had reviewed and possibly agreed to pay for it.
+ */
+describe('a proposal must be backed by the wallet it comes from', () => {
+  it('refuses more LANA than the wallet holds, and writes no row at all', async () => {
+    world.balances[W1] = 2200.72;
+    const res = await propose(20070);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('INSUFFICIENT_BALANCE');
+    expect(res.body.error).toContain('2,200.72');
+    expect(db.prepare('SELECT COUNT(*) c FROM acquisition_offers').get()).toEqual({ c: 0 });
+  });
+
+  it('lets the same wallet sell what it does hold', async () => {
+    // Off the mandate path, so the amount is the amount and no cap trims it.
+    setSetting(db, 'acq_EUR_other_enabled', 'true');
+    setSetting(db, 'acq_EUR_other_auto_cap', '');
+    (world as any).walletClass = 'other';
+    world.balances[W1] = 2200.72;
+    try {
+      const res = await propose(2000, { headers: null });
+      expect(res.status).toBe(200);
+      expect(res.body.offer.lanaAmount).toBe(2000);
+    } finally {
+      (world as any).walletClass = 'lanapays';
+    }
+  });
+
+  it('an unreadable balance stops the proposal too — it is not a zero and not a yes', async () => {
+    world.balancesThrow = true;
+    const res = await propose(10);
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('BALANCE_UNVERIFIABLE');
+    expect(db.prepare('SELECT COUNT(*) c FROM acquisition_offers').get()).toEqual({ c: 0 });
+  });
+
+  it('the treasury cannot accept an unbacked row that was taken in before the check existed', async () => {
+    db.prepare(`INSERT INTO acquisition_offers (offer_ref, user_hex_id, sender_wallet_id, wallet_class,
+      lana_amount_lanoshis, lana_amount_display, currency, status, mandate_code)
+      VALUES ('OFF-OLD-1', ?, ?, 'other', ?, 20070, 'EUR', 'under_review', 'ABOVE_AUTO_CAP')`)
+      .run(seller.pub, W1, 20070 * LANA);
+    world.balances[W1] = 2200.72;
+
+    const accept = await post('/api/acquisitions/admin/OFF-OLD-1/decide', { action: 'accept' }, { 'x-admin-hex-id': ADMIN });
+    expect(accept.status).toBe(409);
+    expect(accept.body.code).toBe('INSUFFICIENT_BALANCE');
+    expect(row('OFF-OLD-1').status).toBe('under_review');
+
+    // A counteroffer is an acceptance at our own price — same refusal.
+    const counter = await post('/api/acquisitions/admin/OFF-OLD-1/decide',
+      { action: 'counter', purchasePrice: 100 }, { 'x-admin-hex-id': ADMIN });
+    expect(counter.status).toBe(409);
+
+    // Declining it is always possible; it commits nothing.
+    const decline = await post('/api/acquisitions/admin/OFF-OLD-1/decide',
+      { action: 'decline', reason: 'The wallet cannot deliver this amount.' }, { 'x-admin-hex-id': ADMIN });
+    expect(decline.status).toBe(200);
+    expect(row('OFF-OLD-1').status).toBe('declined');
+  });
+
+  it('a balance that drops between the offer and the acceptance stops the acceptance', async () => {
+    world.balances[W1] = 5000;
+    const ref = await otherOffered();          // priced and standing at 100 LANA
+    expect(row(ref).status).toBe('offered');
+
+    // By the time the seller accepts, the coins have gone elsewhere.
+    world.balances[W1] = 10;
+    const accepted = await post(`/api/acquisitions/${ref}/accept`, { hexId: seller.pub });
+    expect(accepted.status).toBe(409);
+    expect(accepted.body.code).toBe('INSUFFICIENT_BALANCE');
+    expect(row(ref).status).toBe('offered');
+
+    // Put the coins back and the same acceptance goes through.
+    world.balances[W1] = 5000;
+    const ok = await post(`/api/acquisitions/${ref}/accept`, { hexId: seller.pub });
+    expect(ok.status).toBe(200);
+    expect(row(ref).status).toBe('accepted');
+  });
+
+  it('the review queue shows what each wallet holds, and says when it is short', async () => {
+    db.prepare(`INSERT INTO acquisition_offers (offer_ref, user_hex_id, sender_wallet_id, wallet_class,
+      lana_amount_lanoshis, lana_amount_display, currency, status, mandate_code)
+      VALUES ('OFF-Q-1', ?, ?, 'other', ?, 20070, 'EUR', 'under_review', 'ABOVE_AUTO_CAP')`)
+      .run(seller.pub, W1, 20070 * LANA);
+    world.balances[W1] = 2200.72;
+
+    const q = await get('/api/acquisitions/admin/queue', { 'x-admin-hex-id': ADMIN });
+    expect(q.status).toBe(200);
+    const shown = q.body.offers.find((o: any) => o.offerRef === 'OFF-Q-1');
+    expect(shown.walletLana).toBeCloseTo(2200.72, 6);
+    expect(shown.backed).toBe(false);
+  });
+
+  it('an unreadable balance leaves the QUEUE readable — a display never fails closed', async () => {
+    db.prepare(`INSERT INTO acquisition_offers (offer_ref, user_hex_id, sender_wallet_id, wallet_class,
+      lana_amount_lanoshis, lana_amount_display, currency, status, mandate_code)
+      VALUES ('OFF-Q-2', ?, ?, 'other', ?, 10, 'EUR', 'under_review', 'ABOVE_AUTO_CAP')`)
+      .run(seller.pub, W1, 10 * LANA);
+    world.balancesThrow = true;
+
+    const q = await get('/api/acquisitions/admin/queue', { 'x-admin-hex-id': ADMIN });
+    expect(q.status).toBe(200);
+    const shown = q.body.offers.find((o: any) => o.offerRef === 'OFF-Q-2');
+    expect(shown.walletLana).toBeNull();
+    expect(shown.backed).toBeNull();
   });
 });
