@@ -400,8 +400,11 @@ const AdminOffers = () => {
                     <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-border/30">
                       <button
                         onClick={() => decide(offer.offerRef, 'accept')}
-                        disabled={busy}
-                        className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-bold transition-colors ${
+                        // The server refuses an unbacked amount anyway; a live-looking
+                        // button that always errors is the worse of the two answers.
+                        disabled={busy || offer.backed === false}
+                        title={offer.backed === false ? 'The wallet holds less LANA than this proposal.' : undefined}
+                        className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                           busy ? 'bg-green-400 text-white cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-700'
                         }`}
                       >
@@ -429,8 +432,9 @@ const AdminOffers = () => {
                             // edit of the price, not a blank page.
                             setCounterPrice(offer.indicativePrice !== null ? String(offer.indicativePrice) : '');
                           }}
-                          disabled={busy}
-                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-border text-sm font-bold text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                          disabled={busy || offer.backed === false}
+                          title={offer.backed === false ? 'The wallet holds less LANA than this proposal.' : undefined}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-border text-sm font-bold text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           Counteroffer
                         </button>
