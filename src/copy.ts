@@ -298,6 +298,14 @@ export const OFFER = {
   // only where a mandate exists, under a heading that says what it is not,
   // because the one thing a public page must never do is read as a standing
   // rate (P08 §4). Only a purchase price on an accepted offer binds.
+  // After a completed sale, when another round is still open. Rounds carry
+  // their own discount, so one offer cannot span two of them — the holder
+  // sells in two goes, and this is what points at the second.
+  remainingTitle: 'You can still propose',
+  remainingBody:
+    'A proposal draws on one financing round, and round {round} still has {amount} LANA open under your mandate. ' +
+    'Propose it now, at that round\'s own discount.',
+  remainingCta: 'Propose {amount} LANA',
   indicativeLabel: 'Indicative figure — not a price, not a rate, not a guarantee.',
   indicativeBasisProjected: 'Basis: projected next-Split reference',
   indicativeBasisCurrent: 'Basis: live Split reference',

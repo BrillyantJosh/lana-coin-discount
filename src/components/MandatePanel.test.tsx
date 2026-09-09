@@ -164,6 +164,19 @@ describe('what the holder may propose now', () => {
     expect(a.laterRounds).toHaveLength(0);
   });
 
+  it('after round 1 is sold, the next proposal is round 2 — what the "propose the rest" button offers', () => {
+    // The state a holder is in the moment a sale completes: round 1 spent to
+    // the last lanoshi, round 2 still open. Before this existed the page ended
+    // here and the rest looked refused.
+    const a = availabilityOf(info([
+      r1({ state: 'fully_acquired', remainingLana: 0, settledLana: 1000 }),
+      r2({ state: 'released', released: true }),
+    ]))!;
+    expect(a.nowLana).toBe(800);
+    expect(a.perProposalLana).toBe(800);
+    expect(a.perProposalRound).toBe(2);
+  });
+
   it('says nothing at all when there is no mandate', () => {
     expect(availabilityOf(info([]))).toBeNull();
     expect(availabilityOf(null)).toBeNull();

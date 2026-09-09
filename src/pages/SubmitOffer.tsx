@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import { convertWifToIds } from '@/lib/crypto';
 import { SellTermsGate } from '@/components/SellTermsGate';
-import { MandatePanel, proposalGate, counterBody, fill, fmtUtc, type MandateInfo } from '@/components/MandatePanel';
+import { MandatePanel, proposalGate, counterBody, fill, fmtUtc, type MandateInfo, availabilityOf } from '@/components/MandatePanel';
 import { signedFetch, type SigningKey } from '@/lib/signedRequest';
 import { describeOfferError } from '@/lib/offerErrors';
 import { BRAND, OFFER, LANDING } from '@/copy';
@@ -241,6 +241,9 @@ const SubmitOffer = () => {
   // The financing-round mandate for this wallet — read with a signed GET,
   // because a financer's remaining cap is theirs to see and nobody else's.
   const [mandateInfo, setMandateInfo] = useState<MandateInfo | null>(null);
+  // Bumped when a sale completes: what remains under the mandate has just
+  // changed, and the next proposal must be measured against the new figure.
+  const [mandateRefresh, setMandateRefresh] = useState(0);
   const [mandateLoading, setMandateLoading] = useState(false);
   const [mandateError, setMandateError] = useState<string | null>(null);
   // Why an offer lapsed, when the server said more than "lapsed".
@@ -328,25 +331,7 @@ const SubmitOffer = () => {
       }
 
       if (fetchedWallets.length > 0) {
-        setBalancesLoading(true);
-        try {
-          const addresses = fetchedWallets.map((w: RegisteredWallet) => w.walletId);
-          const balRes = await fetch('/api/wallets/balances', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ addresses }),
-          });
-          const balData = await balRes.json();
-          const balMap: Record<string, number> = {};
-          (balData.balances || []).forEach((b: WalletBalance) => {
-            balMap[b.wallet_id] = b.balance;
-          });
-          setBalances(balMap);
-        } catch (e) {
-          console.error('Balance fetch failed:', e);
-        } finally {
-          setBalancesLoading(false);
-        }
+        await readBalances(fetchedWallets.map((w: RegisteredWallet) => w.walletId));
       }
 
       const profileCurrency = profileData.profile?.currency;
@@ -459,7 +444,7 @@ const SubmitOffer = () => {
       .catch(e => { if (!cancelled) { setMandateInfo(null); setMandateError(e.message || 'Mandate could not be read'); } })
       .finally(() => { if (!cancelled) setMandateLoading(false); });
     return () => { cancelled = true; };
-  }, [session?.nostrHexId, selectedWallet, selectedCurrency, splitChecking, offer?.status]);
+  }, [session?.nostrHexId, selectedWallet, selectedCurrency, splitChecking, offer?.status, mandateRefresh]);
 
   // "Max" offers the balance less an estimated fee, and the transfer then has
   // to empty the wallet — otherwise it keeps a change output and the fee has
@@ -627,6 +612,11 @@ const SubmitOffer = () => {
       setPrivateKey('');
       setPrivateKeyValid(null);
       setStage('done');
+      // The mandate and the wallet have both moved: this round has less left,
+      // and the coins are gone. Read them again so the "propose the rest"
+      // figure on the next screen is the one that is true now.
+      setMandateRefresh(n => n + 1);
+      refreshBalances();
     } catch {
       setTransferError({ error: 'Network error. Please try again.' });
     } finally {
@@ -680,6 +670,45 @@ const SubmitOffer = () => {
       .sort((a, b) => (a.split - b.split) || (a.round - b.round))
       .find(x => x.state === 'not_open' || x.state === 'upcoming_split');
     return { round: m?.round ?? null, opensAt: m?.opensAt ?? null };
+  };
+
+  /** On-chain balances for these addresses, into state. Used on load and after a sale. */
+  const readBalances = async (addresses: string[]) => {
+    if (addresses.length === 0) return;
+    setBalancesLoading(true);
+    try {
+      const balRes = await fetch('/api/wallets/balances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ addresses }),
+      });
+      const balData = await balRes.json();
+      const balMap: Record<string, number> = {};
+      (balData.balances || []).forEach((b: WalletBalance) => { balMap[b.wallet_id] = b.balance; });
+      setBalances(balMap);
+    } catch (e) {
+      console.error('Balance fetch failed:', e);
+    } finally {
+      setBalancesLoading(false);
+    }
+  };
+
+  const refreshBalances = () => { void readBalances(wallets.map(w => w.walletId)); };
+
+  /**
+   * Start the next proposal on what is still open.
+   *
+   * Rounds carry their own discount — 22 % in round 1, 25 % in round 2 — so one
+   * offer cannot cover two of them: it would be two prices on one row. With
+   * both rounds open a holder therefore sells in two goes, and until now the
+   * second go was unreachable: the page parks on a live offer, and once the
+   * first sale completed nothing pointed at the rest. It just looked like the
+   * treasury had refused to take it.
+   */
+  const proposeRemaining = (amountLana: number) => {
+    resetToAmount();
+    setLanaAmount(String(Math.max(0, Math.round(amountLana * 1e8) / 1e8)));
+    refreshBalances();
   };
 
   const resetToAmount = () => {
@@ -1575,6 +1604,37 @@ const SubmitOffer = () => {
                     {OFFER.settlementTiming}
                   </p>
                 </div>
+
+                {/* One round per offer, so a holder with LANA in two open
+                    rounds sells in two goes. This is the second go — without
+                    it the page ends here and the rest looks refused. */}
+                {(() => {
+                  const left = availabilityOf(mandateInfo);
+                  if (!left || left.perProposalLana <= 0) return null;
+                  return (
+                    <div className="rounded-2xl border-2 border-primary/40 bg-primary/5 p-5 space-y-3 text-center" data-testid="propose-remaining">
+                      <p className="text-sm font-bold text-foreground">{OFFER.remainingTitle}</p>
+                      <p className="text-2xl font-bold font-mono text-foreground">
+                        {left.nowLana.toLocaleString(undefined, { maximumFractionDigits: 2 })}{' '}
+                        <span className="text-sm font-sans">LANA</span>
+                      </p>
+                      <p className="text-xs text-muted-foreground leading-relaxed max-w-md mx-auto">
+                        {fill(OFFER.remainingBody, {
+                          amount: left.perProposalLana.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+                          round: left.perProposalRound,
+                        })}
+                      </p>
+                      <button
+                        onClick={() => proposeRemaining(left.perProposalLana)}
+                        className="rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
+                      >
+                        {fill(OFFER.remainingCta, {
+                          amount: left.perProposalLana.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+                        })}
+                      </button>
+                    </div>
+                  );
+                })()}
 
                 <div className="flex flex-col-reverse sm:flex-row sm:justify-center gap-3">
                   <Link to="/dashboard" className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-center text-muted-foreground hover:text-foreground transition-colors">
