@@ -307,6 +307,42 @@ async function verifyUnconfirmedTransactions(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
+ * The one case settleBatchesWithSentLana() refuses to judge: a batch the
+ * operator marked 'lana_bought' that has NO linked LANA orders at all, because
+ * another batch claimed the legs of its purchases first (the backfill matches
+ * on transaction_ref and only claims rows where batch_ref IS NULL). There is no
+ * evidence here, only an assumption, so it stays behind a ten-minute wait.
+ *
+ * It no longer borrows a hash. It used to stamp the batch with the newest
+ * tx_hash in the whole table — some unrelated purchase's broadcast — which is a
+ * money row that reads as an audit trail and would be believed. An empty hash
+ * says "we do not know", which is the truth.
+ */
+function settleOrphanBoughtBatches(): void {
+  try {
+    const orphans = db.prepare(`
+      SELECT ib.* FROM incoming_batches ib
+      WHERE ib.status = 'lana_bought'
+        AND NOT EXISTS (SELECT 1 FROM brain_lana_orders blo WHERE blo.batch_ref = ib.batch_ref)
+    `).all() as any[];
+    for (const batch of orphans) {
+      const boughtAge = batch.lana_bought_at
+        ? (Date.now() - new Date(batch.lana_bought_at + 'Z').getTime()) / 60000
+        : 0;
+      if (boughtAge <= 10) continue;
+      db.prepare(`
+        UPDATE incoming_batches
+           SET status = 'lana_sent', lana_sent_at = datetime('now'), updated_at = datetime('now')
+         WHERE id = ? AND status = 'lana_bought'
+      `).run(batch.id);
+      console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (no linked orders after ${Math.round(boughtAge)}min, assumed sent under another batch — no tx hash recorded)`);
+    }
+  } catch (err: any) {
+    console.error('[lana-discount] Orphan batch sweep error:', err.message);
+  }
+}
+
+/**
  * Tick off the batches whose LANA has already gone out. The decision is
  * settleBatchesWithSentLana()'s; this only logs it and never lets a bookkeeping
  * error take the heartbeat down with it.
@@ -322,17 +358,23 @@ function settleFinishedBatches(): void {
 }
 
 async function autoSendPendingLana(): Promise<void> {
+  // The cooldown check comes FIRST, and deliberately so: it needs no lock, and
+  // when it sat below the acquire its `return` left the process-wide send lock
+  // taken with no finally above it to give it back. sendLock has no TTL, so one
+  // such return would have frozen every payout — auto and manual — until the
+  // next restart, behind a log line that reads like ordinary concurrency
+  // protection. It never fired only because every cooldown (2, 3 and 5 minutes)
+  // is shorter than the 5m03s send cycle, by about three seconds.
+  if (Date.now() < autoSendSkipUntil) {
+    const remainSec = Math.ceil((autoSendSkipUntil - Date.now()) / 1000);
+    console.log(`[lana-discount] Auto-send: insufficient balance cooldown (${remainSec}s remaining) — skipping`);
+    return;
+  }
+
   // Prevent concurrent runs
   if (!tryAcquireSendLock('auto-send')) {
     const h = sendLockHolder();
     console.log(`[lana-discount] Auto-send: skipped — ${h?.who ?? 'another sender'} holds the send lock (${Math.round((h?.heldForMs ?? 0) / 1000)}s)`);
-    return;
-  }
-
-  // Skip if in cooldown (insufficient balance)
-  if (Date.now() < autoSendSkipUntil) {
-    const remainSec = Math.ceil((autoSendSkipUntil - Date.now()) / 1000);
-    console.log(`[lana-discount] Auto-send: insufficient balance cooldown (${remainSec}s remaining) — skipping`);
     return;
   }
 
@@ -371,24 +413,7 @@ async function autoSendPendingLana(): Promise<void> {
       // touch: a batch the operator marked 'lana_bought' that has NO linked
       // orders at all, because the batch_ref never matched. That is a guess,
       // not evidence, so it stays behind the idle check and a 10-minute wait.
-      const orphanBatches = db.prepare(`
-        SELECT ib.* FROM incoming_batches ib
-        WHERE ib.status = 'lana_bought'
-          AND NOT EXISTS (SELECT 1 FROM brain_lana_orders blo WHERE blo.batch_ref = ib.batch_ref)
-      `).all() as any[];
-      for (const batch of orphanBatches) {
-        const boughtAge = batch.lana_bought_at
-          ? (Date.now() - new Date(batch.lana_bought_at + 'Z').getTime()) / 60000
-          : 0;
-        if (boughtAge > 10) {
-          const recentSent = db.prepare(
-            "SELECT tx_hash FROM brain_lana_orders WHERE status = 'sent' AND tx_hash IS NOT NULL ORDER BY completed_at DESC LIMIT 1"
-          ).get() as any;
-          db.prepare(`UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ? WHERE id = ? AND status = 'lana_bought'`)
-            .run(recentSent?.tx_hash || '', batch.id);
-          console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (no linked orders after ${Math.round(boughtAge)}min, assumed sent via other batch)`);
-        }
-      }
+      settleOrphanBoughtBatches();
       return;
     }
 
@@ -599,59 +624,11 @@ async function autoSendPendingLana(): Promise<void> {
       }
     }
 
-    // Update incoming_batches per-batch: if all orders for a batch are sent, mark it lana_sent
-    const boughtBatches = db.prepare("SELECT * FROM incoming_batches WHERE status = 'lana_bought'").all() as any[];
-    for (const batch of boughtBatches) {
-      // Check if this batch has any pending orders via batch_ref
-      const pendingForBatch = (db.prepare(
-        "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ? AND status = 'pending'"
-      ).get(batch.batch_ref) as any).c;
-      const totalForBatch = (db.prepare(
-        "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ?"
-      ).get(batch.batch_ref) as any).c;
-
-      if (totalForBatch > 0 && pendingForBatch === 0) {
-        // All orders for this batch are sent — get the tx_hash from one of the sent orders
-        const sentOrder = db.prepare(
-          "SELECT tx_hash FROM brain_lana_orders WHERE batch_ref = ? AND status = 'sent' AND tx_hash IS NOT NULL LIMIT 1"
-        ).get(batch.batch_ref) as any;
-        const batchTxHash = sentOrder?.tx_hash || txHash;
-
-        db.prepare(`
-          UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
-          WHERE id = ?
-        `).run(batchTxHash, batch.id);
-        console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (all ${totalForBatch} orders sent)`);
-      }
-    }
-
-    // For batches with no matched brain_lana_orders by batch_ref (batch_ref mismatch),
-    // check if they have zero pending orders — if so, mark as lana_sent
-    for (const batch of boughtBatches) {
-      if (batch.status !== 'lana_bought') continue; // already moved above
-      const totalForBatch2 = (db.prepare(
-        "SELECT COUNT(*) as c FROM brain_lana_orders WHERE batch_ref = ?"
-      ).get(batch.batch_ref) as any).c;
-      if (totalForBatch2 === 0) {
-        // No orders linked by batch_ref — check if batch is old enough (>10 min since lana_bought)
-        // to avoid moving batches before Brain has created the orders
-        const boughtAge = batch.lana_bought_at
-          ? (Date.now() - new Date(batch.lana_bought_at + 'Z').getTime()) / 60000
-          : 0;
-        if (boughtAge > 10) {
-          // Find any sent tx_hash from recent orders as reference
-          const recentSent = db.prepare(
-            "SELECT tx_hash FROM brain_lana_orders WHERE status = 'sent' AND tx_hash IS NOT NULL ORDER BY completed_at DESC LIMIT 1"
-          ).get() as any;
-          const fallbackHash = recentSent?.tx_hash || txHash;
-          db.prepare(`
-            UPDATE incoming_batches SET status = 'lana_sent', lana_sent_at = datetime('now'), lana_tx_hash = ?
-            WHERE id = ? AND status = 'lana_bought'
-          `).run(fallbackHash, batch.id);
-          console.log(`[lana-discount] Batch ${batch.batch_ref} → lana_sent (no linked orders after ${Math.round(boughtAge)}min, assumed sent via other batch_ref)`);
-        }
-      }
-    }
+    // Close whatever this broadcast finished, from the evidence, plus the
+    // orphan case. Both used to be written out here a second time, with their
+    // own copy of the rules.
+    settleFinishedBatches();
+    settleOrphanBoughtBatches();
   } catch (err: any) {
     console.error('[lana-discount] Auto-send LANA error:', err.message);
   } finally {
