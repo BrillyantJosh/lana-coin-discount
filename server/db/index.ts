@@ -3,7 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import { defaultMandateRows } from '../lib/treasuryMandate.js';
 import {
-  ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, KIND_38888_SPLIT_ENDS_AT_COLUMN, addColumnIfMissing,
+  ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, KIND_38888_SPLIT_ENDS_AT_COLUMN,
+  OFFER_DECISION_REASON_STATUS_COLUMN, addColumnIfMissing,
 } from './roundMandateSchema.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -295,6 +296,7 @@ for (const sql of migrationColumns) {
 // read-only file, missing table) throws and stops the boot on purpose.
 db.exec(ROUND_MANDATE_SCHEMA_SQL);
 for (const sql of ROUND_MANDATE_OFFER_COLUMNS) addColumnIfMissing(db, sql);
+addColumnIfMissing(db, OFFER_DECISION_REASON_STATUS_COLUMN);
 addColumnIfMissing(db, KIND_38888_SPLIT_ENDS_AT_COLUMN);
 
 // --- Seed the treasury mandate for the active currencies -------------------

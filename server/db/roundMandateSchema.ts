@@ -96,6 +96,27 @@ export const ROUND_MANDATE_OFFER_COLUMNS = [
   'ALTER TABLE acquisition_offers ADD COLUMN reference_basis TEXT',
 ];
 
+/**
+ * WHICH STATUS `decision_reason` WAS WRITTEN TO DESCRIBE.
+ *
+ * `decision_reason` is written at some transitions and not at others, and the
+ * ones that do not write it leave whatever the last writer left. That is how a
+ * proposal withdrawn by its own seller kept saying "This proposal is under
+ * treasury review." under a badge reading "Closed": the sentence was true when
+ * it was written, at submission, and nothing rewrote it on the way out.
+ *
+ * Status alone cannot tell the two apart — a `withdrawn` row may carry an
+ * admin's real void reason or a stale submission verdict, and both are TEXT in
+ * the same column. So the writers say what they wrote it about, and the seller
+ * is shown the sentence only while that answer still matches the row's status.
+ *
+ * Nullable, and null on every row written before this existed: the projection
+ * treats an unmarked row as unproven and falls back to the statuses where
+ * every writer has always written at the transition.
+ */
+export const OFFER_DECISION_REASON_STATUS_COLUMN =
+  'ALTER TABLE acquisition_offers ADD COLUMN decision_reason_status TEXT';
+
 /** kind_38888 v3 carries the Split's end; we keep it beside split_started_at. */
 export const KIND_38888_SPLIT_ENDS_AT_COLUMN = 'ALTER TABLE kind_38888 ADD COLUMN split_ends_at INTEGER';
 

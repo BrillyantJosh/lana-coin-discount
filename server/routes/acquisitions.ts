@@ -48,6 +48,7 @@ import {
   markDeclined, markAccepted, markSettled, markWithdrawn, listOffersForReview,
   listOffersForUser, assertTransferable, consumedByMandate, markExpiredWithReason,
   offerTotalsByMandate, markVoidedByAdmin, OFFER_VALIDITY_MINUTES, MANUAL_OFFER_VALIDITY_DAYS,
+  sellerDecisionReason, sellerActionDeadline,
   type OfferRow,
 } from '../lib/acquisitionOffer.js';
 import { activeRestriction, restrictionReason, RESTRICTED_CODE } from '../lib/acquisitionRestriction.js';
@@ -243,7 +244,16 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       purchasePrice: o.purchase_price_fiat,
       settlementDueAt: o.settlement_due_at,
       offerExpiresAt: o.offer_expires_at,
-      decisionReason: o.decision_reason,
+      // The deadline for what the SELLER must do next, worked out here so no
+      // page has to know which sweep applies to which row.
+      actionDueAt: sellerActionDeadline(o),
+      // Only where something actually wrote it AT the transition into the
+      // status this row is in now. A verdict written when the proposal was
+      // submitted is not a description of a live purchase offer, nor of a
+      // proposal its own seller later withdrew, and shipping it made both
+      // contradict their own badge. The column itself is untouched — see
+      // sellerDecisionReason.
+      decisionReason: sellerDecisionReason(o),
       senderWallet: o.sender_wallet_id,
       createdAt: o.created_at,
       transactionId: o.transaction_id,
@@ -677,7 +687,14 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
     if (isMandateBound(offer) && offer.status === 'offered' && offer.reference_rate !== null) {
       const live = getExchangeRatesFromDb()[offer.currency];
       if (live !== offer.reference_rate) {
-        markExpiredWithReason(db(), ref, `Reference price moved from ${offer.reference_rate} to ${live ?? 'none'} before acceptance.`);
+        // The CODE, not the two numbers. copy.ts already carries the sentence
+        // a seller reads for this event (OFFER_ERRORS.REFERENCE_MOVED) and it
+        // is deliberately number-free — a pair of reference rates on a
+        // counterparty's own record is a rate history, which is the one thing
+        // §4 says must never be shown. The numbers go to the log, where the
+        // void endpoint below already puts its own.
+        console.log(`[lana-discount] Offer ${ref} lapsed: reference moved ${offer.reference_rate} → ${live ?? 'none'} before acceptance`);
+        markExpiredWithReason(db(), ref, 'REFERENCE_MOVED');
         return res.status(409).json({
           error: 'The reference price changed while this offer stood, so it has lapsed. Please submit a new proposal.',
           code: 'REFERENCE_MOVED', status: 'expired',

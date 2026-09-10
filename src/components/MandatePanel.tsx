@@ -1,4 +1,5 @@
 import { MANDATE, OFFER } from '@/copy';
+import { formatFiat, formatLana } from '@/lib/money';
 import type { RoundState } from '../../server/lib/roundMandate';
 
 /**
@@ -70,9 +71,19 @@ export function fmtUtc(iso: string | null): string {
   return `${p2(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())} UTC`;
 }
 
-const fmtLana = (n: number) => (n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
-const fmtMoney = (n: number, currency: string) =>
-  `${(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+/**
+ * One convention for a LANA amount, the same one src/lib/money.ts writes a
+ * purchase price in. It used to follow the reader's locale, which on sl-SI
+ * printed "20.070,5" — a point where the price beside it puts a comma, and
+ * `counterBody` puts that number on the dashboard card directly under
+ * "€6,498.88".
+ */
+const fmtLana = (n: number) => formatLana(n);
+// Grouped the same way as the LANA figure it stands next to. `toLocaleString`
+// with the reader's locale put a comma where formatLana puts a point, so one
+// panel showed "20,070.5 LANA" beside "6.498,88 EUR" — the same two-convention
+// glance the money helpers exist to prevent, moved one page across.
+const fmtMoney = (n: number, currency: string) => `${formatFiat('', n)} ${currency}`;
 
 /** The one sentence about timing, per state. */
 export function timingLine(m: MandateView): string {

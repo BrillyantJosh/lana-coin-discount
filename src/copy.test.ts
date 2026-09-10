@@ -27,6 +27,13 @@ const SRC = path.resolve(__dirname);
 /**
  * Everything a member of the public or a counterparty can read. Admin pages
  * (src/pages/Admin*.tsx) and this file are excluded.
+ *
+ * copy.ts IS included, and used not to be. That exemption was the hole in the
+ * middle of this guard: every counterparty-facing string in the app lives in
+ * copy.ts, so the one file the scan skipped was the only file the words were
+ * ever written in. A banned term placed there passed `npm test`. It is scanned
+ * now, with only the FORBIDDEN_PUBLIC_TERMS array itself stripped out — that
+ * literal is the list, not a sentence anybody reads.
  */
 function publicSurfaceFiles(): string[] {
   const out: string[] = [];
@@ -41,12 +48,21 @@ function publicSurfaceFiles(): string[] {
       if (!/\.tsx?$/.test(entry.name)) continue;
       if (/\.test\.tsx?$/.test(entry.name)) continue;
       if (/^Admin/.test(entry.name)) continue;
-      if (entry.name === 'copy.ts') continue; // it defines the banned list
       out.push(full);
     }
   };
   walk(SRC);
   return out;
+}
+
+/**
+ * The banned list itself, removed before matching. Without this, copy.ts would
+ * report every term as an offence against itself. Nothing else in the file is
+ * exempt: the §9 mapping table in its header is inside a block comment and is
+ * already gone by the time this runs.
+ */
+function withoutBannedListLiteral(source: string): string {
+  return source.replace(/export const FORBIDDEN_PUBLIC_TERMS\s*=\s*\[[\s\S]*?\]\s*as const;/, ' ');
 }
 
 /** Strip comments — a note to a future developer is not user-visible copy. */
@@ -90,7 +106,7 @@ describe('the words a counterparty never sees', () => {
     it(`never says "${term}"`, () => {
       const offenders: string[] = [];
       for (const file of files) {
-        const body = withoutComments(fs.readFileSync(file, 'utf8')).toLowerCase();
+        const body = withoutBannedListLiteral(withoutComments(fs.readFileSync(file, 'utf8'))).toLowerCase();
         if (withoutProtocolTokens(body).includes(term)) offenders.push(path.relative(SRC, file));
       }
       expect(offenders, `"${term}" appears in: ${offenders.join(', ')}`).toEqual([]);
@@ -116,7 +132,7 @@ describe('the words a counterparty never sees', () => {
     // says a service is owed to you and you are waiting your turn for it.
     const offenders: string[] = [];
     for (const file of files) {
-      const body = withoutComments(fs.readFileSync(file, 'utf8'));
+      const body = withoutBannedListLiteral(withoutComments(fs.readFileSync(file, 'utf8')));
       if (/\bqueue\b/i.test(body)) offenders.push(path.relative(SRC, file));
     }
     expect(offenders, `"queue" appears in: ${offenders.join(', ')}`).toEqual([]);

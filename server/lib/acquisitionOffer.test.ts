@@ -18,9 +18,11 @@ import {
   markOffered, markDeclined, markAccepted, markSettled, markWithdrawn,
   expireStaleOffers, listOffersForReview, assertTransferable,
   markVoidedByAdmin, consumedByMandate,
-  OFFER_VALIDITY_MINUTES, ACCEPTED_TRANSFER_WINDOW_HOURS, TRANSFER_NOT_COMPLETED, type NewOffer,
+  sellerDecisionReason, sellerActionDeadline,
+  OFFER_VALIDITY_MINUTES, MANUAL_OFFER_VALIDITY_DAYS,
+  ACCEPTED_TRANSFER_WINDOW_HOURS, TRANSFER_NOT_COMPLETED, type NewOffer,
 } from './acquisitionOffer';
-import { ROUND_MANDATE_OFFER_COLUMNS } from '../db/roundMandateSchema';
+import { ROUND_MANDATE_OFFER_COLUMNS, OFFER_DECISION_REASON_STATUS_COLUMN } from '../db/roundMandateSchema';
 
 const SELLER = 'a'.repeat(64);
 const OTHER = 'b'.repeat(64);
@@ -56,6 +58,7 @@ beforeEach(() => {
   // The round-mandate columns are added by the same migration strings
   // production runs, so this DDL cannot drift from them.
   for (const sql of ROUND_MANDATE_OFFER_COLUMNS) db.exec(sql);
+  db.exec(OFFER_DECISION_REASON_STATUS_COLUMN);
 });
 
 const draft = (over: Partial<NewOffer> = {}): NewOffer => ({
@@ -340,5 +343,163 @@ describe('what the offer carries', () => {
   it('gives every offer its own reference', () => {
     const refs = new Set([insertOffer(db, draft()).offer_ref, insertOffer(db, draft()).offer_ref]);
     expect(refs.size).toBe(2);
+  });
+});
+
+/**
+ * WHAT THE SELLER IS STILL WAITING TO DO, AND BY WHEN.
+ *
+ * /dashboard draws a countdown from this. If it named the wrong moment the
+ * page would be inventing a deadline, which is the same species of falsehood
+ * as the stale verdict below — so the arithmetic lives here, on the server
+ * that owns both horizons, and is pinned.
+ */
+describe('the deadline the seller is actually working to', () => {
+  const eightDays = () => sqliteFuture(db, `+${MANUAL_OFFER_VALIDITY_DAYS} days`);
+
+  it('on an open offer it is the offer window', () => {
+    const until = eightDays();
+    const o = insertOffer(db, draft());
+    markOffered(db, o.offer_ref, price({ offerExpiresAt: until }));
+    expect(sellerActionDeadline(getOfferByRef(db, o.offer_ref)!)).toBe(until);
+  });
+
+  it('nothing is waiting on a seller whose proposal is still with the treasury', () => {
+    const o = insertOffer(db, draft({ status: 'under_review' }));
+    expect(sellerActionDeadline(getOfferByRef(db, o.offer_ref)!)).toBeNull();
+  });
+
+  it('nothing is waiting on a seller once the offer is over', () => {
+    const o = insertOffer(db, draft());
+    markDeclined(db, o.offer_ref, 'not today', null);
+    expect(sellerActionDeadline(getOfferByRef(db, o.offer_ref)!)).toBeNull();
+  });
+
+  /**
+   * The one that matters. An 8-day offer accepted on day one has SEVEN days
+   * of window left and FOUR AND TWENTY HOURS before the sweeper voids it to
+   * give the financer's cap back. Counting down to the window would print six
+   * days left on a row this server kills tomorrow.
+   */
+  it('on an accepted mandate-bound offer it is the 24-hour sweep, not the 8-day window', () => {
+    const until = eightDays();
+    const o = insertOffer(db, draft({ mandateRef: '8:1:seller', round: 1 }));
+    markOffered(db, o.offer_ref, price({ offerExpiresAt: until }));
+    markAccepted(db, o.offer_ref, 'v1.0');
+    const row = getOfferByRef(db, o.offer_ref)!;
+    const due = sellerActionDeadline(row)!;
+    expect(due).not.toBe(until);
+    expect(due < until).toBe(true);
+    const sweepsAt = new Date(`${row.accepted_at!.replace(' ', 'T')}Z`).getTime()
+      + ACCEPTED_TRANSFER_WINDOW_HOURS * 3600_000;
+    expect(new Date(`${due.replace(' ', 'T')}Z`).getTime()).toBe(sweepsAt);
+  });
+
+  it('a legacy accepted offer is never swept, so its window is the whole story', () => {
+    const until = eightDays();
+    const o = insertOffer(db, draft());
+    markOffered(db, o.offer_ref, price({ offerExpiresAt: until }));
+    markAccepted(db, o.offer_ref, 'v1.0');
+    expect(sellerActionDeadline(getOfferByRef(db, o.offer_ref)!)).toBe(until);
+  });
+
+  it('a 30-minute window beats the 24-hour sweep, because it closes first', () => {
+    const o = insertOffer(db, draft({ mandateRef: '8:1:seller', round: 1 }));
+    markOffered(db, o.offer_ref, price());
+    markAccepted(db, o.offer_ref, 'v1.0');
+    const row = getOfferByRef(db, o.offer_ref)!;
+    expect(sellerActionDeadline(row)).toBe(row.offer_expires_at);
+  });
+});
+
+/**
+ * A VERDICT ABOUT A STATE THE ROW HAS LEFT IS NOT A DESCRIPTION OF IT.
+ *
+ * The three production rows the complaint came from, in one sentence: two
+ * `offered` and one `withdrawn`, all three still carrying "This proposal is
+ * under treasury review." because markOffered and markWithdrawn write no
+ * decision_reason and the sweeper's unaccepted lapse writes none either. The
+ * column is audit data and is left alone; what changed is that the writers now
+ * say WHICH status they wrote the sentence about, and the seller sees it only
+ * while that is still the status the row is in.
+ */
+describe('whether a decision reason describes the row it is on', () => {
+  const seen = (ref: string) => sellerDecisionReason(getOfferByRef(db, ref)!);
+
+  it('a proposal still being decided says why it is being decided', () => {
+    const o = insertOffer(db, draft({ status: 'under_review', decisionReason: 'This proposal is under treasury review.' }));
+    expect(seen(o.offer_ref)).toBe('This proposal is under treasury review.');
+  });
+
+  it('once priced, the live offer stops repeating it — and the trail keeps it', () => {
+    const o = insertOffer(db, draft({ status: 'under_review', decisionReason: 'This proposal is under treasury review.' }));
+    markOffered(db, o.offer_ref, price());
+    expect(seen(o.offer_ref)).toBeNull();
+    expect(getOfferByRef(db, o.offer_ref)!.decision_reason).toBe('This proposal is under treasury review.');
+  });
+
+  /**
+   * OFF-2026-047. A seller withdrew a proposal that was under review, and the
+   * row kept telling him it was under treasury review beneath a badge reading
+   * "Closed" — the same sentence, on the same screen, weeks later.
+   */
+  it('a proposal its own seller withdrew does not still say it is under review', () => {
+    const o = insertOffer(db, draft({ status: 'under_review', decisionReason: 'This proposal is under treasury review.' }));
+    markWithdrawn(db, o.offer_ref, SELLER);
+    expect(getOfferByRef(db, o.offer_ref)!.status).toBe('withdrawn');
+    expect(seen(o.offer_ref)).toBeNull();
+    expect(getOfferByRef(db, o.offer_ref)!.decision_reason).toBe('This proposal is under treasury review.');
+  });
+
+  it('nor does one the sweeper simply let lapse', () => {
+    const o = insertOffer(db, draft({ status: 'under_review', decisionReason: 'This proposal is under treasury review.' }));
+    markOffered(db, o.offer_ref, price());
+    db.prepare("UPDATE acquisition_offers SET offer_expires_at = datetime('now','-1 minute') WHERE offer_ref = ?")
+      .run(o.offer_ref);
+    expireStaleOffers(db);
+    expect(getOfferByRef(db, o.offer_ref)!.status).toBe('expired');
+    expect(seen(o.offer_ref)).toBeNull();
+  });
+
+  it('but an ending that DID write a reason still speaks for itself', () => {
+    const declined = insertOffer(db, draft());
+    markDeclined(db, declined.offer_ref, 'Above the amount this mandate covers.', 'admin');
+    expect(seen(declined.offer_ref)).toBe('Above the amount this mandate covers.');
+
+    const voided = insertOffer(db, draft({ mandateRef: '8:1:seller', round: 1 }));
+    markOffered(db, voided.offer_ref, price());
+    markAccepted(db, voided.offer_ref, 'v1.0');
+    markVoidedByAdmin(db, voided.offer_ref, 'You asked us to cancel it.', 'admin');
+    expect(getOfferByRef(db, voided.offer_ref)!.status).toBe('withdrawn');
+    expect(seen(voided.offer_ref)).toBe('You asked us to cancel it.');
+
+    const swept = insertOffer(db, draft({ mandateRef: '8:1:seller', round: 1 }));
+    markOffered(db, swept.offer_ref, price({ offerExpiresAt: sqliteFuture(db, '+8 days') }));
+    markAccepted(db, swept.offer_ref, 'v1.0');
+    db.prepare("UPDATE acquisition_offers SET accepted_at = datetime('now','-25 hours') WHERE offer_ref = ?")
+      .run(swept.offer_ref);
+    expireStaleOffers(db);
+    expect(seen(swept.offer_ref)).toBe(TRANSFER_NOT_COMPLETED);
+  });
+
+  /**
+   * Rows written before the marker existed cannot prove anything, and an
+   * unproven verdict is not shown to the person it is about. `expired` and
+   * `withdrawn` are exactly the two endings whose writers disagree.
+   */
+  it('an old row with no marker is trusted only where every writer wrote at the transition', () => {
+    const stale = (status: string) => {
+      const o = insertOffer(db, draft({ status: 'under_review', decisionReason: 'This proposal is under treasury review.' }));
+      db.prepare('UPDATE acquisition_offers SET status = ?, decision_reason_status = NULL WHERE offer_ref = ?')
+        .run(status, o.offer_ref);
+      return seen(o.offer_ref);
+    };
+    expect(stale('under_review')).toBe('This proposal is under treasury review.');
+    expect(stale('declined')).toBe('This proposal is under treasury review.');
+    expect(stale('withdrawn')).toBeNull();
+    expect(stale('expired')).toBeNull();
+    expect(stale('offered')).toBeNull();
+    expect(stale('accepted')).toBeNull();
+    expect(stale('settled')).toBeNull();
   });
 });

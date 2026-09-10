@@ -8,6 +8,8 @@ import { MandatePanel, proposalGate, counterBody, fill, fmtUtc, type MandateInfo
 import { signedFetch, type SigningKey } from '@/lib/signedRequest';
 import { describeOfferError } from '@/lib/offerErrors';
 import { BRAND, OFFER, LANDING } from '@/copy';
+import { parseSqliteUtc, formatMoment, formatLeft, useCountdown } from '@/lib/offerClock';
+import { formatLana } from '@/lib/money';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
 
@@ -108,6 +110,13 @@ interface AcquisitionOffer {
   purchasePrice: number | null;
   settlementDueAt: string | null;
   offerExpiresAt: string | null;
+  /**
+   * When what the SELLER must do next has to be done by — the server's own
+   * arithmetic, not this browser's. Equal to offerExpiresAt on an open offer;
+   * on an accepted, mandate-bound one it is the earlier of that window and the
+   * 24-hour transfer sweep. Null when nothing is waiting on the seller.
+   */
+  actionDueAt?: string | null;
   decisionReason: string | null;
   senderWallet: string;
   createdAt: string;
@@ -149,75 +158,12 @@ const SCHEME_LABELS: Record<string, string> = {
 
 const MAX_UTXOS = 20;
 
-/**
- * SQLite writes `YYYY-MM-DD HH:MM:SS` in UTC. `new Date()` reads that shape as
- * LOCAL time, which would put a 30-minute countdown hours out for anyone east
- * or west of the server — so the zone is made explicit before parsing.
- */
-function parseSqliteUtc(ts: string | null | undefined): Date | null {
-  if (!ts) return null;
-  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts) ? `${ts.replace(' ', 'T')}Z` : ts;
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? null : d;
-}
-
 const formatDay = (ts: string | null | undefined) => {
   const d = parseSqliteUtc(ts);
   return d ? d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 };
 
-/**
- * An offer the machine made stands 30 minutes; one a person decided stands 8
- * days. So the moment needs its date once it is not today — "expires at 14:20"
- * with no day is worse than useless on a week-long offer.
- */
-const formatMoment = (ts: string | null | undefined) => {
-  const d = parseSqliteUtc(ts);
-  if (!d) return '—';
-  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  const now = new Date();
-  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
-  return sameDay ? time : `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${time}`;
-};
-
-/**
- * The same clock has to read sensibly at eight days and at eight seconds. Minutes
- * and seconds alone would print "11520:00" for a week — a number nobody reads as
- * time — so the unit follows the size of what is left.
- */
-const formatLeft = (ms: number) => {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  if (total >= 86400) {
-    const d = Math.floor(total / 86400);
-    const h = Math.floor((total % 86400) / 3600);
-    return `${d}d ${h}h`;
-  }
-  if (total >= 3600) {
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    return `${h}h ${String(m).padStart(2, '0')}m`;
-  }
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-};
-
 const shortAddress = (a: string) => (a && a.length > 22 ? `${a.slice(0, 12)}…${a.slice(-8)}` : a || '—');
-
-/** Ticks once a second so an offer window is visibly running out. */
-function useCountdown(until: string | null) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!until) return;
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [until]);
-  const target = parseSqliteUtc(until);
-  if (!target) return { msLeft: null as number | null, expired: false };
-  const msLeft = target.getTime() - now;
-  return { msLeft, expired: msLeft <= 0 };
-}
 
 const SubmitOffer = () => {
   const { session, logout } = useAuth();
@@ -286,11 +232,25 @@ const SubmitOffer = () => {
 
   const [result, setResult] = useState<TransferResult | null>(null);
 
+  /**
+   * The deadline the SERVER will actually enforce, which on an accepted offer
+   * is not the offer window.
+   *
+   * This counted down `offerExpiresAt` on both screens. On a mandate-bound row
+   * accepted on day one of an eight-day offer that printed seven days left,
+   * while expireStaleOffers voids the row at accepted_at + 24 h to give the
+   * financer's cap back — so /dashboard said "3h 59m" and this page, one tap
+   * away through the card's own button, said "7d 23h" about the same
+   * obligation. The truthful number was on the card he was being led away
+   * from, and this is the page where a private key is typed. `actionDueAt` is
+   * the server's own arithmetic over both horizons; the window is the fallback
+   * for a server that predates the field.
+   */
+  const actionDue = offer?.actionDueAt === undefined ? offer?.offerExpiresAt ?? null : offer.actionDueAt;
+  const transferStage = offer?.status === 'accepted';
   const { msLeft, expired: clockExpired } = useCountdown(
-    offer && (offer.status === 'offered' || offer.status === 'accepted') ? offer.offerExpiresAt : null,
+    offer && (offer.status === 'offered' || offer.status === 'accepted') ? actionDue : null,
   );
-  // An accepted offer lapses on the same clock as an unaccepted one: the price
-  // was priced for that window, and the server refuses a transfer after it.
   const lapsed = serverLapsed || offer?.status === 'expired' || clockExpired;
 
   useEffect(() => {
@@ -359,12 +319,27 @@ const SubmitOffer = () => {
       // a proposal that no longer exists in any browser.
       try {
         const mine = await offersRes.json();
-        const open = (mine.offers || []).find((o: AcquisitionOffer) => {
+        const mineOffers: AcquisitionOffer[] = mine.offers || [];
+        const resumable = (o: AcquisitionOffer) => {
           if (o.status === 'under_review') return true;
           if (o.status !== 'offered' && o.status !== 'accepted') return false;
           const until = parseSqliteUtc(o.offerExpiresAt);
           return !until || until.getTime() > Date.now();
-        });
+        };
+        // WHICH offer, when there is more than one. /dashboard names the offer
+        // whose card was tapped. Without that, this lookup takes whichever
+        // live offer comes first in a created_at DESC list — so tapping a
+        // 6,498.88 card could open a 501.20 offer, showing a different figure
+        // than the one the thumb just touched.
+        //
+        // The ref is a hint about which of THIS seller's offers to resume and
+        // nothing more: it is matched against the list the server already sent
+        // for this signed-in hex, never fetched on the strength of the URL. A
+        // ref that is absent, stale or somebody else's falls back to exactly
+        // the behaviour that was here before.
+        const wanted = new URLSearchParams(window.location.search).get('ref');
+        const named = wanted ? mineOffers.find(o => o.offerRef === wanted && resumable(o)) : null;
+        const open = named || mineOffers.find(resumable);
         if (open) {
           setOffer(open);
           setSelectedWallet(open.senderWallet);
@@ -944,7 +919,7 @@ const SubmitOffer = () => {
                                 ) : balances[w.walletId] !== undefined ? (
                                   <div>
                                     <span className="font-mono text-sm font-bold text-foreground">
-                                      {balances[w.walletId].toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      {formatLana(balances[w.walletId])}
                                     </span>
                                     <span className="text-xs text-muted-foreground ml-1">LANA</span>
                                   </div>
@@ -1127,14 +1102,14 @@ const SubmitOffer = () => {
                   </div>
                   {walletBalance > 0 && (
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Available: {walletBalance.toLocaleString()} LANA
+                      Available: {formatLana(walletBalance)} LANA
                     </p>
                   )}
                   {/* How much the open round can take; above it comes a
                       counteroffer for what remains, not a refusal. */}
                   {gate.openRound && (
                     <p className="mt-1 text-xs text-muted-foreground" data-testid="cap-hint">
-                      {fill(OFFER.capHint, { round: gate.openRound.round, remaining: gate.openRound.remainingLana.toLocaleString(undefined, { maximumFractionDigits: 2 }) })}{' '}
+                      {fill(OFFER.capHint, { round: gate.openRound.round, remaining: formatLana(gate.openRound.remainingLana) })}{' '}
                       {OFFER.capHintAbove}
                     </p>
                   )}
@@ -1242,7 +1217,7 @@ const SubmitOffer = () => {
                         <div className="flex min-w-0 items-center justify-between gap-3">
                           <span className="text-muted-foreground">{OFFER.amountLabel}</span>
                           <span className="font-mono font-bold text-foreground flex-shrink-0 whitespace-nowrap">
-                            {offer.lanaAmount.toLocaleString()} LANA
+                            {formatLana(offer.lanaAmount)} LANA
                           </span>
                         </div>
                         <div className="border-t border-border pt-2.5 flex min-w-0 items-center justify-between gap-3">
@@ -1321,7 +1296,7 @@ const SubmitOffer = () => {
                       </div>
                       <div className="flex min-w-0 items-center justify-between gap-3">
                         <span className="text-muted-foreground">{OFFER.amountLabel}</span>
-                        <span className="font-mono text-foreground flex-shrink-0 whitespace-nowrap">{offer.lanaAmount.toLocaleString()} LANA</span>
+                        <span className="font-mono text-foreground flex-shrink-0 whitespace-nowrap">{formatLana(offer.lanaAmount)} LANA</span>
                       </div>
                       <div className="flex min-w-0 items-center justify-between gap-3">
                         <span className="text-muted-foreground">{OFFER.settlementCurrencyLabel}</span>
@@ -1447,7 +1422,7 @@ const SubmitOffer = () => {
                     <div className="flex min-w-0 items-center justify-between gap-3">
                       <span className="text-muted-foreground">{OFFER.amountLabel}</span>
                       <span className="font-mono font-bold text-foreground flex-shrink-0 whitespace-nowrap">
-                        {offer.lanaAmount.toLocaleString()} LANA
+                        {formatLana(offer.lanaAmount)} LANA
                       </span>
                     </div>
                     <div className="border-t border-border pt-2 flex min-w-0 items-center justify-between gap-3">
@@ -1464,7 +1439,12 @@ const SubmitOffer = () => {
 
                   {msLeft !== null && (
                     <div className="mb-5 flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 px-4 py-2.5">
-                      <span className="text-xs text-muted-foreground">{OFFER.timeLeftLabel}</span>
+                      {/* The offer is already accepted on this screen; what is
+                          left to do is the transfer, and the clock is counting
+                          down to the sweep that voids it. */}
+                      <span className="text-xs text-muted-foreground">
+                        {transferStage ? OFFER.timeLeftTransferLabel : OFFER.timeLeftLabel}
+                      </span>
                       <span className={`font-mono text-sm font-bold flex-shrink-0 whitespace-nowrap ${
                         msLeft < 120000 ? 'text-red-600' : 'text-foreground'
                       }`}>
@@ -1600,7 +1580,7 @@ const SubmitOffer = () => {
                     <div className="flex min-w-0 items-center justify-between gap-3">
                       <span className="text-muted-foreground">{OFFER.completedAcquiredLabel}</span>
                       <span className="font-mono font-bold text-foreground flex-shrink-0 whitespace-nowrap">
-                        {result.lanaAmount.toLocaleString()} LANA
+                        {formatLana(result.lanaAmount)} LANA
                       </span>
                     </div>
                     <div className="flex min-w-0 items-center justify-between gap-3">
@@ -1638,12 +1618,12 @@ const SubmitOffer = () => {
                     <div className="rounded-2xl border-2 border-primary/40 bg-primary/5 p-5 space-y-3 text-center" data-testid="propose-remaining">
                       <p className="text-sm font-bold text-foreground">{OFFER.remainingTitle}</p>
                       <p className="text-2xl font-bold font-mono text-foreground">
-                        {left.nowLana.toLocaleString(undefined, { maximumFractionDigits: 2 })}{' '}
+                        {formatLana(left.nowLana)}{' '}
                         <span className="text-sm font-sans">LANA</span>
                       </p>
                       <p className="text-xs text-muted-foreground leading-relaxed max-w-md mx-auto">
                         {fill(OFFER.remainingBody, {
-                          amount: left.perProposalLana.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+                          amount: formatLana(left.perProposalLana),
                           round: left.perProposalRound,
                         })}
                       </p>
@@ -1652,7 +1632,7 @@ const SubmitOffer = () => {
                         className="rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
                       >
                         {fill(OFFER.remainingCta, {
-                          amount: left.perProposalLana.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+                          amount: formatLana(left.perProposalLana),
                         })}
                       </button>
                     </div>

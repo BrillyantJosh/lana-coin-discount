@@ -301,6 +301,48 @@ export const OFFER = {
   notNowNote:
     'That purchase offer is closed and nothing has been transferred. You may submit a new one at any time.',
 
+  // ── what is waiting on the seller, and nothing else ─────────────────────
+  // /dashboard used to print every offer through one card in one flat list, so
+  // a live purchase offer with a running clock read exactly like a settled one
+  // from last month. These words belong to the block that lifts the ones
+  // waiting on the SELLER out of that list. They say whose turn it is and what
+  // happens if he does nothing — never how soon he ought to move.
+
+  waitingDecisionTitle: 'Waiting for your decision',
+  waitingTransferTitle: 'Waiting for your transfer',
+  // Whose turn it is, and NOTHING about what is owed. The reassurance that
+  // used to be bolted on here — "Nothing is owed either way until you accept a
+  // purchase offer" — is false above a card headed "Waiting for your
+  // transfer": he HAS accepted, and a transfer with a clock on it is exactly
+  // what is owed. It still stands below, in myOffersIntro, over the record
+  // where every row is a proposal and none of them binds; printing it in both
+  // places said the same sentence twice on one screen anyway.
+  waitingIntro: 'These are waiting on you, not on us.',
+  // One offer waiting is the ordinary case — it is the case this block was
+  // built for — so it gets a sentence written for one.
+  waitingIntroOne: 'This is waiting on you, not on us.',
+  // Naming the do-nothing outcome is the opposite of pressure: it is what lets
+  // someone take the time they have without feeling hustled.
+  waitingDecisionBody:
+    'Open it to accept or decline. If you do nothing it lapses at the time shown, and nothing is transferred.',
+  waitingTransferBody:
+    'You accepted this purchase offer. The LANA has not reached our treasury wallet yet, so the acquisition ' +
+    'is not complete.',
+  waitingAmount: 'for {amount} LANA',
+  timeLeftTransferLabel: 'Time left to transfer',
+  // An accepted offer's moment is when the transfer must be done by, which is
+  // not the same claim as "the offer stands until" — on a mandate-bound row
+  // the sweep closes it long before the eight days are up.
+  waitingTransferByLabel: 'Transfer by',
+  // The card navigates; it does not accept. Acceptance is the contract moment
+  // and happens on /offer, in front of the terms.
+  waitingOpen: 'Open this purchase offer',
+  waitingFinishTransfer: 'Finish the transfer',
+  waitingRefresh: 'Refresh',
+  // A live offer is lifted OUT of the record below, so the record says where
+  // it went rather than quietly missing a row.
+  waitingPointer: 'Anything waiting on you is shown at the top of this page.',
+
   // ── the counterparty's own record ───────────────────────────────────────
   myOffersTitle: 'Your offers',
   myOffersIntro:
@@ -437,6 +479,12 @@ export const OFFER_ERRORS: Record<string, string> = {
   SIGNATURE_REPLAYED: 'This signed request was already used. Please submit it again.',
   SIGNATURE_STALE: 'Your device clock differs from ours by more than five minutes. Please correct it and retry.',
   REFERENCE_MOVED: 'The reference moved while this offer stood, so it lapsed. Please propose again.',
+  // Written onto the row by the sweeper when an accepted offer's transfer
+  // never arrived. It reached the seller as the literal token until 10 Sep
+  // 2026, because nothing had ever written English for it.
+  TRANSFER_NOT_COMPLETED:
+    'The LANA did not reach our treasury wallet in time, so this purchase offer lapsed. Nothing was ' +
+    'transferred, and you may propose again.',
   EMPTY_WALLET_EXCEEDS_MANDATE:
     'This wallet holds more than the amount the treasury agreed to acquire, so it cannot be emptied into this ' +
     'acquisition. Transfer the agreed amount only.',

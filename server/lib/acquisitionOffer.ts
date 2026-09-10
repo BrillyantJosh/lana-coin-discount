@@ -77,6 +77,64 @@ export const ACCEPTED_TRANSFER_WINDOW_HOURS = 24;
 /** decision_reason written by the sweeper on such a lapse. */
 export const TRANSFER_NOT_COMPLETED = 'TRANSFER_NOT_COMPLETED';
 
+/**
+ * WHETHER `decision_reason` DESCRIBES THE ROW IT IS SITTING ON.
+ *
+ * The column is written at some transitions and not at others. It is written
+ * at SUBMISSION (the review verdict from treasuryMandate/roundMandate) and at
+ * SOME endings — markDeclined, markExpiredWithReason, the sweeper's
+ * TRANSFER_NOT_COMPLETED, markVoidedByAdmin. It is written at NO other
+ * transition: markOffered, markAccepted, markSettled, markWithdrawn and the
+ * sweeper's unaccepted lapse all leave whatever the last writer left.
+ *
+ * So the status is not the question. A live purchase offer saying "This
+ * proposal is under treasury review." and a proposal its own seller withdrew
+ * saying the same thing under a badge reading "Closed" are the same bug: a
+ * verdict about a state the row has already left, still being presented as a
+ * description of the state it is in now. Asking "which status is it?" cannot
+ * separate those from a `withdrawn` row carrying an admin's real void reason,
+ * because both are TEXT in one column.
+ *
+ * The honest question is "did anything write this reason AT the transition
+ * into the status the row is in now?", and since 10 Sep 2026 the writers
+ * answer it: `decision_reason_status` records what the reason was written
+ * about. The seller sees the sentence only while that answer still matches.
+ *
+ * It is a projection, never an UPDATE: `decision_reason` is audit data, and
+ * why a proposal went to manual review in the first place must survive both
+ * being priced and being withdrawn. `offerView` reads this before shipping the
+ * field to a seller; the admin mandate view (routes/treasury.ts) reads the raw
+ * column and keeps the whole trail.
+ *
+ * A row written before the marker existed has none, and cannot prove anything.
+ * For those the fallback is the set of statuses where EVERY writer has always
+ * written at the transition — a proposal still being decided, and a decline.
+ * On an unmarked `expired` or `withdrawn` row the sentence is withheld: those
+ * are exactly the two endings whose writers disagree, and an unproven verdict
+ * is not shown to the person it is about.
+ */
+const REASON_PROVEN_WITHOUT_MARKER: readonly OfferStatus[] = [
+  'submitted', 'under_review', 'declined',
+];
+
+export function reasonDescribesStatus(
+  o: Pick<OfferRow, 'status'> & { decision_reason_status?: string | null },
+): boolean {
+  const marker = o.decision_reason_status ?? null;
+  if (marker !== null) return marker === o.status;
+  return (REASON_PROVEN_WITHOUT_MARKER as readonly string[]).includes(o.status);
+}
+
+/**
+ * What a seller is shown in place of `decision_reason` — the sentence, or
+ * nothing at all. The column itself is never changed by this.
+ */
+export function sellerDecisionReason(
+  o: Pick<OfferRow, 'status' | 'decision_reason'> & { decision_reason_status?: string | null },
+): string | null {
+  return reasonDescribesStatus(o) ? o.decision_reason : null;
+}
+
 export interface OfferRow {
   id: number;
   offer_ref: string;
@@ -98,6 +156,8 @@ export interface OfferRow {
   decided_by: string | null;
   decided_at: string | null;
   decision_reason: string | null;
+  /** The status `decision_reason` was written to describe; null on old rows. */
+  decision_reason_status: string | null;
   accepted_at: string | null;
   terms_version: string | null;
   transaction_id: number | null;
@@ -154,14 +214,17 @@ export function insertOffer(db: Database.Database, o: NewOffer): OfferRow {
       lana_amount_lanoshis, lana_amount_display, currency, status,
       reference_rate, discount_percent, purchase_price_fiat, gross_fiat,
       mandate_code, eligibility_json, settlement_due_at, offer_expires_at,
-      decision_reason, mandate_ref, round, proposed_lana_lanoshis, reference_basis
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      decision_reason, decision_reason_status,
+      mandate_ref, round, proposed_lana_lanoshis, reference_basis
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     o.offerRef, o.userHexId, o.senderWalletId, o.walletClass,
     o.lanaAmountLanoshis, o.lanaAmountDisplay, o.currency, o.status,
     o.referenceRate, o.discountPercent, o.purchasePriceFiat, o.grossFiat,
     o.mandateCode, o.eligibility === null || o.eligibility === undefined ? null : JSON.stringify(o.eligibility),
     o.settlementDueAt, o.offerExpiresAt, o.decisionReason,
+    // A verdict written here is written ABOUT the status it is inserted with.
+    o.decisionReason === null || o.decisionReason === undefined ? null : o.status,
     o.mandateRef ?? null, o.round ?? null, o.proposedLanaLanoshis ?? null, o.referenceBasis ?? null,
   );
   return getOfferByRef(db, o.offerRef)!;
@@ -206,8 +269,8 @@ export function markOffered(db: Database.Database, offerRef: string, price: {
 export function markDeclined(db: Database.Database, offerRef: string, reason: string, by: string | null): boolean {
   const r = db.prepare(`
     UPDATE acquisition_offers
-       SET status = 'declined', decision_reason = ?, decided_by = ?,
-           decided_at = datetime('now'), updated_at = datetime('now')
+       SET status = 'declined', decision_reason = ?, decision_reason_status = 'declined',
+           decided_by = ?, decided_at = datetime('now'), updated_at = datetime('now')
      WHERE offer_ref = ? AND status IN ('submitted', 'under_review', 'offered')
   `).run(reason, by, offerRef);
   return r.changes === 1;
@@ -257,7 +320,8 @@ export function markWithdrawn(db: Database.Database, offerRef: string, userHexId
 export function markExpiredWithReason(db: Database.Database, offerRef: string, reason: string): boolean {
   const r = db.prepare(`
     UPDATE acquisition_offers
-       SET status = 'expired', decision_reason = ?, updated_at = datetime('now')
+       SET status = 'expired', decision_reason = ?, decision_reason_status = 'expired',
+           updated_at = datetime('now')
      WHERE offer_ref = ? AND status = 'offered'
   `).run(reason, offerRef);
   return r.changes === 1;
@@ -376,7 +440,8 @@ export function expireStaleOffers(db: Database.Database): number {
   `).run().changes;
   const untransferred = db.prepare(`
     UPDATE acquisition_offers
-       SET status = 'expired', decision_reason = ?, updated_at = datetime('now')
+       SET status = 'expired', decision_reason = ?, decision_reason_status = 'expired',
+           updated_at = datetime('now')
      WHERE status = 'accepted'
        AND mandate_ref IS NOT NULL
        AND transaction_id IS NULL
@@ -384,6 +449,54 @@ export function expireStaleOffers(db: Database.Database): number {
        AND accepted_at <= datetime('now', ?)
   `).run(TRANSFER_NOT_COMPLETED, `-${ACCEPTED_TRANSFER_WINDOW_HOURS} hours`).changes;
   return unaccepted + untransferred;
+}
+
+/** `YYYY-MM-DD HH:MM:SS` UTC plus N hours, in the shape SQLite writes. */
+function sqlitePlusHours(ts: string, hours: number): string | null {
+  const utc = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts) ? `${ts.replace(' ', 'T')}Z` : ts;
+  const d = new Date(utc);
+  if (isNaN(d.getTime())) return null;
+  d.setUTCHours(d.getUTCHours() + hours);
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function asUtcMs(ts: string): number {
+  const utc = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts) ? `${ts.replace(' ', 'T')}Z` : ts;
+  return new Date(utc).getTime();
+}
+
+/**
+ * When the thing the SELLER must do next has to be done by, or null when
+ * nothing is waiting on them.
+ *
+ * Two different horizons, and only the server knows both:
+ *
+ *   offered    accept before `offer_expires_at`, which is also the wall
+ *              assertTransferable refuses at.
+ *   accepted   transfer before the EARLIER of that same window and the
+ *              24-hour sweep — because expireStaleOffers voids a
+ *              mandate-bound accepted row at accepted_at + 24 h to give the
+ *              financer's cap back. On an 8-day manual offer accepted on day
+ *              one, counting down to offer_expires_at would print six days
+ *              left on a row this server kills in four hours. Legacy rows
+ *              (no mandate_ref) are never swept, so for them the offer window
+ *              is the whole story.
+ *
+ * It is computed here rather than in a browser so that no page has to hold an
+ * opinion about which sweep applies to which row.
+ */
+export function sellerActionDeadline(o: OfferRow): string | null {
+  if (o.status === 'offered') return o.offer_expires_at;
+  if (o.status !== 'accepted') return null;
+  const candidates: string[] = [];
+  if (o.offer_expires_at) candidates.push(o.offer_expires_at);
+  if (o.mandate_ref && o.accepted_at) {
+    const swept = sqlitePlusHours(o.accepted_at, ACCEPTED_TRANSFER_WINDOW_HOURS);
+    if (swept) candidates.push(swept);
+  }
+  const dated = candidates.filter(c => !isNaN(asUtcMs(c)));
+  if (dated.length === 0) return null;
+  return dated.reduce((a, b) => (asUtcMs(b) < asUtcMs(a) ? b : a));
 }
 
 /**
@@ -396,8 +509,8 @@ export function expireStaleOffers(db: Database.Database): number {
 export function markVoidedByAdmin(db: Database.Database, offerRef: string, reason: string, by: string): boolean {
   const r = db.prepare(`
     UPDATE acquisition_offers
-       SET status = 'withdrawn', decision_reason = ?, decided_by = ?,
-           decided_at = datetime('now'), updated_at = datetime('now')
+       SET status = 'withdrawn', decision_reason = ?, decision_reason_status = 'withdrawn',
+           decided_by = ?, decided_at = datetime('now'), updated_at = datetime('now')
      WHERE offer_ref = ? AND status = 'accepted' AND transaction_id IS NULL
   `).run(reason, by, offerRef);
   return r.changes === 1;

@@ -13,7 +13,9 @@ import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import type { NostrEvent } from './nostr.js';
-import { ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS } from '../db/roundMandateSchema.js';
+import {
+  ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, OFFER_DECISION_REASON_STATUS_COLUMN,
+} from '../db/roundMandateSchema.js';
 import { signaturePayloadHash } from './requestSignature.js';
 
 export interface TestKey { priv: Uint8Array; pub: string }
@@ -161,6 +163,7 @@ export function createMandateTestDb(): Database.Database {
   `);
   db.exec(ROUND_MANDATE_SCHEMA_SQL);
   for (const sql of ROUND_MANDATE_OFFER_COLUMNS) db.exec(sql);
+  db.exec(OFFER_DECISION_REASON_STATUS_COLUMN);
   return db;
 }
 

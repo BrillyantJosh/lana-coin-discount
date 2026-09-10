@@ -356,7 +356,11 @@ describe('accept', () => {
     expect(r.status).toBe(409);
     expect(r.body.code).toBe('REFERENCE_MOVED');
     expect(row(ref).status).toBe('expired');
-    expect(row(ref).decision_reason).toMatch(/0\.256 to 0\.25/);
+    // The CODE, not the two reference rates: copy.ts writes the sentence a
+    // seller reads for this, and it is deliberately number-free. The rates go
+    // to the server log, not onto a counterparty's own record.
+    expect(row(ref).decision_reason).toBe('REFERENCE_MOVED');
+    expect(row(ref).decision_reason).not.toMatch(/0\.25/);
     // …and the cap is free again.
     expect((await propose(1000)).body.offer.status).toBe('offered');
   });
@@ -783,5 +787,93 @@ describe('a proposal must be backed by the wallet it comes from', () => {
     const shown = q.body.offers.find((o: any) => o.offerRef === 'OFF-Q-2');
     expect(shown.walletLana).toBeNull();
     expect(shown.backed).toBeNull();
+  });
+});
+
+/**
+ * WHAT THE SELLER'S OWN PAGE IS TOLD ABOUT A LIVE OFFER.
+ *
+ * /dashboard now lifts the offers waiting on the seller out of the history
+ * list and draws a clock on them, so what `offerView` sends about a live row
+ * has to be true: the deadline must be the one this server will actually
+ * enforce, and the field explaining a decision must not still be describing a
+ * state the row has left.
+ */
+describe('the seller reads their own live offer', () => {
+  const mine = async () => (await get(`/api/acquisitions/mine/${seller.pub}`)).body.offers as any[];
+
+  it('a purchase offer carries the moment it lapses, ready to count down', async () => {
+    const o = (await propose(600)).body.offer;
+    expect(o.status).toBe('offered');
+    const seen = (await mine()).find(x => x.offerRef === o.offerRef);
+    expect(seen.actionDueAt).toBe(row(o.offerRef).offer_expires_at);
+    expect(seen.actionDueAt).not.toBeNull();
+  });
+
+  it('once accepted, the deadline is the sweep that will void it, not the offer window', async () => {
+    const o = (await propose(600)).body.offer;
+    // A person-decided offer stands eight days; the sweeper takes a
+    // mandate-bound accepted row at 24 hours.
+    db.prepare("UPDATE acquisition_offers SET offer_expires_at = datetime('now', '+8 days') WHERE offer_ref = ?")
+      .run(o.offerRef);
+    expect((await acceptOffer(o.offerRef)).status).toBe(200);
+    const seen = (await mine()).find(x => x.offerRef === o.offerRef);
+    const r = row(o.offerRef);
+    expect(seen.actionDueAt).not.toBe(r.offer_expires_at);
+    expect(seen.actionDueAt < r.offer_expires_at).toBe(true);
+  });
+
+  it('nothing is due on a proposal that is still with the treasury', async () => {
+    setSetting(db, 'acq_EUR_lanapays_auto_cap', '1');
+    const o = (await propose(600)).body.offer;
+    expect(o.status).toBe('under_review');
+    expect(o.actionDueAt).toBeNull();
+  });
+
+  /**
+   * The production rows this came from: OFF-2026-048 and OFF-2026-052, both
+   * `offered`, both still carrying "This proposal is under treasury review."
+   * underneath a badge reading "Purchase offer open".
+   */
+  it('a live purchase offer does not repeat the verdict from when it was submitted', async () => {
+    const o = (await propose(600)).body.offer;
+    db.prepare("UPDATE acquisition_offers SET decision_reason = ? WHERE offer_ref = ?")
+      .run('This proposal is under treasury review.', o.offerRef);
+    const seen = (await mine()).find(x => x.offerRef === o.offerRef);
+    expect(seen.status).toBe('offered');
+    expect(seen.decisionReason).toBeNull();
+    // …and the trail itself is untouched: why it was reviewed is audit data.
+    expect(row(o.offerRef).decision_reason).toBe('This proposal is under treasury review.');
+  });
+
+  /**
+   * OFF-2026-047, the third row in the complaint: `withdrawn`, no price, no
+   * expiry, and still saying "This proposal is under treasury review." under a
+   * badge reading "Closed". markWithdrawn writes no reason, so the sentence it
+   * ships is the one written when the proposal was submitted.
+   */
+  it('a proposal the seller withdrew does not still say it is under review', async () => {
+    setSetting(db, 'acq_EUR_lanapays_auto_cap', '1');
+    const o = (await propose(600)).body.offer;
+    expect(o.status).toBe('under_review');
+    expect(o.decisionReason).toBeTruthy();
+
+    const w = await signedPost(`/api/acquisitions/${o.offerRef}/withdraw`, { hexId: seller.pub });
+    expect(w.status).toBe(200);
+
+    const seen = (await mine()).find(x => x.offerRef === o.offerRef);
+    expect(seen.status).toBe('withdrawn');
+    expect(seen.decisionReason).toBeNull();
+    // The trail keeps it: why it went to a person is audit data.
+    expect(row(o.offerRef).decision_reason).toBeTruthy();
+  });
+
+  it('a declined proposal still says why, because there the reason IS the state', async () => {
+    setRoundTerms(db, 8, 1, Math.floor(Date.now() / 1000) + 86400, 22);
+    const o = (await propose(100)).body.offer;
+    expect(o.status).toBe('declined');
+    expect(o.decisionReason).toBeTruthy();
+    const seen = (await mine()).find(x => x.offerRef === o.offerRef);
+    expect(seen.decisionReason).toBe(row(o.offerRef).decision_reason);
   });
 });

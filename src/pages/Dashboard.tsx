@@ -5,6 +5,10 @@ import {
   BRAND, LANDING, UI, OFFER,
   OFFER_STATUS_LABELS, ACQUISITION_STATUS_LABELS,
 } from '@/copy';
+import { WaitingOffer } from '@/components/WaitingOffer';
+import { parseSqliteUtc, formatDate } from '@/lib/offerClock';
+import { formatFiat, formatLana } from '@/lib/money';
+import { describeDecisionReason } from '@/lib/offerErrors';
 
 /**
  * The counterparty's own view: what they have offered us, and what we have
@@ -49,6 +53,32 @@ const OFFER_TONE: Record<string, string> = {
 /** Offers a counterparty can still act on, so the row offers a way back in. */
 const LIVE_OFFER_STATUSES = ['submitted', 'under_review', 'offered', 'accepted'];
 
+/**
+ * The two statuses that are waiting on the SELLER, and the only two lifted out
+ * of the record below into the block at the top of the page.
+ *
+ * `offered` waits on a decision; `accepted` waits on a transfer — a different
+ * act, the same person, and both lose real money if the clock runs out.
+ * `submitted` and `under_review` are waiting on the treasury: the seller can do
+ * nothing about them, and a card telling him otherwise would be a lie pointed
+ * the other way. Everything else is history.
+ *
+ * This is a layout rule and nothing else — WHERE a row is drawn. It is not a
+ * second opinion about what the server said: which sentences a row may carry
+ * and when its deadline falls are the server's answers, arriving as fields, and
+ * this page renders them. Two copies of one rule either side of the wire is how
+ * the freeze gate drifted on 9 Sep and greyed out wallets the server allowed.
+ */
+const WAITING_ON_SELLER = ['offered', 'accepted'];
+
+/**
+ * Endings where no acquisition happened. `settlement_due_at` is written when
+ * an offer is MADE, long before anyone accepts it, so a lapsed or withdrawn row
+ * kept printing "We settle by 25. 09. 2026" beside a purchase price — a date we
+ * owe money by, on an acquisition that never took place.
+ */
+const NOTHING_WAS_ACQUIRED = ['declined', 'expired', 'withdrawn'];
+
 /** Wire field names are the server's; only the type name says what it is. */
 interface Settlement {
   id: number;
@@ -87,27 +117,36 @@ interface OfferSummary {
   purchasePrice: number | null;
   settlementDueAt: string | null;
   offerExpiresAt: string | null;
+  /**
+   * When what the seller must do next has to be done by. The server works it
+   * out: on an open offer it is the offer window, and on an accepted one it is
+   * the earlier of that window and the 24-hour transfer sweep — which this page
+   * has no business knowing about. Null when nothing is waiting on the seller.
+   */
+  actionDueAt?: string | null;
   decisionReason: string | null;
   senderWallet: string;
   createdAt: string;
   transactionId: number | null;
+  /** True when the amount offered is not the amount the seller proposed. */
+  isCounteroffer?: boolean;
+  proposedLanaAmount?: number | null;
 }
 
 /**
- * SQLite writes `YYYY-MM-DD HH:MM:SS` in UTC; `new Date()` would read that as
- * local time and can land a settlement date on the wrong day.
+ * The moment to count down to.
+ *
+ * `actionDueAt` is the server's answer and is the ONLY one used on an accepted
+ * offer, whose real horizon — the earlier of the offer window and the 24-hour
+ * transfer sweep — this page has no business working out. On an `offered` row
+ * the two are the same timestamp by definition, so a server that predates the
+ * field still gets its clock instead of silently losing it.
  */
-function parseSqliteUtc(ts: string | null | undefined): Date | null {
-  if (!ts) return null;
-  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts) ? `${ts.replace(' ', 'T')}Z` : ts;
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-const formatDate = (ts: string | null | undefined) => {
-  const d = parseSqliteUtc(ts);
-  return d ? d.toLocaleDateString('sl-SI', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
-};
+const dueFor = (o: OfferSummary) =>
+  // `??` cannot tell "old server, no such field" from "new server, deliberately
+  // null" and would answer the second one with the browser's own guess. An
+  // absent field is the only case that falls back.
+  (o.actionDueAt === undefined ? (o.status === 'offered' ? o.offerExpiresAt : null) : o.actionDueAt);
 
 const Dashboard = () => {
   const { session, isAdmin, logout } = useAuth();
@@ -166,6 +205,48 @@ const Dashboard = () => {
   const sym = CURRENCY_SYMBOLS[mainCurrency] || mainCurrency;
 
   /**
+   * The offers waiting on this seller, soonest deadline first.
+   *
+   * Membership is the server's answer — the status it gave — and nothing else.
+   * There used to be a second test here that dropped any row whose deadline had
+   * passed by THIS DEVICE's clock, and it could hide the very card this block
+   * exists to show: an automatic offer stands thirty minutes, so a phone a few
+   * minutes fast buried a live offer in the history with no clock on it, which
+   * is precisely the complaint that started this. That is not a hypothetical
+   * device — the app already knows clocks drift, and refuses a signature at
+   * five minutes of it (OFFER_ERRORS.SIGNATURE_STALE).
+   *
+   * A window that really has shut is handled where it can be seen: the card
+   * carries its own clock and collapses to "This purchase offer has lapsed"
+   * with a Refresh, rather than the row silently going missing.
+   */
+  const waiting = offers
+    .filter(o => WAITING_ON_SELLER.includes(o.status))
+    .map(o => ({ ...o, actionDueAt: dueFor(o) ?? null }))
+    .sort((a, b) => {
+      // What runs out first, first. Not newest-first, which is the order the
+      // wire gives and the order the record below keeps: when time is the
+      // scarce thing, time is the only useful ordering. Nulls last.
+      const da = parseSqliteUtc(a.actionDueAt)?.getTime() ?? Infinity;
+      const db = parseSqliteUtc(b.actionDueAt)?.getTime() ?? Infinity;
+      return da - db;
+    });
+  /**
+   * How many of them still have time on the clock — used ONLY to choose the
+   * sentence above the block, never to decide what is drawn. A card whose
+   * window has closed draws itself as closed, and "This is waiting on you"
+   * over "This purchase offer has lapsed" would be the same contradiction the
+   * stale verdict was.
+   */
+  const stillOpen = waiting.filter(o => {
+    const due = parseSqliteUtc(o.actionDueAt);
+    return !due || due.getTime() > Date.now();
+  }).length;
+  const waitingRefs = new Set(waiting.map(o => o.offerRef));
+  /** Everything else, in the order the server gave it. */
+  const rest = offers.filter(o => !waitingRefs.has(o.offerRef));
+
+  /**
    * Part-settlement is not a stored status: the row still says what it says
    * while some of the purchase price has been paid, so it is derived here.
    */
@@ -217,7 +298,7 @@ const Dashboard = () => {
       {/* Dashboard content */}
       <div className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-12">
         {/* Welcome */}
-        <div className="mb-12 text-center space-y-2">
+        <div className={`${waiting.length > 0 ? 'mb-6' : 'mb-12'} text-center space-y-2`}>
           <h1 className="text-3xl md:text-4xl font-bold text-foreground">
             Welcome, {displayName}
           </h1>
@@ -228,6 +309,32 @@ const Dashboard = () => {
             </p>
           )}
         </div>
+
+        {/* ============ WAITING ON YOU ============
+            Above the invitation to submit, and deliberately: a purchase offer
+            has a running clock and only the seller can stop it, while
+            submitting another one is never urgent and is always two screens
+            down. When nothing is waiting this renders nothing at all — no
+            empty card, no reassurance box. An interruption that is present
+            every day has stopped interrupting, and on a phone it would cost a
+            scroll on every visit. */}
+        {waiting.length > 0 && (
+          <div className="max-w-4xl mx-auto mb-10 space-y-3">
+            {stillOpen > 0 && (
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {stillOpen === 1 ? OFFER.waitingIntroOne : OFFER.waitingIntro}
+              </p>
+            )}
+            {waiting.map(o => (
+              <WaitingOffer
+                key={o.offerRef}
+                offer={o}
+                currencySymbol={CURRENCY_SYMBOLS[o.currency] || o.currency}
+                onRefresh={fetchOwnRecord}
+              />
+            ))}
+          </div>
+        )}
 
         {/* Submit an offer */}
         <div className="max-w-4xl mx-auto">
@@ -255,18 +362,30 @@ const Dashboard = () => {
           </Link>
         </div>
 
-        {/* ============ OFFERS ============ */}
-        {offers.length > 0 && (
+        {/* ============ OFFERS ============
+            The record, minus whatever is waiting on the seller: one offer
+            appears in exactly one place, because showing the live one here as
+            well is what blended it back into the history. The pointer says
+            where it went, so a missing row never reads as a lost one. */}
+        {rest.length > 0 && (
           <div className="max-w-4xl mx-auto mt-16">
             <h2 className="text-2xl font-bold text-foreground">{OFFER.myOffersTitle}</h2>
-            <p className="mt-1.5 mb-6 text-sm text-muted-foreground leading-relaxed">{OFFER.myOffersIntro}</p>
+            <div className="mb-6">
+              <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">{OFFER.myOffersIntro}</p>
+              {waiting.length > 0 && (
+                <p className="mt-1 text-sm text-muted-foreground leading-relaxed">{OFFER.waitingPointer}</p>
+              )}
+            </div>
 
             <div className="space-y-3">
-              {offers.map(o => {
+              {rest.map(o => {
                 const tone = OFFER_TONE[o.status] || 'bg-muted text-muted-foreground';
                 const label = OFFER_STATUS_LABELS[o.status] || o.status;
                 const offerSym = CURRENCY_SYMBOLS[o.currency] || o.currency;
                 const live = LIVE_OFFER_STATUSES.includes(o.status);
+                const reasonShown = describeDecisionReason(o.decisionReason);
+                // Nothing was acquired, so nothing is owed by a date.
+                const owesSettlement = !NOTHING_WAS_ACQUIRED.includes(o.status);
                 return (
                   <div key={o.offerRef} className="rounded-2xl border-2 border-border bg-card px-4 sm:px-5 py-4">
                     <div className="flex min-w-0 items-start gap-3 sm:gap-4">
@@ -280,13 +399,23 @@ const Dashboard = () => {
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                           <span className="whitespace-nowrap">{formatDate(o.createdAt)}</span>
-                          <span className="font-mono whitespace-nowrap">{o.lanaAmount.toLocaleString()} LANA</span>
-                          {o.settlementDueAt && (
+                          <span className="font-mono whitespace-nowrap">{formatLana(o.lanaAmount)} LANA</span>
+                          {o.settlementDueAt && owesSettlement && (
                             <span className="whitespace-nowrap">{OFFER.offeredDueLabel} {formatDate(o.settlementDueAt)}</span>
                           )}
                         </div>
-                        {o.decisionReason && (
-                          <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed">{o.decisionReason}</p>
+                        {/* WHETHER there is a sentence here at all is the
+                            server's answer: it ships `decisionReason` only
+                            where something wrote it at the transition into the
+                            status the row is in now, which is what stopped a
+                            live offer — and a withdrawn proposal — from
+                            repeating the verdict written when it was
+                            submitted. What is left to do here is turn a code
+                            into English: the sweeper writes
+                            TRANSFER_NOT_COMPLETED onto a lapsed row and the
+                            seller was shown that literal token. */}
+                        {reasonShown && (
+                          <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed">{reasonShown}</p>
                         )}
                       </div>
 
@@ -295,7 +424,7 @@ const Dashboard = () => {
                         {o.purchasePrice !== null ? (
                           <>
                             <div className="font-mono text-sm font-bold text-primary">
-                              {offerSym}{o.purchasePrice.toFixed(2)}
+                              {formatFiat(offerSym, o.purchasePrice)}
                             </div>
                             <div className="text-[10px] text-muted-foreground uppercase tracking-wider">
                               {OFFER.offeredPriceLabel}
@@ -309,7 +438,7 @@ const Dashboard = () => {
 
                     {live && (
                       <div className="mt-3 pt-3 border-t border-border">
-                        <Link to="/offer" className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:gap-2 transition-all">
+                        <Link to={`/offer?ref=${encodeURIComponent(o.offerRef)}`} className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:gap-2 transition-all">
                           Open
                           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -352,25 +481,25 @@ const Dashboard = () => {
                 <div className="rounded-xl border border-border bg-card p-4">
                   <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium">{OFFER.completedAcquiredLabel}</div>
                   <div className="text-lg font-bold font-mono text-foreground mt-1 truncate">
-                    {totalLanaAcquired.toLocaleString()}
+                    {formatLana(totalLanaAcquired)}
                   </div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-4">
                   <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Purchase prices</div>
                   <div className="text-lg font-bold font-mono text-foreground mt-1 truncate">
-                    {sym}{totalOwed.toFixed(2)}
+                    {formatFiat(sym, totalOwed)}
                   </div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-4">
                   <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Settled</div>
                   <div className="text-lg font-bold font-mono text-green-600 mt-1 truncate">
-                    {sym}{totalSettled.toFixed(2)}
+                    {formatFiat(sym, totalSettled)}
                   </div>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-4">
                   <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Outstanding</div>
                   <div className="text-lg font-bold font-mono text-amber-600 mt-1 truncate">
-                    {sym}{totalOutstanding.toFixed(2)}
+                    {formatFiat(sym, totalOutstanding)}
                   </div>
                 </div>
               </div>
@@ -406,7 +535,7 @@ const Dashboard = () => {
                           {/* What we acquired */}
                           <div className="flex-1 min-w-0">
                             <span className="font-mono text-sm font-bold text-foreground truncate block">
-                              {sale.lanaAmount.toLocaleString()} LANA
+                              {formatLana(sale.lanaAmount)} LANA
                             </span>
                             {sale.settlementDueAt && (
                               <span className="text-[11px] text-muted-foreground whitespace-nowrap">
@@ -426,14 +555,14 @@ const Dashboard = () => {
                               />
                             </div>
                             <div className="text-[10px] text-muted-foreground mt-0.5 text-center whitespace-nowrap">
-                              {saleSym}{sale.totalPaid.toFixed(2)} / {saleSym}{sale.netFiat.toFixed(2)}
+                              {formatFiat(saleSym, sale.totalPaid)} / {formatFiat(saleSym, sale.netFiat)}
                             </div>
                           </div>
 
                           {/* Purchase price */}
                           <div className="w-24 text-right flex-shrink-0 whitespace-nowrap">
                             <span className="font-mono text-sm font-bold text-primary">
-                              {saleSym}{sale.netFiat.toFixed(2)}
+                              {formatFiat(saleSym, sale.netFiat)}
                             </span>
                           </div>
 
@@ -459,11 +588,11 @@ const Dashboard = () => {
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                             <div className="min-w-0">
                               <span className="text-muted-foreground">{OFFER.offeredPriceLabel}</span>
-                              <div className="font-mono font-bold text-primary truncate">{saleSym}{sale.netFiat.toFixed(2)}</div>
+                              <div className="font-mono font-bold text-primary truncate">{formatFiat(saleSym, sale.netFiat)}</div>
                             </div>
                             <div className="min-w-0">
                               <span className="text-muted-foreground">Settled</span>
-                              <div className="font-mono font-medium text-green-600 truncate">{saleSym}{sale.totalPaid.toFixed(2)}</div>
+                              <div className="font-mono font-medium text-green-600 truncate">{formatFiat(saleSym, sale.totalPaid)}</div>
                             </div>
                             <div className="min-w-0">
                               <span className="text-muted-foreground">{OFFER.offeredDueLabel}</span>
@@ -507,7 +636,7 @@ const Dashboard = () => {
                                         <td className="px-3 py-2 font-mono text-foreground font-medium whitespace-nowrap">{settlement.payoutId}</td>
                                         <td className="px-3 py-2 text-foreground whitespace-nowrap">{formatDate(settlement.paidAt)}</td>
                                         <td className="px-3 py-2 text-right font-mono font-medium text-green-600 whitespace-nowrap">
-                                          +{saleSym}{settlement.amount.toFixed(2)}
+                                          +{formatFiat(saleSym, settlement.amount)}
                                         </td>
                                         <td className="px-3 py-2 font-mono text-muted-foreground hidden sm:table-cell">
                                           {settlement.paidToAccount
@@ -534,13 +663,13 @@ const Dashboard = () => {
 
                             <div className="flex flex-wrap items-center justify-between gap-2 mt-3 px-1">
                               <div className="text-xs text-muted-foreground">
-                                Settled: <span className="font-mono font-bold text-green-600">{saleSym}{sale.totalPaid.toFixed(2)}</span>
+                                Settled: <span className="font-mono font-bold text-green-600">{formatFiat(saleSym, sale.totalPaid)}</span>
                                 {' / '}
-                                <span className="font-mono font-bold text-foreground">{saleSym}{sale.netFiat.toFixed(2)}</span>
+                                <span className="font-mono font-bold text-foreground">{formatFiat(saleSym, sale.netFiat)}</span>
                               </div>
                               {sale.remaining > 0 && (
                                 <div className="text-xs">
-                                  Outstanding: <span className="font-mono font-bold text-amber-600">{saleSym}{sale.remaining.toFixed(2)}</span>
+                                  Outstanding: <span className="font-mono font-bold text-amber-600">{formatFiat(saleSym, sale.remaining)}</span>
                                 </div>
                               )}
                             </div>
