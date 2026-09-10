@@ -275,7 +275,7 @@ const SubmitOffer = () => {
   const [privateKeyError, setPrivateKeyError] = useState('');
   const [validatingKey, setValidatingKey] = useState(false);
   const [transferring, setTransferring] = useState(false);
-  const [transferError, setTransferError] = useState<{ error: string; code?: string; unfreezeUrl?: string } | null>(null);
+  const [transferError, setTransferError] = useState<{ error: string; code?: string } | null>(null);
   const [showQrScanner, setShowQrScanner] = useState(false);
 
   const [result, setResult] = useState<TransferResult | null>(null);
@@ -611,7 +611,7 @@ const SubmitOffer = () => {
       const data = await res.json();
       if (!res.ok || !data.success) {
         if (data.code === 'OFFER_EXPIRED') setServerLapsed(true);
-        setTransferError({ error: describeOfferError(data) || 'The transfer did not go through.', code: data.code, unfreezeUrl: data.unfreezeUrl });
+        setTransferError({ error: describeOfferError(data) || 'The transfer did not go through.', code: data.code });
         return;
       }
       setResult(data);
@@ -853,7 +853,8 @@ const SubmitOffer = () => {
                         // Not every freeze stops a sale. An OWN-process freeze
                         // on a LanaPays.Us wallet does not, and telling that
                         // seller to "unfreeze it first" pointed them at
-                        // something they cannot undo. The server decides;
+                        // something they cannot undo, at a URL that does not
+                        // exist either. The server decides;
                         // absent (an older server) still means blocked.
                         const blocked = isFrozen && w.freezeStops !== false;
                         return (
@@ -894,16 +895,7 @@ const SubmitOffer = () => {
                                 </div>
                                 {isFrozen && blocked && (
                                   <p className="text-xs text-blue-700 mb-1">
-                                    {OFFER.walletFrozen}{' '}
-                                    <a
-                                      href="https://unfreeze.lanapays.us"
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={e => e.stopPropagation()}
-                                      className="underline font-medium"
-                                    >
-                                      unfreeze.lanapays.us
-                                    </a>
+                                    {OFFER.walletFrozen}
                                   </p>
                                 )}
                                 {isFrozen && !blocked && (
@@ -1541,16 +1533,6 @@ const SubmitOffer = () => {
                         {transferError.code === 'WALLET_FROZEN' ? 'This wallet is frozen' : 'The transfer did not go through'}
                       </p>
                       <p className="text-xs text-red-600 dark:text-red-500 leading-relaxed">{transferError.error}</p>
-                      {transferError.unfreezeUrl && (
-                        <a
-                          href={transferError.unfreezeUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-block rounded-lg border border-red-300 dark:border-red-700 px-4 py-2 text-xs font-medium text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
-                        >
-                          Go to unfreeze.lanapays.us
-                        </a>
-                      )}
                     </div>
                   )}
                 </div>

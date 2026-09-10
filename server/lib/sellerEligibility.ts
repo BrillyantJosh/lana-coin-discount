@@ -117,10 +117,11 @@ export async function checkSellerEligibility(
         `[lana-discount] Blocked (${freeze.code}): ${hexId.slice(0, 12)}… wallet ${senderAddress.slice(0, 10)}… — ` +
         freeze.signals.map(s => `${s.source}:${s.reachable ? (s.frozen ? 'FROZEN' : 'ok') : 'unreachable'}`).join(' '),
       );
-      return {
-        ok: false, httpStatus: 403, code: freeze.code, error: freeze.reason,
-        detail: freeze.code === 'WALLET_FROZEN' ? { unfreezeUrl: 'https://unfreeze.lanapays.us' } : undefined,
-      };
+      // No unfreezing route is handed back. There was one — unfreeze.lanapays.us —
+      // and it was never built: the name resolved to nothing, and once a DNS
+      // record was added it resolved to a certificate warning. A refusal that
+      // names a door which does not open is worse than one that simply says no.
+      return { ok: false, httpStatus: 403, code: freeze.code, error: freeze.reason };
     }
 
     const split = evaluateBuybackSplit({

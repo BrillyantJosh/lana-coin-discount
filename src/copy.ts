@@ -260,9 +260,13 @@ export const OFFER = {
   blockedBody:
     'A counterparty must have no open obligations of their own before Lana.discount will consider a proposal. ' +
     'Settle what is outstanding and this page opens again.',
-  walletFrozen: 'A frozen wallet cannot transfer LANA. Unfreeze it first, then come back.',
+  // No door is offered here on purpose. A freeze is decided in the registrar and
+  // lifted there, and unfreeze.lanapays.us — which every app used to point at —
+  // was never built, so the link sent people to a certificate warning.
+  walletFrozen:
+    'A frozen wallet cannot transfer LANA. The freeze is recorded in the registrar and is lifted there.',
   // A freeze that does not stop a sale. The OWN process freezes a person, not
-  // their coins, and pointing them at unfreeze.lanapays.us offered a door they
+  // their coins, so naming any unfreezing route at all offered a door they
   // cannot open.
   walletFrozenSellable:
     'This wallet is frozen by the OWN process. That does not stop a financing-round sale — you may propose from it.',
