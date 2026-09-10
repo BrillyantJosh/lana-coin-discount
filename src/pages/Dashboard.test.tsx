@@ -116,12 +116,25 @@ describe('the offer that is waiting on the seller', () => {
   });
 
   it('never repeats the verdict from when the proposal was submitted', async () => {
-    // Belt for the server's own projection: a cached older API, or a row the
-    // sweeper has not caught, must not put the sentence back.
-    offers = [offer({ decisionReason: 'This proposal is under treasury review.' })];
+    /**
+     * Belt for the server's own projection: a cached older API, or a row the
+     * sweeper has not caught, must not put the sentence back.
+     *
+     * The sentinel is the half of this with teeth. `decision_reason` is a
+     * STORED column, so what it holds is whatever the code wrote on the day —
+     * the assertion below is about the CARD's contract (it says what waits on
+     * you, never what a row once said about itself), and a sentinel proves the
+     * card ignores the field rather than proving the field happens to be empty.
+     */
+    const STORED = 'PINNED-STORED-REASON-THE-CARD-MUST-NOT-PRINT';
+    offers = [offer({ decisionReason: `This proposal is under treasury review. ${STORED}` })];
     show();
     await waitFor(() => expect(screen.getByText('Waiting for your decision')).toBeInTheDocument());
+    expect(screen.queryByText(new RegExp(STORED))).toBeNull();
     expect(screen.queryByText(/under treasury review/i)).not.toBeInTheDocument();
+    // And what it DOES say comes from the code, so the state on screen is the
+    // one this release ships and not one a stored row can rewrite.
+    expect(screen.getByText(/Waiting for your decision/)).toBeInTheDocument();
   });
 
   it('is addressed to one offer when there is one, and does not claim nothing is owed', async () => {

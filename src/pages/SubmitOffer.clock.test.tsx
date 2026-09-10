@@ -23,10 +23,10 @@
  *   legacy, no mandate      never swept at all; the window is the whole story
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import SubmitOffer from './SubmitOffer';
-import { UI } from '@/copy';
+import { UI, OFFER } from '@/copy';
 
 const WALLET = 'LKs7QqC2TVJ4y92waNrBjVZQB2oFhcmZqB';
 
@@ -65,13 +65,17 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
 let mine: unknown[] = [];
+/** What POST /transfer answers, so a test can hand back a refusal. */
+let transferReply: Record<string, unknown> = { success: true };
 
 beforeEach(() => {
   mine = [];
+  transferReply = { success: true };
   vi.stubGlobal('fetch', vi.fn((url: string) => {
     const u = String(url);
     const body =
-      u.includes('/payment-score') ? { score: 10 }
+      u.includes('/transfer') ? transferReply
+      : u.includes('/payment-score') ? { score: 10 }
       : u.includes('/wallets/balances') ? { balances: [{ wallet_id: WALLET, balance: 22775, status: 'active' }] }
       : u.includes('/wallets/utxo-info') ? { success: true, utxoCount: 1 }
       : u.includes('/sell/split-check') ? { allowed: true, code: 'OK', reason: '', walletSplit: 8, currentSplit: 8, allowedSplits: [8] }
@@ -178,9 +182,101 @@ describe('after he accepts, the page says the clock changed', () => {
 
 describe('the state a proposal sits in, as the seller reads it', () => {
   it('no longer puts a government department over a private sale', async () => {
-    mine = [offer({ status: 'under_review', purchasePrice: null, offerExpiresAt: null, actionDueAt: null })];
+    /**
+     * The row carries the sentence the OLD code stored, because
+     * `decision_reason` is a stored column and rows written before 10 Sept 2026
+     * still hold it until the one-off UPDATE runs. The state the seller reads
+     * is computed here, so it must be this release's words whatever the row
+     * says — that is the half of this with teeth: with the field empty, the
+     * absence below would hold whether the rename happened or not.
+     */
+    mine = [offer({
+      status: 'under_review', purchasePrice: null, offerExpiresAt: null, actionDueAt: null,
+      decisionReason: 'This proposal is under treasury review.',
+    })];
     show();
-    expect((await screen.findByTestId('review-state')).textContent).toBe(UI.reviewState);
-    expect(screen.getByTestId('submitted-card').textContent).not.toMatch(/treasury review/i);
+    const state = await screen.findByTestId('review-state');
+    expect(state.textContent).toBe(UI.reviewState);
+    expect(state.textContent).not.toMatch(/treasury/i);
+    expect(state.textContent).not.toMatch(/ministr/i);
+  });
+});
+
+/**
+ * THE BUTTON THAT COULD NOT WORK, AND STAYED ON.
+ *
+ * The route already answered both ways round — `retryable: false` for a
+ * refusal that is arithmetic, `repeated: true` when it recognised an unchanged
+ * wallet and did not even attempt the broadcast — and the browser threw both
+ * away, keeping only {error, code}. So Confirm stayed lit under a sentence
+ * saying the wallet is short, and each press wrote another failed row. Eight
+ * of them, on the day this was found.
+ */
+describe('a refusal that pressing again cannot cure', () => {
+  const reachTransfer = async () => {
+    mine = [offer({ status: 'accepted', offerExpiresAt: sqliteUtc(7 * DAY), actionDueAt: sqliteUtc(19 * HOUR) })];
+    show();
+    await screen.findByText(UI.transfer);
+    const key = screen.getByPlaceholderText(/private key/i);
+    fireEvent.change(key, { target: { value: 'T'.repeat(52) } });
+    const confirm = await screen.findByRole('button', { name: new RegExp(OFFER.transferConfirm, 'i') });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    return confirm;
+  };
+
+  it('switches the button off and says so', async () => {
+    transferReply = {
+      success: false,
+      error: 'This wallet holds about 3,261.79 LANA — less than the 3,261.80 LANA this acquisition is for.',
+      code: 'INSUFFICIENT_BALANCE',
+      retryable: false,
+    };
+    const confirm = await reachTransfer();
+    fireEvent.click(confirm);
+    await screen.findByText(/Pressing again cannot change this answer/i);
+    expect(confirm).toBeDisabled();
+    // And there is a way forward that is not the same press.
+    expect(screen.getByRole('button', { name: /Check the wallet again/i })).toBeInTheDocument();
+  });
+
+  it('says plainly when nothing was even sent, because the wallet had not changed', async () => {
+    transferReply = {
+      success: false,
+      error: 'This wallet holds about 3,261.79 LANA — less than the 3,261.80 LANA this acquisition is for.',
+      code: 'INSUFFICIENT_BALANCE',
+      retryable: false,
+      repeated: true,
+    };
+    const confirm = await reachTransfer();
+    fireEvent.click(confirm);
+    expect(await screen.findByText(/nothing was sent this time/i)).toBeInTheDocument();
+    expect(confirm).toBeDisabled();
+  });
+
+  it('leaves the button on where the refusal might come out differently', async () => {
+    // TOO_MANY_UTXOS is the case that was dressed as permanent and is not: its
+    // own sentence asks for a consolidation, after which the press works.
+    transferReply = {
+      success: false,
+      error: 'This wallet holds its LANA in too many pieces. Consolidate them with Registrar and try again.',
+      code: 'TOO_MANY_UTXOS',
+      retryable: true,
+    };
+    const confirm = await reachTransfer();
+    fireEvent.click(confirm);
+    await screen.findByText(/too many pieces/i);
+    expect(confirm).toBeEnabled();
+    expect(screen.queryByText(/Pressing again cannot change this answer/i)).toBeNull();
+  });
+
+  it('leaves the button on when the route says nothing either way', async () => {
+    // Unknown is not permanent. The safe direction to be wrong in is "let them
+    // try" — an older server, or a refusal from a path that does not classify.
+    transferReply = { success: false, error: 'The transfer did not go through.', code: 'SOMETHING_ELSE' };
+    const confirm = await reachTransfer();
+    fireEvent.click(confirm);
+    // Heading and body say the same thing here, so both come back.
+    expect((await screen.findAllByText(/The transfer did not go through/i)).length).toBeGreaterThan(0);
+    expect(confirm).toBeEnabled();
   });
 });

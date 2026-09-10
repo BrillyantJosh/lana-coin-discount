@@ -231,7 +231,20 @@ const SubmitOffer = () => {
   const [privateKeyError, setPrivateKeyError] = useState('');
   const [validatingKey, setValidatingKey] = useState(false);
   const [transferring, setTransferring] = useState(false);
-  const [transferError, setTransferError] = useState<{ error: string; code?: string } | null>(null);
+  /**
+   * A refusal, AND whether pressing again could ever come out differently.
+   *
+   * The route answers `retryable: false` for the refusals that are arithmetic
+   * — the wallet holds less than the acquisition is for, the balance is over
+   * the ceiling — and `repeated: true` when it recognised an unchanged wallet
+   * and did not even attempt the broadcast. The browser used to keep only
+   * `{error, code}` and leave Confirm enabled, so the seller pressed a button
+   * that could not work, and each press wrote another failed row. That is the
+   * eight-rows complaint from the seller's side of the glass.
+   */
+  const [transferError, setTransferError] = useState<
+    { error: string; code?: string; retryable?: boolean; repeated?: boolean } | null
+  >(null);
   const [showQrScanner, setShowQrScanner] = useState(false);
 
   const [result, setResult] = useState<TransferResult | null>(null);
@@ -653,7 +666,12 @@ const SubmitOffer = () => {
       const data = await res.json();
       if (!res.ok || !data.success) {
         if (data.code === 'OFFER_EXPIRED') setServerLapsed(true);
-        setTransferError({ error: describeOfferError(data) || 'The transfer did not go through.', code: data.code });
+        setTransferError({
+          error: describeOfferError(data) || 'The transfer did not go through.',
+          code: data.code,
+          retryable: typeof data.retryable === 'boolean' ? data.retryable : undefined,
+          repeated: data.repeated === true,
+        });
         return;
       }
       setResult(data);
@@ -776,6 +794,14 @@ const SubmitOffer = () => {
   if (!session) return null;
 
   const walletBalance = selectedWallet ? (balances[selectedWallet] || 0) : 0;
+  /**
+   * A refusal the same press cannot cure. The route is the authority — it is
+   * the side that knows whether the refusal was arithmetic (`retryable: false`)
+   * or luck — so this reads its answer rather than guessing from the code.
+   * Absent means unknown, and unknown leaves the button on: the safe direction
+   * to be wrong in is "let them try".
+   */
+  const hopeless = transferError?.retryable === false;
   const settlementAccount = getSettlementAccount();
   const sym = (code: string) => CURRENCY_SYMBOLS[code] || '';
   const stageIndex = STAGES.indexOf(stage);
@@ -1761,6 +1787,27 @@ const SubmitOffer = () => {
                         {transferError.code === 'WALLET_FROZEN' ? 'This wallet is frozen' : 'The transfer did not go through'}
                       </p>
                       <p className="text-xs text-red-600 dark:text-red-500 leading-relaxed">{transferError.error}</p>
+                      {/* Said plainly, because the button below is now off. The
+                          sentence above already says WHAT must change; this one
+                          says that pressing again is not the way to change it. */}
+                      {hopeless && (
+                        <p className="text-xs font-medium text-red-700 dark:text-red-400 leading-relaxed">
+                          {transferError.repeated
+                            ? 'The wallet has not changed since the last attempt, so nothing was sent this time. Pressing again gives this same answer.'
+                            : 'Pressing again cannot change this answer.'}{' '}
+                          Put that right in the wallet, then check it again here.
+                        </p>
+                      )}
+                      {hopeless && (
+                        <button
+                          type="button"
+                          onClick={() => { setTransferError(null); refreshBalances(); }}
+                          disabled={balancesLoading}
+                          className="mt-1 rounded-lg border border-red-300 dark:border-red-800 px-3 py-1.5 text-xs font-medium text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-50 transition-colors"
+                        >
+                          {balancesLoading ? 'Checking the wallet…' : 'Check the wallet again'}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1771,9 +1818,9 @@ const SubmitOffer = () => {
                   </Link>
                   <button
                     onClick={transfer}
-                    disabled={transferring || !privateKey.trim() || privateKeyValid !== true}
+                    disabled={transferring || !privateKey.trim() || privateKeyValid !== true || hopeless}
                     className={`rounded-xl px-8 py-3 font-semibold text-white transition-all ${
-                      transferring || !privateKey.trim() || privateKeyValid !== true
+                      transferring || !privateKey.trim() || privateKeyValid !== true || hopeless
                         ? 'bg-muted-foreground/30 cursor-not-allowed'
                         : 'bg-primary hover:bg-primary/90 shadow-lg'
                     }`}
