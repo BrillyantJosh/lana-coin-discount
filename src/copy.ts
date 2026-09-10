@@ -214,15 +214,93 @@ export const OFFER = {
   offeredAccept: 'Accept this purchase offer',
   offeredDecline: 'Not now',
 
-  reviewTitle: UI.reviewState,
+  // ── the moment a proposal lands on a person's desk ──────────────────────
+  //
+  // A seller submitted 3,251.48 LANA, landed on a card headed "Under Treasury
+  // Review" with a spinning ring, and several minutes later still did not know
+  // whether the thing had happened — whether he could close the window, or had
+  // to sit there. He is right, and the grammar is the reason. "Under Treasury
+  // Review" is a STATE: a present-tense condition with no end, standing in the
+  // place where the EVENT belonged. A state name is a status label. It was
+  // never an acknowledgement, and he never got one.
+  //
+  // So the heading is the event, in the past tense — his own words for it —
+  // and it is still true on a return visit three days later, which "Submitted
+  // just now" would not be. The state keeps its framework name (§8) one line
+  // below, in the same words the dashboard badge uses for the same row. The
+  // three things he asked for out loud — may I close this, what happens next,
+  // what brings me back — are then answered in that order, in sentences,
+  // rather than implied by a moving circle.
+  reviewTitle: 'Your offer has been submitted',
+  /** The §8 review-state element name, kept as the STATUS it always was. */
+  reviewStateLabel: UI.reviewState,
   reviewBody:
-    'Your proposal is with our treasury. We will make a purchase offer, decline, or come back with a ' +
+    'A person at the treasury decides this one. We will make a purchase offer, decline, or come back with a ' +
     'counteroffer. Nothing has been transferred and nothing is owed either way.',
+  // Shown only when the server sent a reason with the row. The browser never
+  // writes a sentence of its own about why a person is looking at this.
+  reviewWhyLabel: 'Why a person is looking at this',
+  reviewNextTitle: 'What happens now',
+  // The question he actually asked, answered with the verb he used, and
+  // answered first. "You may close this page" alone still leaves the fear that
+  // closing throws the submission away, so the clause that names what survives
+  // is in the same breath.
+  reviewCanClose:
+    'There is nothing more for you to do here. You may close this page — closing it does not close the ' +
+    'proposal, and nothing is waiting on you.',
+  // No horizon is printed, because the server enforces none: expireStaleOffers
+  // sweeps 'offered' and 'accepted' rows and never a proposal under review.
+  // A time this server does not keep is not written on this page.
+  reviewNoDeadline:
+    'There is no deadline on that decision and none is invented here. Your proposal stands until it is ' +
+    'decided, or until you withdraw it.',
+  // The sentence above and "nothing is sent to you" are each true, and together
+  // they led somewhere false: no clock on the review, no message when it ends,
+  // so no reason to come back at all. But a purchase offer, once made, does
+  // stand for a fixed time and does lapse — so the pair had to be completed
+  // rather than softened. No figure here: the real one rides on the offered row
+  // and is shown there.
+  reviewAfterDecision:
+    'What follows an answer does have a clock: if we make a purchase offer, it stands for a fixed time and ' +
+    'lapses if it is not accepted. So come back and look rather than waiting to be told.',
+  // Checked before it was written: this app has no mailer, no message and no
+  // push of any kind — the only notification in the codebase is a callback
+  // between machines. "We will let you know" would be the worst sentence on
+  // this page, because the seller who believes it waits to be told and is
+  // never told. If a notification is ever built, this string changes in the
+  // same commit that builds it.
+  reviewNoMessage:
+    'Nothing is sent to you when it is decided: no email, no message. You see the answer by coming back.',
+  reviewWhere:
+    'Sign in and open your dashboard. This proposal is listed there under "Your offers" with this reference ' +
+    'and the state it is in, and opening it brings you back to this page.',
   reviewRef: 'Your reference',
-  reviewWithdraw: 'Withdraw and propose something else',
-  reviewWithdrawNote:
-    'A proposal under review holds your place on this page until it is decided. Withdrawing it changes ' +
-    'nothing that has been transferred and leaves you free to propose a different amount straight away.',
+  reviewRefNote: 'Keep this. It names this proposal everywhere it appears.',
+  // The 20-second poll, said once, as the convenience it is — never as the way
+  // he will find out.
+  reviewAutoCheck: 'This page checks for an answer by itself while it is open.',
+  reviewCheckNow: 'Check for an answer',
+  reviewChecking: 'Checking…',
+  reviewBack: 'Back to my dashboard',
+  // Withdrawing used to be a full-size button in the same row and the same
+  // style as "Check again", on the screen of a man who believed nothing had
+  // happened. The try-again instinct lands on the one control that destroys
+  // the proposal — terminally, unconfirmed, and for no gain: a row under
+  // review reserves no mandate, so withdrawing frees nothing. It keeps its
+  // place on this page, because the page is what parks on one proposal, but as
+  // a link under a heading that names the single reason to use it, behind a
+  // confirmation that names the reference.
+  reviewChangeTitle: 'To propose a different amount',
+  reviewChangeBody:
+    'This page carries one proposal at a time, so this one has to be withdrawn first. Withdrawing it leaves ' +
+    'the treasury without a decision on it, and nothing has been transferred either way.',
+  reviewWithdraw: 'Withdraw this proposal and offer a different amount',
+  reviewWithdrawConfirm: 'Withdraw {ref}?',
+  reviewWithdrawConfirmBody:
+    'It leaves the treasury without a decision on it and cannot be undone. Nothing has been transferred, and ' +
+    'you may submit a new offer straight away.',
+  reviewWithdrawYes: 'Withdraw it',
+  reviewWithdrawNo: 'Leave it under review',
 
   declinedTitle: 'Not acquiring this at the moment',
   declinedBody:
@@ -402,6 +480,8 @@ export const OFFER = {
 // says so: "the treasury accepts proposals from…", never "you may sell".
 
 export const MANDATE = {
+  // The disclosure that keeps the amount field within reach on a phone.
+  roundDetailToggle: 'Round-by-round detail ({count})',
   title: 'Your financing-round mandate',
   intro:
     'The treasury acquires from financing budgets round by round — round 1, then 2, then 3 — each from its ' +

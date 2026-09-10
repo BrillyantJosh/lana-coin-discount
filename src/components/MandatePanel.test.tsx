@@ -7,8 +7,8 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import {
-  MandatePanel, indicativeFiat, proposalGate, counterBody, timingLine, fmtUtc, availabilityOf,
-  type MandateView, type MandateInfo,
+  MandatePanel, indicativeFiat, proposalGate, proposableCapLana, counterBody, timingLine, fmtUtc,
+  availabilityOf, type MandateView, type MandateInfo,
 } from './MandatePanel';
 import { OFFER } from '@/copy';
 
@@ -199,5 +199,43 @@ describe('what the holder may propose now', () => {
     // number, and saying it twice would only muddy it.
     render(<MandatePanel info={info([r1(), r2()])} loading={false} error={null} lanaAmount={null} currency="EUR" showIndicative={false} />);
     expect(screen.queryByTestId('per-proposal')).toBeNull();
+  });
+});
+
+/**
+ * THE NUMBER THE "MAX" BUTTON HAS TO OBEY.
+ *
+ * `availabilityOf` answers a holder's question in prose; this answers a
+ * button's question in one number, and it has a third answer the prose does
+ * not need: NOTHING IS KNOWN. A page that collapses "not told" into "zero"
+ * empties the field of a seller nobody capped, which is the same class of
+ * mistake as the one being fixed, pointed the other way.
+ */
+describe('the cap a single proposal may carry', () => {
+  it('is the lowest open round\'s remainder — one proposal draws on one round', () => {
+    expect(proposableCapLana(info([r1(), r2({ state: 'open' })]))).toBe(1000);
+  });
+
+  it('follows a round the treasury opened early, like any other open round', () => {
+    expect(proposableCapLana(info([
+      r1({ state: 'fully_acquired', remainingLana: 0 }),
+      r2({ state: 'released', released: true }),
+    ]))).toBe(800);
+  });
+
+  it('is zero — a real zero — when a mandate exists and no round is open', () => {
+    expect(proposableCapLana(info([r1({ state: 'not_open' }), r2()]))).toBe(0);
+  });
+
+  it('is null, not zero, when there is no mandate at all', () => {
+    // The legacy path: the server judges the proposal on receipt, and the
+    // panel on the same screen says so. Nobody has capped this wallet.
+    expect(proposableCapLana(info([]))).toBeNull();
+  });
+
+  it('is null, not zero, when the mandate has not been read', () => {
+    // Still loading, or it could not be read. Either way this browser has not
+    // been told a cap, and it must not invent one.
+    expect(proposableCapLana(null)).toBeNull();
   });
 });

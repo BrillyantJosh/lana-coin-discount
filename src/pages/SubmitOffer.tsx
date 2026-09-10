@@ -4,12 +4,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import { convertWifToIds } from '@/lib/crypto';
 import { SellTermsGate } from '@/components/SellTermsGate';
-import { MandatePanel, proposalGate, counterBody, fill, fmtUtc, type MandateInfo, availabilityOf } from '@/components/MandatePanel';
+import { MandatePanel, proposalGate, proposableCapLana, counterBody, fill, fmtUtc, type MandateInfo, availabilityOf } from '@/components/MandatePanel';
 import { signedFetch, type SigningKey } from '@/lib/signedRequest';
 import { describeOfferError } from '@/lib/offerErrors';
-import { BRAND, OFFER, LANDING } from '@/copy';
+import { BRAND, OFFER, LANDING, MANDATE } from '@/copy';
 import { parseSqliteUtc, formatMoment, formatLeft, useCountdown } from '@/lib/offerClock';
 import { formatLana } from '@/lib/money';
+import { ESTIMATED_TRANSFER_FEE_LANA, maxProposable } from '@/lib/maxOffer';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
 
@@ -218,6 +219,9 @@ const SubmitOffer = () => {
   const [showTerms, setShowTerms] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const [refreshingDecision, setRefreshingDecision] = useState(false);
+  // Withdrawing a proposal under review is terminal and frees nothing, so it
+  // asks first. See OFFER.reviewWithdraw for why it is not a button any more.
+  const [confirmWithdraw, setConfirmWithdraw] = useState(false);
   // The server has told us the window closed, whatever this browser's clock says.
   const [serverLapsed, setServerLapsed] = useState(false);
 
@@ -443,8 +447,7 @@ const SubmitOffer = () => {
     if (!offer || isEmptyWallet) return;
     const balance = balances[offer.senderWallet];
     if (!balance) return;
-    const feeLana = Math.floor((1 * 180 + 1 * 34 + 10) * 100 * 1.5) / 100000000;
-    if (offer.lanaAmount >= balance - feeLana * 3) setIsEmptyWallet(true);
+    if (offer.lanaAmount >= balance - ESTIMATED_TRANSFER_FEE_LANA * 3) setIsEmptyWallet(true);
   }, [offer?.offerRef, offer?.lanaAmount, balances, isEmptyWallet]);
 
   /**
@@ -700,6 +703,7 @@ const SubmitOffer = () => {
 
   const resetToAmount = () => {
     setOffer(null);
+    setConfirmWithdraw(false);
     setServerLapsed(false);
     setLapsedReason(null);
     setShowTerms(false);
@@ -725,6 +729,24 @@ const SubmitOffer = () => {
   const gate = proposalGate(mandateInfo);
   const enteredAmount = parseFloat(lanaAmount);
   const canPropose = !submitting && enteredAmount > 0 && gate.allowed && !mandateLoading;
+  // WHAT MAX MEANS. The smaller of the wallet and the round, worked out in
+  // src/lib/maxOffer.ts. While the mandate is still being read the cap is not
+  // known — and a cap that is not known is not a cap of zero, so the figure
+  // stays the whole wallet — but the button declines to answer for that
+  // moment rather than answering with a number that is about to change; the
+  // propose button beside it is dead for the same reason (`!mandateLoading`).
+  // A cap we could not READ is not a cap that does not EXIST. Both arrive here
+  // as `mandateInfo === null`, and collapsing them put the original complaint
+  // straight back: on a failed mandate fetch the cap became null, Max went live
+  // and filled the whole wallet again — the exact number Dejan had to delete by
+  // hand, under a banner saying the mandate could not be read. A legacy wallet
+  // with genuinely no mandate answers 200 with an empty list and never sets
+  // `mandateError`, so the two are distinguishable, and the unknown one declines
+  // to answer rather than answering with a number it does not stand behind.
+  const capUnknown = mandateLoading || mandateError !== null;
+  const roundCapLana = capUnknown ? null : proposableCapLana(mandateInfo);
+  const maxOffer = maxProposable(walletBalance, ESTIMATED_TRANSFER_FEE_LANA, roundCapLana);
+  const maxUnavailable = capUnknown || maxOffer.amountLana <= 0;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -1069,6 +1091,24 @@ const SubmitOffer = () => {
             {/* ============ 2. HOW MUCH ============ */}
             {stage === 'amount' && (
               <div className="space-y-6">
+                {/* THE ANSWER COMES BEFORE THE QUESTION. This panel used to
+                    sit under the amount field, so the figure a seller needs in
+                    order to answer "how much?" was below the box he answers it
+                    in: «moraš dol gledat koliko lahko, potem pa gor, koliko
+                    boš» — you look down to see how much you may, then back up
+                    to type how much you will. It carries the indicative figure
+                    for whatever is typed, which is a projection under its own
+                    heading and never a price. */}
+                <MandatePanel
+                  info={mandateInfo}
+                  loading={mandateLoading}
+                  error={mandateError}
+                  lanaAmount={enteredAmount > 0 ? enteredAmount : null}
+                  currency={selectedCurrency}
+                  showIndicative
+                  compact
+                />
+
                 <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6">
                   <h2 className="text-lg font-semibold text-foreground mb-1">{OFFER.amountTitle}</h2>
                   <p className="text-sm text-muted-foreground mb-4">{OFFER.amountHint}</p>
@@ -1086,15 +1126,22 @@ const SubmitOffer = () => {
                     {walletBalance > 0 && (
                       <button
                         onClick={() => {
-                          // Leave room for the network fee: 1 input, 1 output,
-                          // no change output when the wallet is emptied.
-                          const estimatedFeeLanoshis = Math.floor((1 * 180 + 1 * 34 + 10) * 100 * 1.5);
-                          const feeLana = estimatedFeeLanoshis / 100000000;
-                          setLanaAmount(String(Math.max(0, walletBalance - feeLana)));
-                          setIsEmptyWallet(true);
+                          // The smaller of the wallet and the round. Emptying
+                          // the wallet is a property of the WALLET limit: when
+                          // the round is what stopped it, LANA stays behind, a
+                          // change output remains, and the fee comes out of it.
+                          setLanaAmount(String(maxOffer.amountLana));
+                          setIsEmptyWallet(maxOffer.emptiesWallet);
                           setSubmitError('');
                         }}
-                        className="shrink-0 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-semibold text-primary hover:bg-primary/10 transition-colors"
+                        disabled={maxUnavailable}
+                        title={mandateLoading ? MANDATE.loading : maxOffer.amountLana <= 0 ? gate.reason : undefined}
+                        data-testid="max-button"
+                        className={`shrink-0 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors ${
+                          maxUnavailable
+                            ? 'border-border bg-muted/40 text-muted-foreground cursor-not-allowed'
+                            : 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10'
+                        }`}
                       >
                         Max
                       </button>
@@ -1134,17 +1181,6 @@ const SubmitOffer = () => {
                     </div>
                   )}
                 </div>
-
-                {/* The mandate, with an indicative figure for the amount typed
-                    — a projection under its own heading, never a price. */}
-                <MandatePanel
-                  info={mandateInfo}
-                  loading={mandateLoading}
-                  error={mandateError}
-                  lanaAmount={enteredAmount > 0 ? enteredAmount : null}
-                  currency={selectedCurrency}
-                  showIndicative
-                />
 
                 <div className="flex justify-between gap-3">
                   <button onClick={() => setStage('wallet')} className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
@@ -1280,21 +1316,62 @@ const SubmitOffer = () => {
                     )}
                   </>
                 ) : offer.status === 'under_review' ? (
-                  <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6 space-y-4">
+                  /* THE SCREEN IS WRITTEN FOR LEAVING, NOT FOR STAYING.
+                     What waits here is a person's working day, and the only
+                     correct next action is to go and live yours — so the
+                     acknowledgement comes first, the exit is the loudest
+                     control, and nothing on the card moves. */
+                  <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6 space-y-5" data-testid="submitted-card">
                     <div className="flex items-start gap-3">
-                      <span className="mt-1 h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                      {/* STATIC, and deliberately not green. The spinner that
+                          stood here was a progress indicator on something not
+                          in progress in this browser: it promised "this
+                          finishes if you stay", and what finishes it is a
+                          person who may decide tomorrow. A green tick over
+                          "submitted" would be read as "they said yes", which
+                          is the one misreading worse than the spinner — so the
+                          mark is the dashboard's own under-review blue, and it
+                          belongs to the act of submitting, which IS finished. */}
+                      <span
+                        className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                        data-testid="submitted-mark"
+                        aria-hidden="true"
+                      >
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      </span>
                       <div className="min-w-0">
                         <h2 className="text-xl font-bold text-foreground">{OFFER.reviewTitle}</h2>
-                        <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">{OFFER.reviewBody}</p>
+                        <span
+                          className="mt-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                          data-testid="review-state"
+                        >
+                          {OFFER.reviewStateLabel}
+                        </span>
+                        <p className="mt-2 text-sm text-muted-foreground leading-relaxed">{OFFER.reviewBody}</p>
                       </div>
                     </div>
+
+                    {/* The server's own sentence about why this one reached a
+                        person — rendered only when it sent one. */}
+                    {offer.decisionReason && (
+                      <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-1" data-testid="review-why">
+                        <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{OFFER.reviewWhyLabel}</p>
+                        <p className="text-sm text-foreground leading-relaxed">{offer.decisionReason}</p>
+                      </div>
+                    )}
 
                     <div className="rounded-xl bg-muted/30 border border-border p-4 space-y-2 text-sm">
                       <div className="flex min-w-0 items-center justify-between gap-3">
                         <span className="text-muted-foreground">{OFFER.reviewRef}</span>
-                        <span className="font-mono font-bold text-foreground flex-shrink-0 whitespace-nowrap">{offer.offerRef}</span>
+                        {/* The one durable token of the whole transaction, and
+                            the thing to carry away — so it is set to be read,
+                            not to match the label beside it. */}
+                        <span className="font-mono text-base font-bold text-foreground flex-shrink-0 whitespace-nowrap">{offer.offerRef}</span>
                       </div>
-                      <div className="flex min-w-0 items-center justify-between gap-3">
+                      <p className="text-xs text-muted-foreground">{OFFER.reviewRefNote}</p>
+                      <div className="flex min-w-0 items-center justify-between gap-3 pt-1 border-t border-border/60">
                         <span className="text-muted-foreground">{OFFER.amountLabel}</span>
                         <span className="font-mono text-foreground flex-shrink-0 whitespace-nowrap">{formatLana(offer.lanaAmount)} LANA</span>
                       </div>
@@ -1304,30 +1381,75 @@ const SubmitOffer = () => {
                       </div>
                     </div>
 
-                    {/* A proposal under review parks this page on it, so without a
-                        way out the seller cannot propose anything else at all —
-                        which is exactly where one stood on 9 Sept 2026. */}
-                    <p className="text-xs text-muted-foreground leading-relaxed">{OFFER.reviewWithdrawNote}</p>
+                    <div className="space-y-2" data-testid="what-happens-now">
+                      <p className="text-sm font-semibold text-foreground">{OFFER.reviewNextTitle}</p>
+                      <p className="text-sm text-foreground leading-relaxed">{OFFER.reviewCanClose}</p>
+                      <p className="text-sm text-muted-foreground leading-relaxed">{OFFER.reviewNoDeadline}</p>
+                      <p className="text-sm text-muted-foreground leading-relaxed">{OFFER.reviewNoMessage}</p>
+                      <p className="mt-2 text-sm text-muted-foreground leading-relaxed">{OFFER.reviewAfterDecision}</p>
+                      <p className="text-sm text-muted-foreground leading-relaxed">{OFFER.reviewWhere}</p>
+                    </div>
 
-                    <div className="flex flex-col-reverse sm:flex-row sm:justify-between gap-3">
-                      <Link to="/dashboard" className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-center text-muted-foreground hover:text-foreground transition-colors">
-                        Back to Dashboard
-                      </Link>
-                      <div className="flex flex-col-reverse sm:flex-row gap-3">
-                        <button
-                          onClick={declineOffer}
-                          className="rounded-xl border border-border px-6 py-3 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          {OFFER.reviewWithdraw}
-                        </button>
+                    {/* The exit is the primary button. Telling someone they may
+                        leave while the loudest control on the screen asks them
+                        to press it again is advice the page contradicts with
+                        its own buttons. */}
+                    <div className="space-y-2">
+                      <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-3">
                         <button
                           onClick={refreshDecision}
                           disabled={refreshingDecision}
-                          className="rounded-xl border border-primary/30 bg-primary/5 px-6 py-3 text-sm font-semibold text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
+                          className="rounded-xl border border-border px-6 py-3 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                         >
-                          {refreshingDecision ? 'Checking…' : 'Check again'}
+                          {refreshingDecision ? OFFER.reviewChecking : OFFER.reviewCheckNow}
                         </button>
+                        <Link
+                          to="/dashboard"
+                          className="rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-center text-white hover:bg-primary/90 shadow-lg transition-all"
+                        >
+                          {OFFER.reviewBack}
+                        </Link>
                       </div>
+                      <p className="text-xs text-muted-foreground">{OFFER.reviewAutoCheck}</p>
+                    </div>
+
+                    {/* A proposal under review parks this page on it, so without a
+                        way out the seller cannot propose anything else at all —
+                        which is exactly where one stood on 9 Sept 2026. Below a
+                        rule, and behind a confirmation, because on this screen
+                        the try-again instinct would otherwise land on it. */}
+                    <div className="border-t border-border pt-4 space-y-2">
+                      <p className="text-sm font-semibold text-foreground">{OFFER.reviewChangeTitle}</p>
+                      <p className="text-xs text-muted-foreground leading-relaxed">{OFFER.reviewChangeBody}</p>
+                      {confirmWithdraw ? (
+                        <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-3" data-testid="withdraw-confirm">
+                          <p className="text-sm font-semibold text-foreground">
+                            {fill(OFFER.reviewWithdrawConfirm, { ref: offer.offerRef })}
+                          </p>
+                          <p className="text-xs text-muted-foreground leading-relaxed">{OFFER.reviewWithdrawConfirmBody}</p>
+                          <div className="flex flex-col-reverse sm:flex-row gap-2">
+                            <button
+                              onClick={() => setConfirmWithdraw(false)}
+                              className="rounded-xl border border-border px-5 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              {OFFER.reviewWithdrawNo}
+                            </button>
+                            <button
+                              onClick={() => { setConfirmWithdraw(false); declineOffer(); }}
+                              className="rounded-xl border border-border px-5 py-2.5 text-sm font-semibold text-foreground hover:bg-accent transition-colors"
+                            >
+                              {OFFER.reviewWithdrawYes}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmWithdraw(true)}
+                          className="text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                        >
+                          {OFFER.reviewWithdraw}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ) : offer.status === 'declined' && offer.mandateCode === 'MANDATE_NOT_OPEN' ? (

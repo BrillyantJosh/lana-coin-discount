@@ -130,6 +130,28 @@ export function proposalGate(info: MandateInfo | null): ProposalGate {
 }
 
 /**
+ * The most a SINGLE proposal may carry right now, in LANA — or null when this
+ * browser has not been told.
+ *
+ * NULL IS NOT ZERO, and the difference is the whole point. A mandate that has
+ * not arrived yet, a mandate that could not be read, and a wallet with no
+ * mandate at all (the legacy path, where the server judges the proposal on
+ * receipt — MANDATE.unavailable and MANDATE.noMandateBody both say so on the
+ * same screen) are three ways of not knowing a cap. A page that read any of
+ * them as a cap of zero would offer nothing at all from a full wallet.
+ *
+ * Only a mandate that was read and has rounds in it yields a number, and that
+ * number is the lowest open round's remainder — because a proposal draws on
+ * one round (P08 §2). No open round is a real zero: nothing may be proposed
+ * today, which is exactly what `proposalGate` refuses on and what the amber
+ * line under the field already says.
+ */
+export function proposableCapLana(info: MandateInfo | null): number | null {
+  if (!info || info.mandates.length === 0) return null;
+  return proposalGate(info).openRound?.remainingLana ?? 0;
+}
+
+/**
  * How much of this wallet's LANA the treasury will actually take a proposal for
  * TODAY, and how much has to wait.
  *
@@ -200,9 +222,40 @@ interface Props {
   currency: string;
   /** The indicative box is for the amount step only. */
   showIndicative: boolean;
+  /**
+   * Fold the round-by-round detail away behind a disclosure.
+   *
+   * The panel sits ABOVE the amount field on the amount step, because you have
+   * to know the cap before you type a number. At full height with three rounds
+   * that is over a thousand pixels, which on a phone pushes the field — and even
+   * the words "How much LANA are you offering?" — two swipes below the fold. The
+   * figure that answers the question stays open; the working behind it folds.
+   */
+  compact?: boolean;
 }
 
-export function MandatePanel({ info, loading, error, lanaAmount, currency, showIndicative }: Props) {
+/**
+ * The round-by-round working: always there, not always in the way.
+ *
+ * On the wallet step it is simply shown. On the amount step the panel stands
+ * between the seller and the field they came to fill, so the detail folds and
+ * the figure that answers their question stays open. `<details>` rather than
+ * state, so it works with no JavaScript, is keyboard- and screen-reader-native,
+ * and prints open.
+ */
+function RoundDetail({ compact, count, children }: { compact: boolean; count: number; children: React.ReactNode }) {
+  if (!compact) return <div className="space-y-3">{children}</div>;
+  return (
+    <details className="rounded-xl border border-border bg-background/60" data-testid="round-detail">
+      <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground">
+        {fill(MANDATE.roundDetailToggle, { count })}
+      </summary>
+      <div className="space-y-3 p-3 pt-0">{children}</div>
+    </details>
+  );
+}
+
+export function MandatePanel({ info, loading, error, lanaAmount, currency, showIndicative, compact = false }: Props) {
   if (loading) {
     return (
       <div className="rounded-xl border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground flex items-center gap-2">
@@ -306,7 +359,7 @@ export function MandatePanel({ info, loading, error, lanaAmount, currency, showI
         </div>
       )}
 
-      <div className="space-y-3">
+      <RoundDetail compact={compact} count={mandates.length}>
         {mandates.map(m => (
           <div key={m.mandateRef} className="rounded-xl border border-border bg-background/60 p-3 space-y-2" data-testid={`mandate-round-${m.round}`}>
             <div className="flex items-center gap-2 flex-wrap">
@@ -337,7 +390,7 @@ export function MandatePanel({ info, loading, error, lanaAmount, currency, showI
             </div>
           </div>
         ))}
-      </div>
+      </RoundDetail>
 
       {canShowIndicative && indicativeRound && (
         <div className="rounded-xl border border-dashed border-border bg-muted/30 p-3 space-y-2" data-testid="indicative-box">
