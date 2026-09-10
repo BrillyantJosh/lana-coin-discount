@@ -35,6 +35,12 @@ interface RoundsResponse {
   currentSplit: number | null;
   directFundReachable: boolean;
   rounds: RoundRow[];
+  /**
+   * Not a round term — a treasury-wide switch that happens to belong on this
+   * page, because this is where the treasury's appetite is set. It is stored in
+   * app_settings, not in acquisition_rounds, and it applies to every split.
+   */
+  lanapaysOnly?: boolean;
 }
 
 /** ISO → "YYYY-MM-DDTHH:mm" in UTC, for a datetime-local input. */
@@ -71,6 +77,7 @@ const AdminTreasuryRounds = () => {
   const [opens, setOpens] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
   const [discount, setDiscount] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
   const [serverWarnings, setServerWarnings] = useState<string[]>([]);
+  const [lanapaysOnly, setLanapaysOnly] = useState(false);
 
   useEffect(() => {
     if (!authLoading && !session) navigate('/login');
@@ -98,6 +105,7 @@ const AdminTreasuryRounds = () => {
         d[r.round] = r.discountPercent === null ? '' : String(r.discountPercent);
       }
       setOpens(o); setDiscount(d);
+      setLanapaysOnly(json.lanapaysOnly === true);
       setServerWarnings([]);
     } catch (err: any) {
       toast.error(err.message || 'Failed to load round terms');
@@ -142,7 +150,7 @@ const AdminTreasuryRounds = () => {
       const res = await fetch('/api/treasury/admin/rounds', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
-        body: JSON.stringify({ split, rounds }),
+        body: JSON.stringify({ split, rounds, lanapaysOnly }),
       });
       const json = await res.json();
       if (!res.ok || json.error) {
@@ -213,6 +221,31 @@ const AdminTreasuryRounds = () => {
                   Current Split: <strong className="text-foreground">{current ?? 'unknown'}</strong>
                 </span>
               </div>
+            </div>
+
+            {/* What the treasury is acquiring from at all — not a round term.
+                It sits above the rounds because it outranks them: with this on,
+                a Main Wallet is refused no matter which round is open. */}
+            <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6">
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={lanapaysOnly}
+                  onChange={e => setLanapaysOnly(e.target.checked)}
+                  className="mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-border accent-primary"
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-foreground">{ADMIN_ROUNDS.lanapaysOnlyLabel}</span>
+                  <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                    {ADMIN_ROUNDS.lanapaysOnlyHelp}
+                  </span>
+                  {lanapaysOnly && (
+                    <span className="mt-2 block rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                      {ADMIN_ROUNDS.lanapaysOnlyOn}
+                    </span>
+                  )}
+                </span>
+              </label>
             </div>
 
             {/* Rounds */}

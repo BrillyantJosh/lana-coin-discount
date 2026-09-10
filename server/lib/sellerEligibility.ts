@@ -22,6 +22,7 @@
  * A crash inside a gate is a refusal, never an open door.
  */
 import { evaluateFreeze, registrarSignal, walletListSignal } from './freeze.js';
+import { acquiringFromClass, NOT_ACQUIRING_CODE, NOT_ACQUIRING_MESSAGE } from './acquisitionScope.js';
 import { evaluateBuybackSplit, isScopedWalletType } from './buybackSplit.js';
 import { isSellableWalletType } from './sellableWallet.js';
 import { fetchPaymentScore, fetchUserWallets } from './nostr.js';
@@ -54,6 +55,12 @@ export interface EligibilityDeps {
   trustedRegistrars: string[];
   walletCheckBaseUrl: string;
   currentSplit: string | null;
+  /**
+   * The admin switch: when true the treasury is acquiring only from LanaPays.Us
+   * wallets. Passed in rather than read here, so this module keeps taking a
+   * plain object and the tests do not need a database.
+   */
+  lanapaysOnly?: boolean;
 }
 
 /**
@@ -164,10 +171,26 @@ export async function checkSellerEligibility(
       };
     }
 
+    // Which classes the treasury is buying from AT ALL today. Checked after the
+    // type is known and before anything is priced, because it is not a fault in
+    // the wallet or the seller — the treasury has simply paused a whole class,
+    // and the words have to say that rather than imply something is wrong with
+    // them. The offer page greys the same wallets out using the same function,
+    // so the list and the gate cannot drift apart.
+    const walletClass = classifyWallet(scopedType ?? walletType);
+    if (!acquiringFromClass(walletClass, deps.lanapaysOnly === true)) {
+      console.log(`[lana-discount] Blocked (${NOT_ACQUIRING_CODE}): ${senderAddress.slice(0, 10)}… is ${walletType ?? 'untyped'} while acquiring only from LanaPays.Us`);
+      return {
+        ok: false, httpStatus: 403, code: NOT_ACQUIRING_CODE,
+        error: NOT_ACQUIRING_MESSAGE,
+        detail: { walletType, walletClass },
+      };
+    }
+
     return {
       ok: true,
       walletType,
-      walletClass: classifyWallet(scopedType ?? walletType),
+      walletClass,
       evidence: {
         checkedAt: new Date().toISOString(),
         registrarReachable: registrar.reachable,

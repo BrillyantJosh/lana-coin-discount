@@ -271,6 +271,13 @@ export const OFFER = {
   walletFrozenSellable:
     'This wallet is frozen by the OWN process. That does not stop a financing-round sale — you may propose from it.',
   walletOutOfScopeTitle: 'We are not acquiring from this wallet',
+  // A whole class of wallet paused by the treasury, not a fault in the wallet
+  // and not a sanction on the person. The words have to carry that difference,
+  // because a seller reading "cannot" beside their own Main Wallet will
+  // reasonably assume something is wrong with it or with them.
+  walletNotAcquiring: 'Not being acquired at the moment',
+  walletNotAcquiringBody:
+    'We are not acquiring LANA from this wallet at the moment. Offers are open from LanaPays.Us wallets only for now — nothing is wrong with this wallet, and this is not a freeze.',
   consolidateTitle: 'This wallet needs consolidating first',
   consolidateBody:
     'It holds more separate inputs than a single transfer can carry, so a transfer to our treasury wallet ' +
@@ -443,6 +450,14 @@ export const OFFER_ERRORS: Record<string, string> = {
 // Read by us, not by counterparties — but they say the same true thing.
 
 export const ADMIN_ROUNDS = {
+  // The treasury-wide scope switch. Worded as a decision the treasury is
+  // making, because that is what it is — the seller sees the consequence, and
+  // the admin needs to know it reaches past the rounds on this same page.
+  lanapaysOnlyLabel: 'Acquire only from LanaPays.Us wallets',
+  lanapaysOnlyHelp:
+    'While this is on, offers are accepted only from LanaPays.Us wallets. A Main Wallet or a Wallet cannot be chosen on the offer page, and an offer made from one is refused.',
+  lanapaysOnlyOn:
+    'This applies to every Split and outranks the round dates below: with it on, a wallet outside LanaPays.Us is refused even when its round is open.',
   title: 'Round dates & discounts',
   intro:
     'One date and one discount per financing round, per Split. From its date the treasury accepts proposals ' +

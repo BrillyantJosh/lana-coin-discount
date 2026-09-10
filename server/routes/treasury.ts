@@ -21,8 +21,9 @@
  * POST /api/acquisitions/offers — reads the same tables these routes write.
  */
 import { Router, type Request, type Response } from 'express';
+import { lanapaysOnlyEnabled, LANAPAYS_ONLY_KEY } from '../lib/acquisitionScope.js';
 import {
-  getDbHandle, getAppSetting, getSplitFromDb,
+  getDbHandle, getAppSetting, setAppSetting, getSplitFromDb,
   getElectrumServersFromDb, getRelaysFromDb, getExchangeRatesFromDb,
 } from '../db/index.js';
 import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
@@ -218,6 +219,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
       currentSplit,
       directFundReachable: df.reachable,
       rounds,
+      lanapaysOnly: lanapaysOnlyEnabled(getAppSetting(LANAPAYS_ONLY_KEY)),
     });
   });
 
@@ -237,11 +239,21 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         opens_at = excluded.opens_at, discount_percent = excluded.discount_percent,
         updated_by = excluded.updated_by, updated_at = datetime('now')
     `);
+    // Only written when the field is actually present. A caller that sends just
+    // the rounds — an older page, a script — must not silently switch the
+    // treasury's scope back on or off as a side effect of saving dates.
+    const scopeSent = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'lanapaysOnly');
+    const lanapaysOnly = scopeSent ? req.body.lanapaysOnly === true : null;
+
     db().transaction(() => {
       for (const r of v.rows) upsert.run(split, r.round, r.opensAt, r.discountPercent, adminHex);
+      if (lanapaysOnly !== null) setAppSetting(LANAPAYS_ONLY_KEY, lanapaysOnly ? '1' : '0');
     })();
+    if (lanapaysOnly !== null) {
+      console.log(`[lana-discount] Acquiring ${lanapaysOnly ? 'ONLY from LanaPays.Us wallets' : 'from every sellable wallet class'} — set by ${adminHex.slice(0, 12)}…`);
+    }
     console.log(`[lana-discount] Round terms for Split ${split} set by ${adminHex.slice(0, 12)}… (${v.rows.map(r => `R${r.round}:${r.opensAt ?? '-'}/${r.discountPercent ?? '-'}%`).join(' ')})`);
-    return res.json({ ok: true, split, rounds: termsRows(split), warnings: v.warnings });
+    return res.json({ ok: true, split, rounds: termsRows(split), warnings: v.warnings, lanapaysOnly: lanapaysOnlyEnabled(getAppSetting(LANAPAYS_ONLY_KEY)) });
   });
 
   // ── admin: worklist ─────────────────────────────────────────────────

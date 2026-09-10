@@ -9,6 +9,8 @@ import { evaluateFreeze, registrarSignal, walletListSignal } from '../lib/freeze
 import { evaluateBuybackSplit, isScopedWalletType } from '../lib/buybackSplit.js';
 import { isSellableWalletType } from '../lib/sellableWallet.js';
 import { freezeStopsSale } from '../lib/freeze.js';
+import { acquiringFromClass, lanapaysOnlyEnabled, LANAPAYS_ONLY_KEY } from '../lib/acquisitionScope.js';
+import { classifyWallet } from '../lib/sellerEligibility.js';
 import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from '../lib/sendLock.js';
 import { buildLiquiditySeries, type FlowRow } from '../lib/liquidity.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
@@ -254,11 +256,20 @@ router.get('/user/:hexId/wallets', async (req: Request, res: Response) => {
     // function the gate refuses by — not in the browser, where it drifted into
     // "any freeze status means untouchable" and made an OWN-process freeze look
     // like something the seller could go and undo.
+    // Whether the treasury is buying from this CLASS at all today is decided
+    // here too, by the same function the gate refuses by. The page must never
+    // work this out for itself: the last time it did, it greyed out wallets the
+    // gate would have allowed and sent those sellers to a door that did not open.
+    const lanapaysOnly = lanapaysOnlyEnabled(getAllAppSettings()[LANAPAYS_ONLY_KEY]);
     const wallets = allWallets
       .filter(w => isSellableWalletType(w.walletType))
-      .map(w => ({ ...w, freezeStops: freezeStopsSale(w.freezeStatus, w.walletType) }));
+      .map(w => ({
+        ...w,
+        freezeStops: freezeStopsSale(w.freezeStatus, w.walletType),
+        acquiring: acquiringFromClass(classifyWallet(w.walletType ?? null), lanapaysOnly),
+      }));
 
-    return res.json({ wallets });
+    return res.json({ wallets, lanapaysOnly });
   } catch (error) {
     console.error('Fetch wallets error:', error);
     return res.status(500).json({ error: 'Failed to fetch wallets' });

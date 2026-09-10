@@ -47,6 +47,12 @@ interface RegisteredWallet {
    * opinion about which freezes count. Absent (an older server) means it does.
    */
   freezeStops?: boolean;
+  /**
+   * Whether the treasury is acquiring from this wallet's CLASS at all right now.
+   * Also decided by the server, with the same function the gate refuses by.
+   * Absent (an older server) means it is — a page must not invent a pause.
+   */
+  acquiring?: boolean;
 }
 
 interface WalletBalance {
@@ -856,7 +862,11 @@ const SubmitOffer = () => {
                         // something they cannot undo, at a URL that does not
                         // exist either. The server decides;
                         // absent (an older server) still means blocked.
-                        const blocked = isFrozen && w.freezeStops !== false;
+                        const frozenBlocks = isFrozen && w.freezeStops !== false;
+                        // A whole class the treasury has paused. Absent means
+                        // acquiring, so an older server never greys anything out.
+                        const notAcquiring = w.acquiring === false;
+                        const blocked = frozenBlocks || notAcquiring;
                         return (
                           <button
                             key={w.walletId}
@@ -864,7 +874,7 @@ const SubmitOffer = () => {
                             // offered from. The server refuses it too; this
                             // only stops the walk into a dead end.
                             disabled={blocked}
-                            title={blocked ? OFFER.walletFrozen : undefined}
+                            title={notAcquiring ? OFFER.walletNotAcquiringBody : frozenBlocks ? OFFER.walletFrozen : undefined}
                             onClick={() => { if (!blocked) setSelectedWallet(w.walletId); }}
                             className={`w-full rounded-xl border-2 px-4 sm:px-5 py-4 text-left transition-all ${
                               selectedWallet === w.walletId
@@ -883,22 +893,32 @@ const SubmitOffer = () => {
                                   <span className="font-mono text-sm font-medium text-foreground truncate">
                                     {w.walletId.slice(0, 10)}...{w.walletId.slice(-6)}
                                   </span>
+                                  {notAcquiring && (
+                                    <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                                      {OFFER.walletNotAcquiring}
+                                    </span>
+                                  )}
                                   {isFrozen && (
                                     <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                                      blocked
+                                      frozenBlocks
                                         ? 'bg-blue-100 text-blue-700'
                                         : 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
                                     }`}>
-                                      {blocked ? 'Frozen' : 'Frozen · can sell'}
+                                      {frozenBlocks ? 'Frozen' : 'Frozen · can sell'}
                                     </span>
                                   )}
                                 </div>
-                                {isFrozen && blocked && (
+                                {notAcquiring && (
+                                  <p className="text-xs text-muted-foreground mb-1">
+                                    {OFFER.walletNotAcquiringBody}
+                                  </p>
+                                )}
+                                {isFrozen && frozenBlocks && !notAcquiring && (
                                   <p className="text-xs text-blue-700 mb-1">
                                     {OFFER.walletFrozen}
                                   </p>
                                 )}
-                                {isFrozen && !blocked && (
+                                {isFrozen && !frozenBlocks && !notAcquiring && (
                                   <p className="text-xs text-green-700 dark:text-green-400 mb-1">
                                     {OFFER.walletFrozenSellable}
                                   </p>

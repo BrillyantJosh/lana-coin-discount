@@ -57,6 +57,7 @@ import { fetchUserWallets as realFetchUserWallets } from '../lib/nostr.js';
 import { fetchBatchBalances as realFetchBatchBalances, type WalletBalance } from '../lib/electrum.js';
 import { verifyBacking, isBacked } from '../lib/acquisitionBacking.js';
 import { requireAdmin } from '../lib/adminAuth.js';
+import { lanapaysOnlyEnabled, LANAPAYS_ONLY_KEY } from '../lib/acquisitionScope.js';
 import { verifyRequestSignature, type ReplayCache } from '../lib/requestSignature.js';
 import {
   evaluateRoundMandate, roundState, remainingOf,
@@ -262,6 +263,9 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
     trustedRegistrars: getTrustedSignersFromDb().LanaRegistrar || [],
     walletCheckBaseUrl: deps.walletCheckBaseUrl,
     currentSplit: getSplitFromDb(),
+    // Read on every call, not captured once at start-up: an admin turning the
+    // switch has to take effect on the next offer, not the next deploy.
+    lanapaysOnly: lanapaysOnlyEnabled(getAllAppSettings()[LANAPAYS_ONLY_KEY]),
   });
 
   // ── 1. Submit an offer ──────────────────────────────────────────────
