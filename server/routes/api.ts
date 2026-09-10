@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { fundPeerHeaders } from '../lib/fundPeer.js';
 import { createHash, randomBytes } from 'crypto';
 import db, { getRelaysFromDb, getTrustedSignersFromDb, getElectrumServersFromDb, isAdminUser, getAllAdmins, getAllAppSettings, setAppSetting, getAppSetting, getExchangeRatesFromDb, getSplitFromDb, getSplitApproachingFromDb, getFreezeLanaRetailAccountAboveFromDb, insertBuybackTransaction, getBuybackStats, getRecentBuybackTransactions, getPaginatedBuybackTransactions, getUserSalesWithPayouts, getAdminPayoutStats, getAllSalesWithPayouts, generatePayoutId, insertSalePayout, insertApiKey, getApiKeyByHash, getAllApiKeys, updateApiKeyLastUsed, toggleApiKeyActive, deleteApiKey, insertExternalTransaction, verifyTransaction, rejectTransaction, txHashExists } from '../db/index.js';
 import { sendLanaTransaction } from '../lib/transaction.js';
@@ -1728,7 +1729,12 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
       try {
         const controller = new AbortController();
         const fetchTimer = setTimeout(() => controller.abort(), 15000);
-        const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/fiat-orders`, { signal: controller.signal });
+        // A credential of this server's own. Direct.Fund's order ledger was
+        // open to the whole internet until 10.9.2026; it is guarded now, and
+        // the guard admits a keyed machine as well as a person. Unset, this
+        // falls back to the stale cache below, exactly as a timeout does —
+        // selling is never on this path.
+        const resp = await fetch(`${DIRECT_FUND_URL}/api/admin/fiat-orders`, { headers: fundPeerHeaders(), signal: controller.signal });
         clearTimeout(fetchTimer);
         if (!resp.ok) throw new Error(`Direct Fund API error: ${resp.status}`);
         data = await resp.json();

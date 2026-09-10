@@ -10,6 +10,10 @@ services:
     environment:
       - VIRTUAL_HOST=www.lana.discount,lana.discount
       - VIRTUAL_PORT=3000
+      # This server's own key for direct.lana.fund's guarded admin reads.
+      # Must equal PEER_API_KEY in lana-direct-fund's .env. Unset only costs
+      # the admin Incoming Payments page its live Direct.Fund column.
+      - FUND_PEER_KEY=${FUND_PEER_KEY:-}
       - LETSENCRYPT_HOST=www.lana.discount,lana.discount
       - LETSENCRYPT_EMAIL=josh@lanaworld.app
     extra_hosts:
