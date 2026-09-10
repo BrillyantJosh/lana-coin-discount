@@ -45,10 +45,12 @@ export interface MandateSettings {
   /** Do we acquire this class of asset at all? */
   classEnabled: boolean;
   /**
-   * How large an acquisition we take without a person looking:
+   * How much of our own money we commit without a person looking, in the
+   * settlement currency. It is the PURCHASE PRICE — the figure the seller is
+   * quoted and the treasury later pays — not the reference gross behind it:
    *   null → no ceiling, accept any size
    *   0    → never automatic; every offer goes to a human
-   *   > 0  → automatic up to and including this fiat value, above it a human
+   *   > 0  → automatic up to and including this purchase price, above it a human
    */
   autoCap: number | null;
   /** Days from acceptance by which we owe the purchase price (§7). */
@@ -147,14 +149,36 @@ export function readMandateSettings(
 /**
  * The decision itself.
  *
- * `fiatValue` is what the acquisition would be worth at the reference market
- * price — the figure the ceiling is expressed in, so an admin sets "500 EUR"
- * rather than a LANA quantity that means something different every week.
+ * `purchasePriceFiat` is the money that would leave the treasury: the
+ * reference value AFTER the discount that applies to this offer — the round's
+ * discount on the mandate path, the class discount otherwise — and, on a
+ * counteroffer, the price of the amount we would actually take rather than of
+ * the amount that was asked for. It is a fiat figure for the same reason it
+ * always was: an admin sets "700 EUR" rather than a LANA quantity that means
+ * something different every week.
+ *
+ * IT USED TO BE THE REFERENCE GROSS, the market value before the discount, and
+ * that was documented here as deliberate. It is deliberate no longer, because
+ * the gross is the one number nobody is shown. The admin types into a field
+ * labelled "Automatic up to (EUR)" under a sentence reading "Anything larger
+ * goes to a person to decide"; the seller is quoted a Purchase Price. Weighing
+ * a third, invisible figure against that field made all three disagree on one
+ * screen: OFF-2026-059 was priced at EUR 645.40 under a ceiling of EUR 700 and
+ * still went to a person, because its gross was EUR 827.44. The owner asked
+ * why twice. The settings screen's own sentence is the specification, so the
+ * ceiling is now the cheque.
+ *
+ * The consequence is intended, not incidental: at a discount of d, offers up
+ * to cap / (1 − d) of market value are now automatic where cap used to be the
+ * whole of it — roughly 28 % more market value at a 22 % round discount, 43 %
+ * more at the 30 % class discount. An owner who wants the old tightness types
+ * a smaller number, and now the number they type is the one they are risking.
  */
 export function decideAcquisition(input: {
   walletClass: WalletClass;
   currency: string;
-  fiatValue: number;
+  /** What we would pay, after the discount. Never the pre-discount gross. */
+  purchasePriceFiat: number;
   settings: MandateSettings;
 }): MandateVerdict {
   const { settings } = input;
@@ -177,11 +201,14 @@ export function decideAcquisition(input: {
     };
   }
 
-  // We cannot weigh what we cannot measure, so a person does.
-  if (!Number.isFinite(input.fiatValue) || input.fiatValue <= 0) {
+  // We cannot weigh what we cannot measure, so a person does. A price that is
+  // not a positive number — no reference rate, an amount that rounds away to
+  // nothing, a discount of 100 % — is not a cheque anyone should sign without
+  // looking, whatever the ceiling says.
+  if (!Number.isFinite(input.purchasePriceFiat) || input.purchasePriceFiat <= 0) {
     return {
       ...base, outcome: 'review', code: 'UNMEASURABLE',
-      reason: 'This proposal is under treasury review.',
+      reason: 'This proposal is under financial review.',
     };
   }
 
@@ -194,10 +221,10 @@ export function decideAcquisition(input: {
   if (settings.autoCap === 0) {
     return {
       ...base, outcome: 'review', code: 'MANUAL_ONLY',
-      reason: 'This proposal is under treasury review.',
+      reason: 'This proposal is under financial review.',
     };
   }
-  if (input.fiatValue <= settings.autoCap) {
+  if (input.purchasePriceFiat <= settings.autoCap) {
     return {
       ...base, outcome: 'accept', code: 'WITHIN_MANDATE',
       reason: '',
@@ -205,7 +232,7 @@ export function decideAcquisition(input: {
   }
   return {
     ...base, outcome: 'review', code: 'ABOVE_AUTO_CAP',
-    reason: 'This proposal is above the current acquisition threshold and is under treasury review.',
+    reason: 'This proposal is above the current acquisition threshold and is under financial review.',
   };
 }
 
@@ -213,7 +240,9 @@ export function decideAcquisition(input: {
  * Defaults written once, on migration, so an existing seller is not stopped by
  * a setting nobody has chosen yet: LanaPays.Us open and uncapped (the owner's
  * instruction, and the class whose provenance we can actually establish),
- * everything else open but capped so it reaches a person.
+ * everything else open but capped so it reaches a person. The 500 is 500 EUR
+ * of our own money — the purchase price we would pay — not 500 EUR of market
+ * value; see decideAcquisition for why those are not the same number.
  */
 export const DEFAULT_AUTO_CAP_OTHER = 500;
 

@@ -28,6 +28,12 @@ const CURRENCY_LABELS: Record<string, string> = {
  * including its cautious reading of a typo as 0 — because the gap between
  * empty and zero is where this screen can do real damage: empty removes the
  * ceiling, zero removes the automation, and they look almost the same.
+ *
+ * The figure is the PURCHASE PRICE — the money that leaves our account after
+ * the round discount — not the market value of the LANA being offered. The two
+ * used to be confused here, and the screen said one while the mandate weighed
+ * the other; `decideAcquisition` compares `purchasePriceFiat`, so this sentence
+ * names that and nothing else.
  */
 function capMeaning(raw: string, currency: string): { text: string; tone: string } {
   const trimmed = raw.trim();
@@ -51,7 +57,7 @@ function capMeaning(raw: string, currency: string): { text: string; tone: string
     };
   }
   return {
-    text: `Automatic up to ${n} ${currency}. Anything larger goes to a person to decide.`,
+    text: `Automatic up to ${n} ${currency} of purchase price — what we actually pay, after the discount. Anything larger goes to a person to decide.`,
     tone: 'text-muted-foreground',
   };
 }
@@ -467,7 +473,9 @@ const AdminSettings = () => {
               <h2 className="text-lg font-semibold text-foreground mb-1">Treasury Mandate</h2>
               <p className="text-sm text-muted-foreground mb-4">
                 What Lana.discount acquires, per currency and per wallet class, and how large an acquisition
-                is priced automatically. Anything above the ceiling waits for a person on the Offers screen.
+                is priced automatically. The ceiling weighs the purchase price — what we pay after the discount —
+                so a larger amount of LANA than the ceiling names can still be automatic. Anything above the
+                ceiling waits for a person on the Offers screen.
               </p>
 
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 mb-5">

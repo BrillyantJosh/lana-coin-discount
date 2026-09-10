@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import { knownNames, resolveNames } from '@/lib/counterpartyNames';
 import AdminNav, { OFFERS_COUNT_EVENT } from '@/components/AdminNav';
+import { UI } from '@/copy';
 import { CLASS_LABELS, type WalletClass } from '../../server/lib/treasuryMandate';
 
 /**
@@ -67,7 +68,7 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
 const WHY_HERE: Record<string, { label: string; detail: string }> = {
   ABOVE_AUTO_CAP: {
     label: 'Above the automatic ceiling',
-    detail: 'Larger than the auto-cap set for this currency and wallet class, so the mandate would not take it on its own.',
+    detail: 'The purchase price — what we pay after the discount, not the market value of the LANA — is larger than the auto-cap set for this currency and wallet class, so the mandate would not take it on its own.',
   },
   MANUAL_ONLY: {
     label: 'Manual only',
@@ -75,7 +76,7 @@ const WHY_HERE: Record<string, { label: string; detail: string }> = {
   },
   UNMEASURABLE: {
     label: 'No reference value',
-    detail: 'We could not put a fiat value on this offer, so there was nothing to weigh against the ceiling.',
+    detail: 'The purchase price did not come out as a positive number — no reference rate, an amount that rounds away to nothing, or a discount of 100 % — so there was nothing to weigh against the ceiling.',
   },
   NO_MANDATE: {
     label: 'No financing-round mandate',
@@ -272,7 +273,7 @@ const AdminOffers = () => {
                     <span className="font-mono text-sm font-bold text-foreground flex-shrink-0">{offer.offerRef}</span>
                     <span className="text-xs text-muted-foreground flex-shrink-0">{formatDate(offer.createdAt)}</span>
                     <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 flex-shrink-0">
-                      Under Treasury Review
+                      {UI.reviewState}
                     </span>
                     {offer.round ? (
                       <span
@@ -564,7 +565,7 @@ const AdminOffers = () => {
                 <span className="font-bold text-amber-800">
                   {offers.length} offer{offers.length !== 1 ? 's' : ''}
                 </span>
-                <span className="text-amber-700"> under treasury review — oldest first</span>
+                <span className="text-amber-700"> under review — oldest first</span>
               </div>
               <button
                 onClick={fetchQueue}

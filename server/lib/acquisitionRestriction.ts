@@ -30,8 +30,11 @@ export const RESTRICTED_CODE = 'RESTRICTED';
 export function restrictionReason(reason: string): string {
   const r = (reason || '').trim();
   return r
-    ? `This proposal is under treasury review: ${r}`
-    : 'This proposal is under treasury review; the treasury reviews every proposal from this counterparty by hand.';
+    ? `This proposal is under financial review: ${r}`
+    // "a person at Lana.discount" is the phrasing OFFER.reviewBody already uses.
+    // The sentence a restricted seller reads sits one line under the badge, so
+    // the two must say the same thing in the same words.
+    : 'This proposal is under financial review; a person at Lana.discount looks at every proposal from this counterparty by hand.';
 }
 
 /** The active restriction on a counterparty, or null. Lifted ones are kept, not deleted. */

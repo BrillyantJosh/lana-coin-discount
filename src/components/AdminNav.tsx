@@ -22,6 +22,7 @@ const sections = [
     items: [
       { to: '/admin', label: 'Dashboard', desc: 'Stats & recent transactions' },
       { to: OFFERS_PATH, label: 'Offers', desc: 'Acquisitions awaiting a decision' },
+      { to: '/admin/accepted-offers', label: 'Accepted Offers', desc: 'Agreed, unpaid, and both clocks on each' },
       { to: '/admin/verify-tx', label: 'Verify TX', desc: 'Pending verifications' },
       { to: '/admin/payouts', label: 'Payouts', desc: 'Record & manage payouts' },
     ],

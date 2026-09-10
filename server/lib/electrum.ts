@@ -7,9 +7,27 @@ export interface ElectrumServer {
 
 export interface WalletBalance {
   wallet_id: string;
+  /**
+   * LANA, ROUNDED TO TWO DECIMALS — a display figure, and only that.
+   *
+   * Rounding to 0.01 LANA is rounding to 1,000,000 lanoshis, which is roughly
+   * six network fees. Any decision made on this number is a decision made half
+   * a million lanoshis either side of the truth, and on 10 Sept 2026 exactly
+   * that turned a workable transfer into a permanent refusal. Money decisions
+   * take `balanceLanoshis` below, which is what the chain actually said.
+   */
   balance: number;
   confirmedBalance?: number;
   unconfirmedBalance?: number;
+  /**
+   * EXACTLY what the chain said, in lanoshis, unrounded: confirmed +
+   * unconfirmed. Absent only when the server's answer was not two finite
+   * numbers — in which case there is no exact figure and the caller must
+   * treat the rounded one as the display figure it is.
+   */
+  balanceLanoshis?: number;
+  confirmedLanoshis?: number;
+  unconfirmedLanoshis?: number;
   status: string;
   error?: string;
 }
@@ -178,16 +196,28 @@ async function fetchBatchFromServer(
           const balances: WalletBalance[] = addresses.map((address, i) => {
             const resp = responses.get(i + 1);
             if (resp && resp.result) {
-              const confirmed = resp.result.confirmed || 0;
-              const unconfirmed = resp.result.unconfirmed || 0;
+              const confirmed = Number(resp.result.confirmed || 0);
+              const unconfirmed = Number(resp.result.unconfirmed || 0);
               const confirmedLana = confirmed / LANOSHI_DIVISOR;
               const unconfirmedLana = unconfirmed / LANOSHI_DIVISOR;
               const totalLana = confirmedLana + unconfirmedLana;
+              // The exact figure is carried alongside the rounded one, never
+              // instead of it: every display in this app reads `balance`, and
+              // every money decision reads `balanceLanoshis`. Omitted rather
+              // than guessed when the server's answer is not two real numbers.
+              const exact = Number.isFinite(confirmed) && Number.isFinite(unconfirmed)
+                ? {
+                    balanceLanoshis: Math.round(confirmed + unconfirmed),
+                    confirmedLanoshis: Math.round(confirmed),
+                    unconfirmedLanoshis: Math.round(unconfirmed),
+                  }
+                : {};
               return {
                 wallet_id: address,
                 balance: Math.round(totalLana * 100) / 100,
                 confirmedBalance: Math.round(confirmedLana * 100) / 100,
                 unconfirmedBalance: Math.round(unconfirmedLana * 100) / 100,
+                ...exact,
                 status: totalLana > 0 ? 'active' : 'inactive',
               };
             } else {

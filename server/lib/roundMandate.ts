@@ -170,7 +170,7 @@ function decideByMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict 
   if (mine.length === 0) {
     return {
       outcome: 'review', code: 'NO_MANDATE',
-      reason: 'No published financing-round mandate names this wallet, so this proposal is under treasury review.',
+      reason: 'No published financing-round mandate names this wallet, so this proposal is under financial review.',
     };
   }
 

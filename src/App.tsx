@@ -21,6 +21,7 @@ import AdminMandates from "./pages/AdminMandates";
 import AdminTreasuryRounds from "./pages/AdminTreasuryRounds";
 import SubmitOffer from "./pages/SubmitOffer";
 import AdminOffers from "./pages/AdminOffers";
+import AdminAcceptedOffers from "./pages/AdminAcceptedOffers";
 import ApiDocs from "./pages/ApiDocs";
 import Obligations from "./pages/Obligations";
 import PayoutHistory from "./pages/PayoutHistory";
@@ -49,6 +50,7 @@ const App = () => (
             <Route path="/docs/api" element={<ApiDocs />} />
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/admin/offers" element={<AdminOffers />} />
+            <Route path="/admin/accepted-offers" element={<AdminAcceptedOffers />} />
             <Route path="/admin/verify-tx" element={<AdminVerifyTx />} />
             <Route path="/admin/payouts" element={<AdminPayouts />} />
             <Route path="/admin/mandates" element={<AdminMandates />} />

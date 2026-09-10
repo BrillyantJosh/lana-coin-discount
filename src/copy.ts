@@ -72,7 +72,26 @@ export const UI = {
   intro: 'Lana.discount periodically acquires selected LANA for its proprietary treasury using its own capital.',
   primaryAction: 'Submit an Offer',
   quantityField: 'LANA offered for sale',
-  reviewState: 'Under Treasury Review',
+  /**
+   * THE REVIEW STATE NAMES NO INSTITUTION.
+   *
+   * It read "Under Treasury Review" until 10 Sep 2026. In Slovenian, treasury
+   * is *ministrstvo za finance* — the Ministry of Finance — so a seller here
+   * read that a government department was sitting in judgement on his sale.
+   * It is not: the reviewer is a person at this company, spending this
+   * company's own money. The owner asked for it in his own words, "napiši da
+   * je na finančnem pregledu", and this is that sentence.
+   *
+   * The change is deliberately narrow, and stops here. The framework title
+   * *Proprietary Treasury Acquisition Framework* (BEF-P08), `Treasury Wallet`
+   * and the page title `Treasury Acquisitions` are unchanged: they name a
+   * published document and our own property, they are cited across the fleet,
+   * and renaming them here alone would put this app out of step with the
+   * framework it quotes. What was wrong was never the word treasury — it was
+   * the word treasury standing over a REVIEW, where it reads as a public body
+   * reviewing a private person.
+   */
+  reviewState: 'Under Financial Review',
   purchaseOffer: 'Lana.discount Purchase Offer',
   transfer: 'Transfer to Lana.discount Treasury Wallet',
   settlement: 'Purchase Price Settlement',
@@ -214,15 +233,73 @@ export const OFFER = {
   offeredAccept: 'Accept this purchase offer',
   offeredDecline: 'Not now',
 
+  // ── accepting changes which clock is running ────────────────────────────
+  //
+  // 10 Sep 2026, in the owner's own words: it said eight days, and the moment
+  // he accepted it said nineteen hours. Both numbers were true and neither was
+  // a bug. A purchase offer a person made stands MANUAL_OFFER_VALIDITY_DAYS —
+  // eight days — and accepting ends that window and starts a different one:
+  // the transfer has ACCEPTED_TRANSFER_WINDOW_HOURS, and expireStaleOffers
+  // voids the row when it runs out. The screens were each correct about their
+  // own clock and nothing anywhere said the clock had been swapped, so the
+  // only way to learn it was to accept and watch the number collapse.
+  //
+  // These say it twice, in the two places it can be acted on: BEFORE, where he
+  // still has the choice of accepting later, and AFTER, where the number he
+  // remembers no longer matches the one on screen. The point of the first is
+  // not to hurry him — it is the opposite. The short clock starts when HE
+  // starts it, and knowing that is what lets him accept on the morning he can
+  // actually reach his private key.
+  //
+  // The figure is written out rather than interpolated, and src/copy.test.ts
+  // reads ACCEPTED_TRANSFER_WINDOW_HOURS out of the server and fails if these
+  // sentences and the sweeper stop agreeing.
+  acceptStartsTitle: 'What accepting starts',
+  acceptStartsBody:
+    'Accepting is not the last step: the LANA still has to be transferred out of your wallet, and from the ' +
+    'moment you accept there are 24 hours to do it. That is a shorter clock than the one above. If the ' +
+    'transfer has not happened by then the offer is voided, and nothing is transferred either way.',
+  // The sentence that would have saved him: he chooses when the short clock
+  // starts, so there is no reason to accept before he can transfer.
+  acceptStartsWhen:
+    'Those 24 hours start when you accept, not now. This purchase offer stands until {until}, so you may ' +
+    'accept when you are ready to make the transfer.',
+  // WHERE THE OFFER WINDOW IS ALREADY THE SHORTER OF THE TWO, and there is no
+  // second clock to warn about. Two rows land here. A legacy offer carries no
+  // mandate, so expireStaleOffers never sweeps it and the offer window is the
+  // whole story. And an offer the machine made stands OFFER_VALIDITY_MINUTES —
+  // thirty minutes — so the 24-hour sweep is never what closes it either.
+  // Saying "24 hours" over either would be announcing a deadline that is not
+  // the one about to arrive, which is worse than saying nothing.
+  acceptStartsBodyWindow:
+    'Accepting is not the last step: the LANA still has to be transferred out of your wallet, and that has to ' +
+    'happen before this purchase offer runs out at {until}. After that the offer is voided and nothing is ' +
+    'transferred either way.',
+
+  // Said only where the deadline actually moved — the server hands over both
+  // moments, so the page compares them rather than assuming a change.
+  windowChangedTitle: 'The clock has changed',
+  windowChangedBody:
+    'Until you accepted, this purchase offer stood until {was}. Accepting closed that window and opened the ' +
+    'transfer window: the LANA has to reach our treasury wallet by {now}. If it does not, the offer is voided ' +
+    'and nothing is transferred.',
+  // The same fact on the dashboard card, in one line, for someone who left the
+  // page and came back to a number smaller than the one he remembers.
+  windowChangedShort:
+    'This is the transfer window, not the offer window — accepting started it. The offer itself stood ' +
+    'until {was}.',
+
   // ── the moment a proposal lands on a person's desk ──────────────────────
   //
-  // A seller submitted 3,251.48 LANA, landed on a card headed "Under Treasury
-  // Review" with a spinning ring, and several minutes later still did not know
+  // A seller submitted 3,251.48 LANA, landed on a card headed with the review
+  // state and a spinning ring, and several minutes later still did not know
   // whether the thing had happened — whether he could close the window, or had
-  // to sit there. He is right, and the grammar is the reason. "Under Treasury
-  // Review" is a STATE: a present-tense condition with no end, standing in the
-  // place where the EVENT belonged. A state name is a status label. It was
-  // never an acknowledgement, and he never got one.
+  // to sit there. He is right, and the grammar is the reason. "Under … Review"
+  // is a STATE: a present-tense condition with no end, standing in the place
+  // where the EVENT belonged. A state name is a status label. It was never an
+  // acknowledgement, and he never got one. (The state read "Under Treasury
+  // Review" then; it is UI.reviewState now, and says nothing about which word
+  // is in it.)
   //
   // So the heading is the event, in the past tense — his own words for it —
   // and it is still true on a return visit three days later, which "Submitted
@@ -232,11 +309,20 @@ export const OFFER = {
   // what brings me back — are then answered in that order, in sentences,
   // rather than implied by a moving circle.
   reviewTitle: 'Your offer has been submitted',
-  /** The §8 review-state element name, kept as the STATUS it always was. */
+  /**
+   * The §8 review-state element name, kept as the STATUS it always was — and
+   * read from UI.reviewState rather than written out again, so the seller's
+   * screen, the dashboard badge and this card can never say three things.
+   */
   reviewStateLabel: UI.reviewState,
+  // Who is deciding. It used to read "A person at the treasury decides this
+  // one", and to a Slovenian reader *treasury* is the Ministry of Finance —
+  // so the one sentence meant to say "a human, not a machine" instead said "a
+  // government department". The company is named instead: it is who actually
+  // decides, it is who the money belongs to, and it is nobody's ministry.
   reviewBody:
-    'A person at the treasury decides this one. We will make a purchase offer, decline, or come back with a ' +
-    'counteroffer. Nothing has been transferred and nothing is owed either way.',
+    'A person at Lana.discount decides this one — not an automatic rule. We will make a purchase offer, ' +
+    'decline, or come back with a counteroffer. Nothing has been transferred and nothing is owed either way.',
   // Shown only when the server sent a reason with the row. The browser never
   // writes a sentence of its own about why a person is looking at this.
   reviewWhyLabel: 'Why a person is looking at this',
@@ -829,4 +915,14 @@ export const FORBIDDEN_PUBLIC_TERMS = [
   'buyback',
   'buy-back',
   'investor',
+  // The state a proposal sits in while a person decides it. In Slovenian
+  // *treasury* is `ministrstvo za finance` — the Ministry of Finance — so this
+  // phrase, over a review, told a seller that a government department was
+  // judging his sale. The ban is exactly this phrase and no wider on purpose:
+  // the framework title, `Treasury Wallet` and the page title `Treasury
+  // Acquisitions` all still say treasury and all still should, and /docs/api
+  // legitimately says a partner's report is recorded "for treasury review".
+  // What must never come back is the word standing over the REVIEW STATE. See
+  // UI.reviewState.
+  'under treasury review',
 ] as const;

@@ -268,7 +268,9 @@ describe('proposal under a mandate', () => {
   });
 
   it('the auto cap still rules: above it (ABOVE_AUTO_CAP) → under review; a counter above it keeps what was asked', async () => {
-    setSetting(db, 'acq_EUR_lanapays_auto_cap', '100'); // 600 × 0.256 = 153.60 > 100
+    // 600 LANA → 153.60 gross, 119.81 to pay: over the ceiling on the figure
+    // that now counts, the purchase price, and not only on the gross.
+    setSetting(db, 'acq_EUR_lanapays_auto_cap', '100');
     const r = await propose(600);
     expect(r.body.offer.status).toBe('under_review');
     expect(r.body.offer.mandateCode).toBe('ABOVE_AUTO_CAP');
@@ -875,5 +877,86 @@ describe('the seller reads their own live offer', () => {
     expect(o.decisionReason).toBeTruthy();
     const seen = (await mine()).find(x => x.offerRef === o.offerRef);
     expect(seen.decisionReason).toBe(row(o.offerRef).decision_reason);
+  });
+});
+
+/**
+ * THE CEILING IS THE PRICE THE TREASURY PAYS.
+ *
+ * OFF-2026-059 as it actually happened: 3,232.188 LANA at 0.256 EUR, a 22 %
+ * round discount, "Automatic up to (EUR) 700" on the settings screen — and a
+ * chip reading ABOVE THE AUTOMATIC CEILING over a quoted price of EUR 645.40.
+ * The ceiling was being weighed against the EUR 827.44 gross, which is the one
+ * figure the screen never shows anybody.
+ *
+ * These run the real router, because the arithmetic being right in
+ * treasuryMandate.test.ts was never the thing in doubt: what was in doubt was
+ * which of two numbers the route hands it.
+ */
+describe('the automatic ceiling is weighed against the purchase price', () => {
+  /** Room for the real OFF-2026-059 size; the shipped fixture holds only 1000 LANA. */
+  const bigMandate = () =>
+    announce(1, [{ address: W1, currency: 'EUR', lana: '5000', fundSettingId: '52' }], 1_757_000_100);
+
+  it('OFF-2026-059: EUR 645.40 under a EUR 700 ceiling is offered, with no person involved', async () => {
+    bigMandate();
+    setSetting(db, 'acq_EUR_lanapays_auto_cap', '700');
+
+    const r = await propose(3232.188);
+    expect(r.status).toBe(200);
+    const o = r.body.offer;
+    expect(o.status).toBe('offered');
+    expect(o.mandateCode).toBe('WITHIN_MANDATE');
+    expect(o.purchasePrice).toBe(645.40);
+
+    const stored = row(o.offerRef);
+    expect(stored.gross_fiat).toBe(827.44);      // the number that used to be judged…
+    expect(stored.purchase_price_fiat).toBe(645.40); // …and the one that is judged now
+    expect(stored.discount_percent).toBe(22);
+  });
+
+  it('the same offer under a EUR 645 ceiling still goes to a person — the cap did not stop biting', async () => {
+    bigMandate();
+    setSetting(db, 'acq_EUR_lanapays_auto_cap', '645');   // one cent under the price
+    const o = (await propose(3232.188)).body.offer;
+    expect(o.status).toBe('under_review');
+    expect(o.mandateCode).toBe('ABOVE_AUTO_CAP');
+    expect(o.purchasePrice).toBeNull();
+  });
+
+  it('a counteroffer is weighed on the cheque for what we take, not on what was asked for', async () => {
+    // The mandate holds 1000 LANA, so 3000 comes back countered to 1000:
+    // 256.00 gross, 199.68 to pay. A ceiling of 210 admits the cheque we would
+    // actually write, and would have refused the gross.
+    setSetting(db, 'acq_EUR_lanapays_auto_cap', '210');
+    const o = (await propose(3000)).body.offer;
+    expect(o.isCounteroffer).toBe(true);
+    expect(o.lanaAmount).toBe(1000);
+    expect(o.proposedLanaAmount).toBe(3000);
+    expect(o.status).toBe('offered');
+    expect(o.purchasePrice).toBe(199.68);
+  });
+
+  it('the legacy class path reads the same way: EUR 448 under the shipped EUR 500 ceiling', async () => {
+    // 2500 LANA → 640.00 gross, 30 % class discount → 448.00 to pay. Before
+    // this change the 640.00 went to a person under the default cap of 500.
+    setSetting(db, 'acq_EUR_other_enabled', 'true');
+    setSetting(db, 'acq_EUR_other_auto_cap', '500');
+    setSetting(db, 'commission_other', '30');
+    (world as any).walletClass = 'other';
+    try {
+      const o = (await propose(2500, { headers: null })).body.offer;
+      expect(o.status).toBe('offered');
+      expect(o.mandateCode).toBe('WITHIN_MANDATE');
+      expect(o.purchasePrice).toBe(448);
+      expect(row(o.offerRef).gross_fiat).toBe(640);
+
+      // …and the new outer edge, one step past cap / (1 - 0.30):
+      const over = (await propose(2800, { headers: null })).body.offer;
+      expect(over.status).toBe('under_review');           // 716.80 gross → 501.76 to pay
+      expect(over.mandateCode).toBe('ABOVE_AUTO_CAP');
+    } finally {
+      (world as any).walletClass = 'lanapays';
+    }
   });
 });

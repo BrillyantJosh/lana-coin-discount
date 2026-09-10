@@ -48,7 +48,7 @@ import {
   markDeclined, markAccepted, markSettled, markWithdrawn, listOffersForReview,
   listOffersForUser, assertTransferable, consumedByMandate, markExpiredWithReason,
   offerTotalsByMandate, markVoidedByAdmin, OFFER_VALIDITY_MINUTES, MANUAL_OFFER_VALIDITY_DAYS,
-  sellerDecisionReason, sellerActionDeadline,
+  sellerDecisionReason, sellerActionDeadline, ACCEPTED_TRANSFER_WINDOW_HOURS,
   type OfferRow,
 } from '../lib/acquisitionOffer.js';
 import { activeRestriction, restrictionReason, RESTRICTED_CODE } from '../lib/acquisitionRestriction.js';
@@ -84,10 +84,15 @@ export const TERMS_VERSION = '2026-08-18.v1';
 export const OFFERS_SIGNED_PATH = '/api/acquisitions/offers';
 
 /**
+ * How wrong a balance READ FROM THE 2dp DISPLAY FIGURE can be.
+ *
  * fetchBatchBalances answers in LANA rounded to two decimals, i.e. to the
- * nearest 1,000,000 lanoshis. The dust we tolerate above a mandate-bound
- * emptying transfer must therefore include half of that step, or an honest
- * "empty the wallet" would be refused for a rounding artefact.
+ * nearest 1,000,000 lanoshis, so a figure reconstructed from it is accurate to
+ * half of that either way. Since 10 Sept 2026 the exact chain integer is
+ * carried alongside (WalletBalance.balanceLanoshis) and this slack is added
+ * ONLY when it is missing — see BalanceReading.exact. A rounded figure that is
+ * treated as exact refuses honest transfers for a rounding artefact; an exact
+ * figure padded with this slack lets 0.005 LANA past a mandate for nothing.
  */
 export const BALANCE_ROUNDING_LANOSHIS = 500_000;
 
@@ -142,13 +147,39 @@ const isMandateBound = (o: OfferRow): boolean => o.mandate_ref !== null && o.man
  * of these used to read as "balance 0" and let an emptying transfer through;
  * the guard is only worth having if an unreadable balance is a refusal.
  */
-export function verifiedBalanceLanoshis(balances: WalletBalance[] | null | undefined, wallet: string): number | null {
+export interface BalanceReading {
+  lanoshis: number;
+  /**
+   * True when this came from the chain's own integer, false when it was
+   * reconstructed from the 2dp display figure and is therefore only accurate
+   * to half a rounding step (BALANCE_ROUNDING_LANOSHIS). Anything that gates
+   * money — a sweep ceiling, a repeat-refusal fingerprint — must widen its
+   * tolerance or decline to decide when this is false.
+   */
+  exact: boolean;
+}
+
+export function verifiedBalanceReading(
+  balances: WalletBalance[] | null | undefined,
+  wallet: string,
+): BalanceReading | null {
   if (!Array.isArray(balances)) return null;
   const entry = balances.find(b => b && sameAddress(String(b.wallet_id || ''), wallet));
   if (!entry) return null;
   if (entry.error) return null;
+  // The exact integer the chain gave, when the server carried it through.
+  const exact = (entry as WalletBalance).balanceLanoshis;
+  if (typeof exact === 'number' && Number.isFinite(exact)) {
+    return { lanoshis: Math.round(exact), exact: true };
+  }
   if (typeof entry.balance !== 'number' || !Number.isFinite(entry.balance)) return null;
-  return Math.round(entry.balance * 100_000_000);
+  return { lanoshis: Math.round(entry.balance * 100_000_000), exact: false };
+}
+
+/** The same reading as a plain number, for the displays that only want one. */
+export function verifiedBalanceLanoshis(balances: WalletBalance[] | null | undefined, wallet: string): number | null {
+  const reading = verifiedBalanceReading(balances, wallet);
+  return reading === null ? null : reading.lanoshis;
 }
 
 export interface AcquisitionsDeps {
@@ -188,14 +219,19 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
    * the wallet does not hold is a promise nobody can keep, and until 9 Sept
    * 2026 the only thing that noticed was the network, at the very end.
    */
-  const readBalanceLanoshis = async (wallet: string): Promise<number | null> => {
+  const readBalance = async (wallet: string): Promise<BalanceReading | null> => {
     try {
       const balances = await fetchBatchBalances(getElectrumServersFromDb(), [wallet]);
-      return verifiedBalanceLanoshis(balances, wallet);
+      return verifiedBalanceReading(balances, wallet);
     } catch (err: any) {
       console.warn('[lana-discount] Balance read failed for', wallet, err?.message || err);
       return null;
     }
+  };
+
+  const readBalanceLanoshis = async (wallet: string): Promise<number | null> => {
+    const reading = await readBalance(wallet);
+    return reading === null ? null : reading.lanoshis;
   };
 
   /** Answers the request itself when the wallet cannot back the amount. */
@@ -330,11 +366,14 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       }
 
       // ── the treasury's own decision ──────────────────────────────
+      // Judged on the PURCHASE PRICE, not the reference gross: the ceiling in
+      // the settings screen is money we commit, and it is the price — never
+      // the gross — that the admin typed a limit for and the seller is quoted.
       const settings = readMandateSettings(getAllAppSettings(), currency, walletClass);
       const decided = decideAcquisition({
         walletClass,
         currency,
-        fiatValue: priced.grossFiat,
+        purchasePriceFiat: priced.purchasePriceFiat,
         settings,
       });
       // Restriction withholds the automatic yes and only that: a decline keeps
@@ -377,7 +416,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
           purchasePriceFiat: null, settlementDueAt: null, offerExpiresAt: null,
           decisionReason: mandate.reason,
         });
-        console.log(`[lana-discount] Offer ${offerRef} under review (${mandate.code}) — ${priced.grossFiat} ${currency}`);
+        console.log(`[lana-discount] Offer ${offerRef} under review (${mandate.code}) — ${priced.purchasePriceFiat} ${currency} (gross ${priced.grossFiat})`);
         return res.json({ offer: offerView(offer) });
       }
 
@@ -525,8 +564,14 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       // — lands in under_review with its mandate fields kept, and the admin
       // decide endpoint re-prices at the round discount and re-checks the
       // remaining cap. It must never be turned into an automatic offer.
+      //
+      // What is weighed against the cap is `purchasePriceFiat`, and on this
+      // path that is already the right number twice over: it is priced at the
+      // ROUND's discount, and it is priced on `allowedLana` — so a counter,
+      // where we take min(requested, remaining), is judged on the cheque we
+      // would write, not on the larger amount the seller asked for.
       const settings = readMandateSettings(getAllAppSettings(), currency, 'lanapays');
-      const decision = decideAcquisition({ walletClass: 'lanapays', currency, fiatValue: priced.grossFiat, settings });
+      const decision = decideAcquisition({ walletClass: 'lanapays', currency, purchasePriceFiat: priced.purchasePriceFiat, settings });
       const mandateFields = {
         mandateRef: verdict.mandateRef, round: verdict.round,
         lanaAmountLanoshis: verdict.allowedLanoshis, lanaAmountDisplay: allowedLana,
@@ -745,12 +790,97 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
 
   // ── 3. Transfer — the only place LANA moves ─────────────────────────
 
+  /** Lanoshis in a sentence: LANA, grouped, without a false tail of zeros. */
+  const lanaWords = (lanoshis: number) => (lanoshis / 100_000_000).toLocaleString('en-GB', {
+    minimumFractionDigits: 2, maximumFractionDigits: 8,
+  });
+
+  /**
+   * A REFUSAL THAT CANNOT COME OUT DIFFERENTLY IS ONLY ISSUED ONCE.
+   *
+   * On 10 Sept 2026 one seller's transfer failed eight times with the same
+   * sentence and wrote eight FAILED rows, because nothing anywhere knew that
+   * "not enough LANA" is not the kind of answer a retry changes. Pressing the
+   * button again cost another electrum round trip, another row, and another
+   * identical disappointment.
+   *
+   * So a deterministic refusal is remembered against the offer together with
+   * the balance it was decided on, and repeated instantly while that balance
+   * is unchanged — no chain, no row. The moment the wallet moves (a top-up,
+   * a consolidation) the memory is dropped and the seller gets a real attempt.
+   * It lives in this process only, which is the right lifetime: a restart
+   * costs at most one more attempt, and can never lock an offer out.
+   *
+   * THREE RULES KEEP IT FROM BECOMING THE PROBLEM IT SOLVES. A memory that
+   * cannot see the remedy it asks for is a lock-out, not a kindness:
+   *
+   *   1. THE FINGERPRINT IS EXACT. It was the 2dp balance, so every wallet
+   *      change under 0.01 LANA — including the ~0.002 LANA top-up the fee
+   *      message asks for, and the single fee a consolidation costs — left it
+   *      identical and the seller was refused with the same sentence for doing
+   *      exactly what he was told. Only an exact reading is remembered; a
+   *      rounded one is too coarse to notice a cure, so it is not written down
+   *      at all and the seller costs us one chain call instead of a dead end.
+   *   2. ONLY BALANCE-DETERMINED REFUSALS. TOO_MANY_UTXOS is about the shape
+   *      of the wallet, not its size, and its own sentence tells the seller to
+   *      consolidate — it is never remembered (see REMEMBERED_REFUSAL_CODES).
+   *   3. IT EXPIRES. Ten minutes absorbs a burst of presses; it cannot eat a
+   *      meaningful part of a 24-hour transfer window if anything above is
+   *      still wrong.
+   */
+  type RefusalPrint = {
+    lanoshis: number;
+    /** 'balance' = electrum's exact integer; 'plan' = the chain's own UTXO total. */
+    source: 'balance' | 'plan';
+  };
+  const refusedTransfers = new Map<string, { print: RefusalPrint; at: number; status: number; body: Record<string, unknown> }>();
+  const REFUSAL_MEMORY = 500;
+  const REFUSAL_MEMORY_TTL_SECONDS = 600;
+
+  /**
+   * The refusals whose cure IS a change in the balance, and which the print
+   * above can therefore watch for. Nothing else is remembered, whatever the
+   * chain layer says about retrying.
+   */
+  const REMEMBERED_REFUSAL_CODES = new Set(['INSUFFICIENT_BALANCE', 'INSUFFICIENT_FUNDS']);
+
+  const rememberRefusal = (ref: string, print: RefusalPrint | null, status: number, body: Record<string, unknown>) => {
+    if (!print) return; // no fingerprint that can see a remedy: say it again next time
+    if (refusedTransfers.size >= REFUSAL_MEMORY) {
+      const oldest = refusedTransfers.keys().next().value;
+      if (oldest !== undefined) refusedTransfers.delete(oldest);
+    }
+    refusedTransfers.set(ref, { print, at: now(), status, body });
+  };
+
+  const standingRefusal = (ref: string, print: RefusalPrint | null) => {
+    const remembered = refusedTransfers.get(ref);
+    if (!remembered) return null;
+    if (now() - remembered.at > REFUSAL_MEMORY_TTL_SECONDS) {
+      refusedTransfers.delete(ref);
+      return null;
+    }
+    if (!print) {
+      // The wallet cannot be read at all. A memory taken from the chain's own
+      // UTXO total is still the best thing anyone here knows, so a burst of
+      // presses during an electrum outage does not become a burst of rows; a
+      // memory taken from a balance reading cannot be compared, so it waits.
+      return remembered.print.source === 'plan' ? remembered : null;
+    }
+    if (remembered.print.source !== print.source || remembered.print.lanoshis !== print.lanoshis) {
+      refusedTransfers.delete(ref);
+      return null;
+    }
+    return remembered;
+  };
+
   router.post('/:ref/transfer', async (req: Request, res: Response) => {
     try {
       const ref = String(req.params.ref);
       const hexId = String(req.body?.hexId || '');
       const privateKey = String(req.body?.privateKey || '');
-      let emptyWallet = !!req.body?.emptyWallet;
+      // ADVISORY ONLY since 10 Sept 2026 — see the emptying decision below.
+      const askedToEmpty = !!req.body?.emptyWallet;
       if (!hexId || !privateKey) return res.status(400).json({ error: 'Missing required fields' });
 
       // The one door.
@@ -771,35 +901,110 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         });
       }
 
-      // A mandate-bound amount is the amount. A counteroffer was made for
-      // the remaining mandate precisely because the wallet holds more, so
-      // "empty the wallet" would move LANA we did not agree to buy; and even
-      // an accepted-as-is amount may only empty a wallet that holds little
-      // more than it (dust: three network fees plus the balance rounding).
-      if (offer.proposed_lana_lanoshis !== null && offer.proposed_lana_lanoshis !== undefined) {
-        emptyWallet = false;
-      } else if (offer.mandate_ref && emptyWallet) {
-        // Fail closed on BOTH roads: a throw, and an answer that does not
-        // verifiably state this wallet's balance (see verifiedBalanceLanoshis).
-        let balanceLanoshis: number | null = null;
-        try {
-          const balances = await fetchBatchBalances(getElectrumServersFromDb(), [offer.sender_wallet_id]);
-          balanceLanoshis = verifiedBalanceLanoshis(balances, offer.sender_wallet_id);
-        } catch (err: any) {
-          console.warn('[lana-discount] Balance check before transfer failed:', err.message);
+      const agreedLanoshis = offer.lana_amount_lanoshis;
+      const isCounteroffer = offer.proposed_lana_lanoshis !== null && offer.proposed_lana_lanoshis !== undefined;
+
+      // ONE READING OF THE WALLET, and everything below decided from it: the
+      // repeat guard, whether the coins are still there, and who pays the fee.
+      // Fail closed on both roads — a throw, and an answer that does not
+      // verifiably state THIS wallet's balance (see verifiedBalanceLanoshis).
+      const reading = await readBalance(offer.sender_wallet_id);
+      const balanceLanoshis = reading === null ? null : reading.lanoshis;
+      /**
+       * Half a rounding step of slack, and ONLY when the reading needs it.
+       * Since 10 Sept 2026 electrum's exact integer comes through, so this is
+       * normally 0 — the ceiling below is then the mandate itself rather than
+       * the mandate plus 0.005 LANA of guesswork.
+       */
+      const roundingSlack = reading?.exact ? 0 : BALANCE_ROUNDING_LANOSHIS;
+      /** Only an exact reading can watch for the remedy — see the guard above. */
+      const walletPrint: RefusalPrint | null = reading?.exact
+        ? { lanoshis: reading.lanoshis, source: 'balance' }
+        : null;
+
+      const standing = standingRefusal(ref, walletPrint);
+      if (standing) {
+        console.log(`[lana-discount] Transfer for ${ref} refused again on an unchanged wallet; not attempted.`);
+        return res.status(standing.status).json({ ...standing.body, repeated: true });
+      }
+
+      // THE COINS MUST STILL BE THERE. An accepted offer says what we agreed
+      // to buy; it does not say the wallet still holds it. Reading that from
+      // the chain here is what turns "Insufficient funds: need 326179861200
+      // lanoshis" — the network's own words, at the very end, after a signed
+      // transaction was built — into a sentence, before anything is signed.
+      // A readable balance can only be enough or short here — the unreadable
+      // case is the one above, and it is handled with the emptying decision.
+      if (balanceLanoshis !== null) {
+        if (!verifyBacking(balanceLanoshis, agreedLanoshis).ok) {
+          const body = {
+            success: false,
+            error: `This wallet holds about ${lanaWords(balanceLanoshis)} LANA — less than the ${lanaWords(agreedLanoshis)} LANA this acquisition is for, so the transfer cannot be made. Nothing has moved.`,
+            code: 'INSUFFICIENT_BALANCE',
+            retryable: false,
+          };
+          rememberRefusal(ref, walletPrint, 409, body);
+          console.warn(`[lana-discount] Transfer for ${ref} not attempted: wallet holds ${balanceLanoshis} of ${agreedLanoshis} lanoshis`);
+          return res.status(409).json(body);
         }
-        if (balanceLanoshis === null) {
+      }
+
+      // WHO DECIDES THE EMPTYING — the server, from this balance and the fee.
+      //
+      // Until 10 Sept 2026 it was `req.body.emptyWallet`, a flag SubmitOffer
+      // keeps in the page and loses with the tab. A seller who had offered
+      // their WHOLE wallet and came back to a fresh tab got an ordinary
+      // transfer: one output to us and one for the change, with the fee taken
+      // out of a change that does not exist. Eight attempts, eight refusals,
+      // every one of them 0.001737 LANA short — the fee exactly.
+      //
+      // A wallet holding no more than the agreed amount (plus dust: three
+      // network fees, and the balance rounding when the reading needed it) IS
+      // the emptying case, whatever the browser thinks. A wallet holding more
+      // is NOT, and must not be emptied — that is LANA the treasury did not
+      // agree to buy. The flag is still read for one thing: so a seller who
+      // explicitly asked to empty a wallet we may not empty is told, rather
+      // than quietly sent the long way.
+      //
+      // THIS ROUTE PROPOSES; planTransfer DISPOSES. Everything decided here is
+      // decided on a balance read a moment ago, over the network. The layer
+      // below reads the UTXOs themselves and so knows the exact figure at the
+      // moment of signing: it is handed both the sweep ceiling and the agreed
+      // amount, so a wallet that turns out to sit above the ceiling is sent
+      // the agreed amount the ordinary way instead of being refused.
+      let emptyWallet = false;
+      if (isCounteroffer) {
+        // A counteroffer was made for the remaining mandate precisely because
+        // the wallet holds more. The change output pays the fee.
+        emptyWallet = false;
+      } else if (balanceLanoshis === null) {
+        // AN ELECTRUM OUTAGE USED TO RESTORE THE 10 SEPT BUG IN FULL: with no
+        // balance and no browser flag, a whole-wallet offer fell through to an
+        // ordinary transfer and failed by the fee, every press. The question
+        // "is this wallet being emptied?" does not need electrum's balance
+        // call — it needs the UTXOs, which the next layer is about to read
+        // anyway. So it is handed down with the ceiling rather than guessed
+        // here, and comes back either swept or sent the ordinary way.
+        //
+        // An explicit ask still fails closed: a seller who chose to empty a
+        // wallet deserves to hear that we could not check it, not to have it
+        // decided for him.
+        if (askedToEmpty) {
           return res.status(503).json({
             error: 'The wallet balance could not be read right now. Please try again shortly.',
             code: 'BALANCE_UNVERIFIABLE',
           });
         }
-        if (balanceLanoshis - offer.lana_amount_lanoshis > EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS + BALANCE_ROUNDING_LANOSHIS) {
+        emptyWallet = true;
+      } else if (balanceLanoshis - agreedLanoshis > EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS + roundingSlack) {
+        if (askedToEmpty) {
           return res.status(409).json({
             error: 'This wallet holds more than the amount the treasury agreed to acquire, so it cannot be emptied into this acquisition. Transfer the agreed amount only.',
             code: 'EMPTY_WALLET_EXCEEDS_MANDATE',
           });
         }
+      } else {
+        emptyWallet = true;
       }
 
       const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
@@ -811,11 +1016,23 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       const txResult = await sendLanaTransaction({
         senderAddress: offer.sender_wallet_id,
         recipientAddress: buybackWalletId,
-        amount: emptyWallet ? undefined : lanaAmount,
+        // ALWAYS the agreed amount, even when sweeping: it is what the layer
+        // below falls back to when the exact wallet turns out to sit above the
+        // ceiling. Without it, a wallet 0.006 LANA over — one small payment
+        // arriving after acceptance — was a refusal with no way round it.
+        amount: lanaAmount,
         privateKey,
         emptyWallet,
+        // The mandate, in exact lanoshis, for the one layer that knows the
+        // exact balance. `roundingSlack` is 0 whenever the chain's own integer
+        // came through, so this is normally the mandate itself.
+        sweepCeilingLanoshis: emptyWallet
+          ? agreedLanoshis + EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS + roundingSlack
+          : undefined,
         electrumServers: getElectrumServersFromDb(),
       });
+      // What the chain layer actually did, which is not always what was asked.
+      const emptiedWallet = txResult.emptyWallet ?? emptyWallet;
 
       // EVERY figure below comes from the offer, never from a fresh rate read.
       // This is what makes it an agreed purchase price rather than whatever
@@ -839,9 +1056,37 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         const txId = insertBuybackTransaction({
           ...commonRow, status: 'failed', error_message: txResult.error,
         } as any);
+        // A failed attempt belongs to the acquisition it was for. Until 10 Sept
+        // 2026 only the successful row carried the reference, so eight failures
+        // for one offer sat in the table as eight unattached rows.
+        db().prepare('UPDATE buyback_transactions SET offer_ref = ? WHERE id = ?').run(ref, txId);
         console.error(`[lana-discount] Transfer failed for ${ref}: ${txResult.error}`);
-        return res.status(400).json({ success: false, error: txResult.error, transactionId: txId });
+        const body = {
+          success: false,
+          error: txResult.error,
+          ...(txResult.code ? { code: txResult.code } : {}),
+          // Both ways round, so the browser can tell "pressing again cannot
+          // help" from "fix this and press again" — TOO_MANY_UTXOS is the
+          // second kind and used to be dressed as the first.
+          ...(typeof txResult.retryable === 'boolean' ? { retryable: txResult.retryable } : {}),
+          transactionId: txId,
+        };
+        // Refused by arithmetic, not by luck: the same wallet and the same
+        // amount give the same answer, so the next press is answered from here.
+        // Only for the codes whose cure is a change in the balance — a
+        // TOO_MANY_UTXOS remembered here would outlive the consolidation its
+        // own sentence asks for. When electrum could not be read, the refused
+        // plan carries the exact UTXO total, which is a fingerprint after all.
+        const chainPrint: RefusalPrint | null = walletPrint
+          ?? (typeof txResult.detail?.totalBalance === 'number'
+            ? { lanoshis: txResult.detail.totalBalance, source: 'plan' }
+            : null);
+        if (txResult.retryable === false && txResult.code && REMEMBERED_REFUSAL_CODES.has(txResult.code)) {
+          rememberRefusal(ref, chainPrint, 400, body);
+        }
+        return res.status(400).json(body);
       }
+      refusedTransfers.delete(ref);
 
       const txId = insertBuybackTransaction({
         ...commonRow,
@@ -878,7 +1123,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         settlementDueAt: offer.settlement_due_at,
         fee: txResult.fee,
         transactionId: txId,
-        emptyWallet,
+        emptyWallet: emptiedWallet,
       });
     } catch (err: any) {
       console.error('[lana-discount] Transfer failed:', err.message);
@@ -921,6 +1166,172 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         ? isBacked(walletBalances.get(o.sender_wallet_id) as number | null, o.lana_amount_lanoshis)
         : null,
     })) });
+  });
+
+  // ── 4b. Admin: what we have accepted and not yet bought ─────────────
+
+  /**
+   * Every timestamp in `acquisition_offers` is written by SQLite's own
+   * `datetime()` — or by sqlitePlusHours, deliberately in the same shape —
+   * as `YYYY-MM-DD HH:MM:SS` in UTC, a format whose lexical order IS its
+   * chronological order. assertTransferable already compares the offer window
+   * that way. Anything not of that shape is left out of the comparison rather
+   * than parsed into a guess.
+   */
+  const SQLITE_UTC = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+  const comparableTs = (t: string | null | undefined): string | null =>
+    t && SQLITE_UTC.test(t) ? t : null;
+
+  /**
+   * WHAT THE TREASURY HAS AGREED TO BUY AND HAS NOT YET BOUGHT.
+   *
+   * Every row here is a contract: the seller accepted our purchase price, and
+   * the LANA has not arrived. These are the only offers with TWO live clocks,
+   * which is the whole reason this is its own screen:
+   *
+   *   transferDueAt    the SELLER's window. Runs out and the deal evaporates:
+   *                    expireStaleOffers voids a mandate-bound row
+   *                    ACCEPTED_TRANSFER_WINDOW_HOURS after acceptance and
+   *                    hands the cap back to the financer.
+   *   settlementDueAt  OUR obligation. Runs out and we are late paying — the
+   *                    date written onto the offer when it was made, from
+   *                    `due_days` (15 by default).
+   *
+   * They mean opposite things, so they are shipped as two fields under two
+   * names and never as one called "expires". `nextDue` says which of the two
+   * is nearer; it is computed here because the rule for the seller's horizon
+   * (sellerActionDeadline: mandate-bound rows are swept, legacy ones are not)
+   * lives on this side and no browser should hold a second opinion about it.
+   *
+   * Where this page ENDS is as load-bearing as what it shows. The moment the
+   * transfer lands the offer becomes a sale, and what we owe on it is tracked
+   * against payouts (`remaining` on /admin/payouts) rather than here. So
+   * `totals` is what is owed on accepted offers, not what the treasury owes
+   * altogether; `stillWithSellers` names the money one step earlier — priced,
+   * sent, not yet answered; and `lapsed` names what is on the list but owed to
+   * nobody. Three separate figures because they are three different promises,
+   * and one number spanning them would be true of none of them.
+   */
+  router.get('/admin/accepted', (req: Request, res: Response) => {
+    if (!requireAdmin(req, res)) return;
+
+    // `transaction_id IS NULL` is the sweeper's own guard, kept here for the
+    // same reason: a row whose transfer DID happen is not waiting on anybody.
+    const rows = db().prepare(`
+      SELECT * FROM acquisition_offers
+       WHERE status = 'accepted' AND transaction_id IS NULL
+    `).all() as OfferRow[];
+
+    // SQLite's own clock, in SQLite's own shape, so "has this window closed?"
+    // is asked of the same wall clock that wrote the deadlines.
+    const clock = (db().prepare(`SELECT datetime('now') AS t`).get() as any).t as string;
+
+    const offers = rows.map(o => {
+      const transferDueAt = sellerActionDeadline(o);
+      const settlementDueAt = o.settlement_due_at;
+      const t = comparableTs(transferDueAt);
+      const s = comparableTs(settlementDueAt);
+      const nextDue: 'transfer' | 'settlement' | null =
+        t && s ? (t <= s ? 'transfer' : 'settlement') : t ? 'transfer' : s ? 'settlement' : null;
+      return {
+        offerRef: o.offer_ref,
+        userHexId: o.user_hex_id,
+        senderWallet: o.sender_wallet_id,
+        walletClass: o.wallet_class,
+        currency: o.currency,
+        lanaAmount: o.lana_amount_display,
+        purchasePrice: o.purchase_price_fiat,
+        createdAt: o.created_at,
+        acceptedAt: o.accepted_at,
+        /** The seller's: transfer by this, or there is nothing to pay for. */
+        transferDueAt,
+        /** Ours: pay the purchase price by this. */
+        settlementDueAt,
+        /** Which of the two is nearer — 'transfer' | 'settlement' | null. */
+        nextDue,
+        nextDueAt: nextDue === 'transfer' ? transferDueAt : nextDue === 'settlement' ? settlementDueAt : null,
+        /**
+         * Whether the transfer window closes this row on its own. Only
+         * mandate-bound rows are swept (the sweep exists to free a financer's
+         * cap), so on a legacy row a passed window is not an ending — it waits
+         * for a person to void it, and the screen has to be able to say so.
+         */
+        sweepsItself: Boolean(o.mandate_ref),
+        /**
+         * The seller's window has already closed. assertTransferable refuses
+         * such a transfer, so this row can never become a sale and the money
+         * on it is NOT owed — it is a reservation nobody has released yet.
+         * It stays in the list, because releasing it is the operator's job;
+         * it stays out of the total, because a total that counts it says the
+         * treasury owes money it does not owe.
+         */
+        transferLapsed: Boolean(t && t <= clock),
+        round: o.round ?? null,
+        mandateRef: o.mandate_ref ?? null,
+      };
+    }).sort((a, b) => {
+      // Soonest deadline first, whichever clock it belongs to; a row with no
+      // deadline at all cannot be urgent, so it goes last rather than first.
+      const x = comparableTs(a.nextDueAt), y = comparableTs(b.nextDueAt);
+      if (x && y && x !== y) return x < y ? -1 : 1;
+      if (x && !y) return -1;
+      if (!x && y) return 1;
+      return a.offerRef < b.offerRef ? -1 : a.offerRef > b.offerRef ? 1 : 0;
+    });
+
+    // Per currency, because adding EUR to GBP would be a number nobody owes.
+    // `unpriced` is counted rather than skipped silently: a row with no price
+    // is missing from the total, and the screen must be able to say so.
+    const totals: Record<string, { owed: number; lana: number; count: number; unpriced: number }> = {};
+    const lapsedByCurrency: Record<string, number> = {};
+    let lapsedCount = 0;
+    for (const o of offers) {
+      if (o.transferLapsed) {
+        lapsedCount += 1;
+        lapsedByCurrency[o.currency] = Math.round(
+          ((lapsedByCurrency[o.currency] || 0) + (o.purchasePrice || 0)) * 100,
+        ) / 100;
+        continue;
+      }
+      const cell = totals[o.currency] || (totals[o.currency] = { owed: 0, lana: 0, count: 0, unpriced: 0 });
+      cell.count += 1;
+      cell.lana += o.lanaAmount || 0;
+      if (o.purchasePrice === null || o.purchasePrice === undefined) cell.unpriced += 1;
+      else cell.owed += o.purchasePrice;
+    }
+    for (const cell of Object.values(totals)) {
+      cell.owed = Math.round(cell.owed * 100) / 100;
+      cell.lana = Math.round(cell.lana * 100_000_000) / 100_000_000;
+    }
+
+    // One step earlier in the same pipeline: priced and sent, not yet
+    // answered. Not owed — the seller may simply let it lapse — and counted
+    // exactly as consumedByMandate counts a live offer, so the two agree.
+    const liveOffers = db().prepare(`
+      SELECT currency, COUNT(*) AS n, COALESCE(SUM(purchase_price_fiat), 0) AS fiat
+        FROM acquisition_offers
+       WHERE status = 'offered'
+         AND offer_expires_at IS NOT NULL
+         AND offer_expires_at > datetime('now')
+       GROUP BY currency
+    `).all() as any[];
+    const stillWithSellers = {
+      count: liveOffers.reduce((n, r) => n + Number(r.n || 0), 0),
+      byCurrency: Object.fromEntries(
+        liveOffers.map(r => [String(r.currency), Math.round(Number(r.fiat || 0) * 100) / 100]),
+      ) as Record<string, number>,
+    };
+
+    return res.json({
+      offers,
+      totals,
+      /** Reserved by a row that can no longer complete — owed by nobody. */
+      lapsed: { count: lapsedCount, byCurrency: lapsedByCurrency },
+      stillWithSellers,
+      /** So the screen can name the seller's window without inventing it. */
+      transferWindowHours: ACCEPTED_TRANSFER_WINDOW_HOURS,
+      updated_at: new Date().toISOString(),
+    });
   });
 
   /**

@@ -257,6 +257,64 @@ const SubmitOffer = () => {
   );
   const lapsed = serverLapsed || offer?.status === 'expired' || clockExpired;
 
+  /**
+   * WHETHER ACCEPTING MOVED THE DEADLINE, ASKED RATHER THAN ASSUMED.
+   *
+   * "Pisalo je 8 dni, zdaj piše 19 ur." Both numbers were true. A purchase
+   * offer a person made stands MANUAL_OFFER_VALIDITY_DAYS, and accepting it
+   * ends that window and starts the ACCEPTED_TRANSFER_WINDOW_HOURS one for the
+   * transfer — so the figure on screen collapsed the instant he pressed the
+   * button, and nothing had told him it would.
+   *
+   * This does not compute the new deadline and does not know which sweep
+   * applies: the server sends both moments — the window the offer stood for
+   * (`offerExpiresAt`) and the deadline it will actually enforce now
+   * (`actionDueAt`, from sellerActionDeadline) — and this only asks whether the
+   * second is earlier than the first. On a legacy row nothing sweeps, the two
+   * are the same timestamp, and no change is announced, which is correct:
+   * there was none. It survives a reload for the same reason — both moments are
+   * on the row, not in this component's memory.
+   */
+  const acceptedWindowMoved = (() => {
+    if (offer?.status !== 'accepted' || !offer.offerExpiresAt || !actionDue) return false;
+    const now = parseSqliteUtc(actionDue)?.getTime();
+    const was = parseSqliteUtc(offer.offerExpiresAt)?.getTime();
+    return now !== undefined && was !== undefined && now < was;
+  })();
+
+  /**
+   * The server's `ACCEPTED_TRANSFER_WINDOW_HOURS`, mirrored so this page can
+   * work out WHICH of the two deadlines the sentence above the button should
+   * name. It is never used to draw a clock — every countdown on this page runs
+   * on `actionDueAt`, which the server computed. src/copy.test.ts reads the
+   * server constant and fails if this number and the sweeper drift apart.
+   */
+  const TRANSFER_WINDOW_HOURS = 24;
+
+  /**
+   * Whether the 24-hour sweep is the deadline that will bite once this offer
+   * is accepted, or the offer's own window is.
+   *
+   * sellerActionDeadline takes the EARLIER of the two, and consults the sweep
+   * only for a row carrying a `mandate_ref` — expireStaleOffers voids no other
+   * kind. So there are two ways for 24 hours to be the wrong thing to say:
+   *
+   *   legacy row      no mandate, never swept → the offer window is the story
+   *   automatic offer mandate-bound, but it stands OFFER_VALIDITY_MINUTES —
+   *                   thirty minutes — so the sweep never gets near it
+   *
+   * The second is why this is not simply `Boolean(offer.mandateRef)`: that
+   * would have printed "there are 24 hours" over a thirty-minute offer whose
+   * deadline acceptance does not move at all. The question is not which kind
+   * of row this is; it is whether the sweep lands before the window does.
+   */
+  const acceptStartsShortWindow = (() => {
+    if (!offer?.mandateRef || !offer.offerExpiresAt) return false;
+    const window = parseSqliteUtc(offer.offerExpiresAt)?.getTime();
+    if (window === undefined) return false;
+    return window > Date.now() + TRANSFER_WINDOW_HOURS * 3_600_000;
+  })();
+
   useEffect(() => {
     if (!session) navigate('/login');
   }, [session, navigate]);
@@ -1286,6 +1344,32 @@ const SubmitOffer = () => {
                           </span>
                         </div>
                       )}
+
+                      {/* WHAT THE BUTTON BELOW STARTS, SAID BEFORE IT IS
+                          PRESSED. The clock above is the offer window; accepting
+                          closes it and opens a shorter one for the transfer,
+                          and the only place that fact is any use is here, while
+                          accepting later is still an option. It sits inside the
+                          offer card so it stays on screen when the terms gate
+                          opens over the buttons. Informational, not amber: the
+                          24 hours are real and the server keeps them, and that
+                          is the whole of the claim. */}
+                      <div
+                        className="rounded-xl border border-border bg-muted/40 p-4 space-y-1.5"
+                        data-testid="accept-starts"
+                      >
+                        <p className="text-sm font-semibold text-foreground">{OFFER.acceptStartsTitle}</p>
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          {acceptStartsShortWindow
+                            ? OFFER.acceptStartsBody
+                            : fill(OFFER.acceptStartsBodyWindow, { until: formatMoment(offer.offerExpiresAt) })}
+                        </p>
+                        {acceptStartsShortWindow && (
+                          <p className="text-sm text-muted-foreground leading-relaxed">
+                            {fill(OFFER.acceptStartsWhen, { until: formatMoment(offer.offerExpiresAt) })}
+                          </p>
+                        )}
+                      </div>
                     </div>
 
                     {/* The terms stand in front of acceptance, because that is
@@ -1526,6 +1610,28 @@ const SubmitOffer = () => {
                 </div>
               ) : (
               <div className="space-y-6">
+                {/* THE CLOCK CHANGED WHILE HE WAS PRESSING A BUTTON — SAID
+                    FIRST, ABOVE THE SCREEN THAT NOW SHOWS THE NEW NUMBER.
+                    The seller who accepted a purchase offer that stood eight
+                    days arrived here to find nineteen hours, with both moments
+                    correct and no sentence anywhere joining them. Both come off
+                    the row the server just returned, so this states the change
+                    only where the deadline really moved. */}
+                {acceptedWindowMoved && (
+                  <div
+                    className="rounded-2xl border border-blue-200 bg-blue-50 p-5 space-y-1.5 dark:border-blue-500/30 dark:bg-blue-500/10"
+                    data-testid="window-changed"
+                  >
+                    <p className="text-sm font-semibold text-blue-900 dark:text-blue-200">{OFFER.windowChangedTitle}</p>
+                    <p className="text-sm leading-relaxed text-blue-800 dark:text-blue-300">
+                      {fill(OFFER.windowChangedBody, {
+                        was: formatMoment(offer.offerExpiresAt),
+                        now: formatMoment(actionDue),
+                      })}
+                    </p>
+                  </div>
+                )}
+
                 <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6">
                   <h2 className="text-lg font-semibold text-foreground mb-1">{OFFER.transferTitle}</h2>
                   <p className="text-sm text-muted-foreground mb-4 leading-relaxed">{OFFER.transferBody}</p>

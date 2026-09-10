@@ -440,7 +440,7 @@ function littleEndian64(n: bigint): Uint8Array {
 // UTXO Selection
 // ==============================================
 
-interface UTXO {
+export interface UTXO {
   tx_hash: string;
   tx_pos: number;
   value: number;
@@ -507,6 +507,257 @@ class UTXOSelector {
       `Cannot build transaction: Need ${(totalNeeded / 100000000).toFixed(8)} LANA but ` +
       `only ${(totalSelected / 100000000).toFixed(8)} LANA available in ${selectedUTXOs.length} UTXOs`
     );
+  }
+}
+
+// ==============================================
+// Transfer planning — inputs, fee, and who pays it
+// ==============================================
+
+/** The most inputs one transaction may carry. */
+export const MAX_TRANSACTION_INPUTS = UTXOSelector.MAX_INPUTS;
+
+/**
+ * What this chain asks for a transaction of this shape: 180 bytes an input,
+ * 34 an output, 10 of envelope, at 100 lanoshis a byte with half again on top.
+ *
+ * The arithmetic is unchanged; it lives in one function now so that the
+ * emptying plan and the ordinary plan can never estimate it differently — the
+ * bug of 10 Sept 2026 was two estimates of the same fee disagreeing.
+ */
+export function estimateFeeLanoshis(inputCount: number, outputCount: number): number {
+  return Math.floor((inputCount * 180 + outputCount * 34 + 10) * 100 * 1.5);
+}
+
+export type TransferPlan =
+  | {
+      ok: true;
+      /** True when the whole wallet moves in one output and the fee comes out of it. */
+      emptyWallet: boolean;
+      /** What the recipient actually receives — less than the balance when emptying. */
+      amountLanoshis: number;
+      feeLanoshis: number;
+      selected: UTXO[];
+      totalSelected: number;
+      totalBalance: number;
+    }
+  | { ok: false; code: 'TOO_MANY_UTXOS'; utxoCount: number; maxInputs: number; totalBalance: number }
+  | {
+      ok: false;
+      code: 'INSUFFICIENT_FUNDS';
+      /** Amount + fee. */
+      requiredLanoshis: number;
+      /** What the selectable UTXOs actually hold. */
+      availableLanoshis: number;
+      shortfallLanoshis: number;
+      feeLanoshis: number;
+      totalBalance: number;
+    }
+  | { ok: false; code: 'EMPTY_WALLET_EXCEEDS_CEILING'; totalBalance: number; ceilingLanoshis: number };
+
+/**
+ * WHICH COINS MOVE, AND WHERE THE FEE COMES FROM. Pure: give it the UTXOs and
+ * it answers with a plan or with the reason there is none — no chain, no keys,
+ * so the arithmetic that failed in production can be run in a test.
+ *
+ * Two shapes:
+ *
+ *   ordinary   one output to the recipient, one for the change. The fee is
+ *              paid out of the change, so the wallet must hold amount + fee.
+ *   emptying   every UTXO in, one output out, no change. The fee comes out of
+ *              the amount, so a wallet holding EXACTLY the amount can still
+ *              send — which is the whole point of it.
+ *
+ * A seller who offers their entire wallet needs the second. On 10 Sept 2026
+ * eight transfers were planned as the first and every one was refused by
+ * 173,700 lanoshis — the fee, with nowhere to come from.
+ *
+ * `sweepCeilingLanoshis` is the caller's mandate, in lanoshis: a wallet that
+ * turns out to hold more than that is not swept. This is the last layer that
+ * sees the EXACT balance — the UTXOs themselves — so it is where the mandate
+ * is really enforced, and where the emptying decision is really made: give it
+ * both `emptyWallet: true` and an `amountLanoshis`, and it sweeps when the
+ * wallet fits under the ceiling and sends the named amount the ordinary way
+ * when it does not. A caller that cannot read the balance at all can therefore
+ * still get the right shape, by asking for both.
+ */
+export function planTransfer(params: {
+  utxos: UTXO[];
+  /** Required unless emptying. In lanoshis. */
+  amountLanoshis?: number;
+  emptyWallet: boolean;
+  sweepCeilingLanoshis?: number;
+}): TransferPlan {
+  const { utxos, emptyWallet, sweepCeilingLanoshis } = params;
+  const totalBalance = utxos.reduce((sum, u) => sum + u.value, 0);
+  const tooMany = (): TransferPlan =>
+    ({ ok: false, code: 'TOO_MANY_UTXOS', utxoCount: utxos.length, maxInputs: MAX_TRANSACTION_INPUTS, totalBalance });
+
+  if (emptyWallet) {
+    // THE CEILING IS ASKED FIRST, AND THE ORDER IS THE WHOLE POINT.
+    //
+    // Refusing on the input count before asking whether this is even a sweep
+    // told a seller moving 100 LANA out of a 5,000 LANA wallet to consolidate
+    // all 5,000 — for a transfer that needed one input. It only bit when the
+    // balance could not be read, which is exactly when the route assumes a
+    // sweep, so an electrum outage turned an ordinary sale into a dead end and
+    // every press wrote another failed row (10 Sept 2026 review). A wallet that
+    // holds more than the agreed amount is not a sweep at all, so the count of
+    // its pieces is not this branch's business.
+    if (sweepCeilingLanoshis !== undefined && totalBalance > sweepCeilingLanoshis) {
+      // A WALLET OVER THE CEILING IS NOT A REFUSAL — IT IS AN ORDINARY TRANSFER.
+      //
+      // The ceiling is computed one layer up from electrum's balance reading,
+      // which is a moment older than these UTXOs and — until the exact figure
+      // was carried alongside it — rounded to 0.01 LANA. So "over the ceiling"
+      // can mean nothing more than one small payment arriving after acceptance,
+      // and refusing on it left the seller with no way through inside a 24-hour
+      // window (10 Sept 2026 review).
+      //
+      // Holding MORE than the agreed amount is precisely the case an ordinary
+      // transfer handles: the fee comes out of the change. So when the caller
+      // named an amount, that amount moves and not one lanoshi more — the
+      // mandate is still the ceiling on what the treasury takes.
+      if (params.amountLanoshis !== undefined && params.amountLanoshis > 0) {
+        return planTransfer({ utxos, amountLanoshis: params.amountLanoshis, emptyWallet: false });
+      }
+      // No amount to fall back to: the caller asked only for a sweep, so the
+      // ceiling is the whole of its instruction and refusing it is the answer.
+      return { ok: false, code: 'EMPTY_WALLET_EXCEEDS_CEILING', totalBalance, ceilingLanoshis: sweepCeilingLanoshis };
+    }
+    // A genuine sweep DOES have to carry every piece, so here the count is the
+    // real constraint and the refusal is the honest answer.
+    if (utxos.length > MAX_TRANSACTION_INPUTS) return tooMany();
+    // Emptying takes every UTXO and leaves no change, so the fee is known
+    // exactly here — no selection loop can revise it, and nothing is left
+    // behind by a subset that happened to reach the target on its own.
+    const feeLanoshis = estimateFeeLanoshis(utxos.length, 1);
+    const amountLanoshis = totalBalance - feeLanoshis;
+    if (amountLanoshis <= 0) {
+      return {
+        ok: false, code: 'INSUFFICIENT_FUNDS',
+        requiredLanoshis: feeLanoshis + 1, availableLanoshis: totalBalance,
+        shortfallLanoshis: feeLanoshis + 1 - totalBalance, feeLanoshis, totalBalance,
+      };
+    }
+    return { ok: true, emptyWallet: true, amountLanoshis, feeLanoshis, selected: [...utxos], totalSelected: totalBalance, totalBalance };
+  }
+
+  const wanted = Math.floor(params.amountLanoshis ?? 0);
+  if (!(wanted > 0)) throw new Error('planTransfer: an amount is required when the wallet is not being emptied');
+
+  // Two outputs: the recipient and the change the fee is taken from.
+  const OUTPUTS = 2;
+  const short = (required: number, available: number, feeLanoshis: number): TransferPlan => ({
+    ok: false, code: 'INSUFFICIENT_FUNDS',
+    requiredLanoshis: required, availableLanoshis: available,
+    shortfallLanoshis: required - available, feeLanoshis, totalBalance,
+  });
+
+  let selected: UTXO[];
+  let totalSelected: number;
+  try {
+    const first = UTXOSelector.selectUTXOs(utxos, wanted);
+    selected = first.selected;
+    totalSelected = first.totalValue;
+  } catch {
+    // Not even the amount can be reached: the wallet is short, full stop.
+    const feeLanoshis = estimateFeeLanoshis(Math.min(utxos.length, MAX_TRANSACTION_INPUTS), OUTPUTS);
+    return short(wanted + feeLanoshis, totalBalance, feeLanoshis);
+  }
+
+  let feeLanoshis = estimateFeeLanoshis(selected.length, OUTPUTS);
+  for (let i = 0; i < 10 && totalSelected < wanted + feeLanoshis && selected.length < utxos.length; i++) {
+    try {
+      const next = UTXOSelector.selectUTXOs(utxos, wanted + feeLanoshis);
+      selected = next.selected;
+      totalSelected = next.totalValue;
+    } catch {
+      break; // the balance cannot reach amount + fee; reported below
+    }
+    feeLanoshis = estimateFeeLanoshis(selected.length, OUTPUTS);
+  }
+
+  if (totalSelected < wanted + feeLanoshis) {
+    if (totalBalance >= wanted + feeLanoshis && utxos.length > MAX_TRANSACTION_INPUTS) return tooMany();
+    return short(wanted + feeLanoshis, totalSelected, feeLanoshis);
+  }
+
+  return { ok: true, emptyWallet: false, amountLanoshis: wanted, feeLanoshis, selected, totalSelected, totalBalance };
+}
+
+export type TransferPlanFailure = Extract<TransferPlan, { ok: false }>;
+
+/**
+ * A type guard rather than `if (!plan.ok)`: this project compiles with
+ * strictNullChecks off, where narrowing a boolean discriminant does not.
+ */
+export function planFailed(plan: TransferPlan): plan is TransferPlanFailure {
+  return plan.ok === false;
+}
+
+/**
+ * TRUE WHEN PRESSING THE BUTTON AGAIN CANNOT COME OUT DIFFERENTLY.
+ *
+ * Not every refused plan is a dead end, and telling them apart is the whole
+ * value of saying so: a caller that remembers a refusal must remember only the
+ * ones whose remedy it can see happen.
+ *
+ *   TOO_MANY_UTXOS            NOT permanent. Its own sentence tells the seller
+ *                             to consolidate, and consolidating fixes it. It is
+ *                             a fact about the SHAPE of the wallet, not its
+ *                             balance — a consolidation moves the balance by a
+ *                             single fee, which no balance-keyed memory can
+ *                             see. Calling this permanent locked sellers out of
+ *                             the very fix we asked them for.
+ *   EMPTY_WALLET_EXCEEDS_...  NOT permanent. The ceiling came from a reading
+ *                             taken one layer up, not from the wallet.
+ *   INSUFFICIENT_FUNDS        Permanent WHILE THE WALLET IS UNCHANGED: the same
+ *                             coins and the same amount give the same answer.
+ */
+export function planFailurePermanent(plan: TransferPlanFailure): boolean {
+  switch (plan.code) {
+    case 'TOO_MANY_UTXOS':
+    case 'EMPTY_WALLET_EXCEEDS_CEILING':
+      return false;
+    default:
+      return true;
+  }
+}
+
+/** Lanoshis as a person reads them: LANA, trailing zeros trimmed. */
+function lanaText(lanoshis: number): string {
+  const s = (lanoshis / 100_000_000).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+  return s === '' ? '0' : s;
+}
+
+/**
+ * A refused plan in a sentence. `Insufficient funds: need 326179861200
+ * lanoshis, have 326179687500` is what a seller was shown on 10 Sept 2026;
+ * every number below is the same number in LANA, with the fee named as a fee.
+ */
+export function describePlanFailure(plan: TransferPlanFailure): { error: string; code: string } {
+  switch (plan.code) {
+    case 'TOO_MANY_UTXOS':
+      // The code used to be the first word of the sentence, and "UTXO" the
+      // fourth. This is the one refusal the seller can act on himself, so it
+      // says what to do in words rather than naming its own error constant.
+      return {
+        code: 'TOO_MANY_UTXOS',
+        error: `This wallet holds its ${lanaText(plan.totalBalance)} LANA in ${plan.utxoCount} separate pieces, and one transfer can carry at most ${plan.maxInputs}. Consolidate them with Registrar and send again. Nothing has moved.`,
+      };
+    case 'EMPTY_WALLET_EXCEEDS_CEILING':
+      return {
+        code: 'EMPTY_WALLET_EXCEEDS_CEILING',
+        error: `This wallet holds ${lanaText(plan.totalBalance)} LANA, more than the ${lanaText(plan.ceilingLanoshis)} LANA this transfer may empty into. Nothing has moved.`,
+      };
+    default: {
+      const amount = plan.requiredLanoshis - plan.feeLanoshis;
+      return {
+        code: 'INSUFFICIENT_FUNDS',
+        error: `There is not enough LANA in this wallet: sending ${lanaText(amount)} LANA and the ${lanaText(plan.feeLanoshis)} LANA network fee needs ${lanaText(plan.requiredLanoshis)} LANA, and the wallet holds ${lanaText(plan.availableLanoshis)} LANA — ${lanaText(plan.shortfallLanoshis)} LANA short. Nothing has moved.`,
+      };
+    }
   }
 }
 
@@ -796,6 +1047,14 @@ export interface SendLanaParams {
   amount?: number;               // In LANA (decimal)
   privateKey: string;            // WIF format
   emptyWallet?: boolean;         // Send all balance
+  /**
+   * The most this transfer may empty out of the wallet, in lanoshis. Only
+   * consulted when emptying: the caller proposes the sweep from whatever
+   * balance it could read, and this is where that proposal meets the exact
+   * one. Pass `amount` as well and a wallet found to be over the ceiling is
+   * sent the agreed amount the ordinary way instead of being refused.
+   */
+  sweepCeilingLanoshis?: number;
   electrumServers?: Array<{ host: string; port: number }>;
 }
 
@@ -805,6 +1064,22 @@ export interface SendLanaResult {
   amount?: number;               // Total sent in lanoshis
   fee?: number;
   error?: string;
+  /** Set on the refusals that are decided here, before anything is signed. */
+  code?: string;
+  /**
+   * False when trying again cannot help: nothing about the wallet, the amount
+   * or the fee will be different next time. Absent when unknown — a broadcast
+   * that failed once may well go through on the next attempt.
+   */
+  retryable?: boolean;
+  /** The refused plan, for the caller that wants the figures rather than the sentence. */
+  detail?: TransferPlanFailure;
+  /**
+   * WHAT ACTUALLY HAPPENED, not what was asked for. A sweep that met a wallet
+   * above its ceiling is sent as an ordinary transfer, so the caller must read
+   * this rather than its own request when it records or reports the shape.
+   */
+  emptyWallet?: boolean;
 }
 
 export async function sendLanaTransaction(params: SendLanaParams): Promise<SendLanaResult> {
@@ -814,6 +1089,7 @@ export async function sendLanaTransaction(params: SendLanaParams): Promise<SendL
     amount,
     privateKey,
     emptyWallet = false,
+    sweepCeilingLanoshis,
     electrumServers
   } = params;
 
@@ -874,68 +1150,37 @@ export async function sendLanaTransaction(params: SendLanaParams): Promise<SendL
     }
     console.log(`[lana-discount] Found ${utxos.length} UTXOs`);
 
-    let amountSatoshis: number;
-    let recipients: Recipient[];
-    let fee: number;
+    // WHO PAYS THE FEE — planTransfer answers it, on its own, testably.
+    // The amount is handed over even when emptying: it is what the plan falls
+    // back to if the exact UTXO total turns out to sit above the sweep ceiling.
+    const plan = planTransfer({
+      utxos,
+      amountLanoshis: amount === undefined || amount === null ? undefined : Math.floor(amount * 100000000),
+      emptyWallet,
+      sweepCeilingLanoshis,
+    });
 
-    if (emptyWallet) {
-      const totalBalance = utxos.reduce((sum: number, utxo: UTXO) => sum + utxo.value, 0);
-
-      if (utxos.length > UTXOSelector.MAX_INPUTS) {
-        return {
-          success: false,
-          error: `TOO_MANY_UTXOS: Your wallet has ${utxos.length} UTXOs but the maximum per transaction is ${UTXOSelector.MAX_INPUTS}. Please consolidate your wallet using Registrar before sending.`
-        };
-      }
-
-      const estimatedInputCount = Math.min(utxos.length, UTXOSelector.MAX_INPUTS);
-      const outputCount = 1;
-      fee = Math.floor((estimatedInputCount * 180 + outputCount * 34 + 10) * 100 * 1.5);
-
-      amountSatoshis = totalBalance - fee;
-      if (amountSatoshis <= 0) {
-        throw new Error(`Insufficient funds. Balance: ${totalBalance}, Fee: ${fee}`);
-      }
-
-      recipients = [{ address: recipientAddress, amount: amountSatoshis }];
-    } else {
-      amountSatoshis = Math.floor(amount! * 100000000);
-      recipients = [{ address: recipientAddress, amount: amountSatoshis }];
+    if (planFailed(plan)) {
+      const described = describePlanFailure(plan);
+      console.error(`[lana-discount] No transfer plan (${described.code}): ${described.error}`);
+      return {
+        success: false,
+        error: described.error,
+        code: described.code,
+        // Only where trying again genuinely cannot come out differently — see
+        // planFailurePermanent. Stamping every refused plan `false` told the
+        // caller to remember a TOO_MANY_UTXOS whose cure is a consolidation.
+        retryable: !planFailurePermanent(plan),
+        detail: plan,
+      };
     }
 
-    // UTXO selection with iterative fee recalculation
-    const totalAmountSatoshis = recipients.reduce((sum, r) => sum + r.amount, 0);
-    const actualOutputCount = emptyWallet ? recipients.length : recipients.length + 1;
+    const amountSatoshis = plan.amountLanoshis;
+    const fee = plan.feeLanoshis;
+    const recipients: Recipient[] = [{ address: recipientAddress, amount: amountSatoshis }];
+    const selectedUTXOs = plan.selected;
 
-    let selection = UTXOSelector.selectUTXOs(utxos, totalAmountSatoshis);
-    let selectedUTXOs = selection.selected;
-    let totalSelected = selection.totalValue;
-
-    let baseFee = (selectedUTXOs.length * 180 + actualOutputCount * 34 + 10) * 100;
-    fee = Math.floor(baseFee * 1.5);
-
-    let iterations = 0;
-    while (totalSelected < totalAmountSatoshis + fee && selectedUTXOs.length < utxos.length && iterations < 10) {
-      iterations++;
-      selection = UTXOSelector.selectUTXOs(utxos, totalAmountSatoshis + fee);
-      selectedUTXOs = selection.selected;
-      totalSelected = selection.totalValue;
-      baseFee = (selectedUTXOs.length * 180 + actualOutputCount * 34 + 10) * 100;
-      fee = Math.floor(baseFee * 1.5);
-    }
-
-    if (totalSelected < totalAmountSatoshis + fee) {
-      const totalBalance = utxos.reduce((sum: number, utxo: UTXO) => sum + utxo.value, 0);
-      if (totalBalance >= totalAmountSatoshis + fee && utxos.length > UTXOSelector.MAX_INPUTS) {
-        return {
-          success: false,
-          error: `TOO_MANY_UTXOS: Your wallet has ${utxos.length} UTXOs but the maximum per transaction is ${UTXOSelector.MAX_INPUTS}. Please consolidate your wallet using Registrar before sending.`
-        };
-      }
-      throw new Error(`Insufficient funds: need ${totalAmountSatoshis + fee} lanoshis, have ${totalSelected}`);
-    }
-
-    console.log(`[lana-discount] Final: ${selectedUTXOs.length} UTXOs, total: ${totalSelected}, amount: ${totalAmountSatoshis}, fee: ${fee}`);
+    console.log(`[lana-discount] Final: ${selectedUTXOs.length} UTXOs, total: ${plan.totalSelected}, amount: ${amountSatoshis}, fee: ${fee}, emptying: ${plan.emptyWallet}`);
 
     // Build and sign transaction
     const { txHex: signedTx } = await buildSignedTx(
@@ -986,7 +1231,8 @@ export async function sendLanaTransaction(params: SendLanaParams): Promise<SendL
       success: true,
       txHash,
       amount: amountSatoshis,
-      fee
+      fee,
+      emptyWallet: plan.emptyWallet,
     };
   } catch (error) {
     console.error('[lana-discount] Transaction error:', error);

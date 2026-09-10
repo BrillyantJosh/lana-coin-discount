@@ -1,4 +1,4 @@
-import type { WalletClass } from './sellerEligibility.js';
+import type { WalletClass } from './treasuryMandate.js';
 
 /**
  * Which wallets the treasury is acquiring from at all, right now.

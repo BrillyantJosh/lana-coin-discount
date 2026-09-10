@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { OFFER } from '@/copy';
 import { counterBody, fill } from '@/components/MandatePanel';
-import { formatDate, formatLeftToMinute, formatMoment, useCountdown } from '@/lib/offerClock';
+import { formatDate, formatLeftToMinute, formatMoment, parseSqliteUtc, useCountdown } from '@/lib/offerClock';
 import { formatFiat, formatLana } from '@/lib/money';
 
 /**
@@ -37,6 +37,12 @@ export interface WaitingOfferSummary {
   settlementDueAt: string | null;
   /** The server's own deadline for what the seller must do next. */
   actionDueAt: string | null;
+  /**
+   * The window the OFFER stood for, which on an accepted row is no longer the
+   * deadline. Both moments are needed to say the clock changed — see below.
+   * Optional so a caller that does not carry it simply says nothing.
+   */
+  offerExpiresAt?: string | null;
   isCounteroffer?: boolean;
   proposedLanaAmount?: number | null;
 }
@@ -94,6 +100,24 @@ export const WaitingOffer = ({
   }
 
   const urgent = msLeft !== null && msLeft < URGENT_BELOW_MS;
+  /**
+   * WHY THE NUMBER IS SMALLER THAN THE ONE HE REMEMBERS.
+   *
+   * "Pisalo je 8 dni, zdaj piše 19 ur." Accepting ends the offer window and
+   * starts the transfer window, and this card is where a seller most often
+   * meets the second number — days later, on a phone, with no memory of having
+   * changed anything. Neither moment is worked out here: `actionDueAt` is the
+   * server's deadline and `offerExpiresAt` is the window the offer stood for,
+   * and this only asks whether the first is earlier than the second. On a
+   * legacy row nothing sweeps, the two are the same timestamp, and the line is
+   * not drawn — because nothing changed.
+   */
+  const windowMoved = (() => {
+    if (!transfer || !offer.offerExpiresAt || !offer.actionDueAt) return false;
+    const now = parseSqliteUtc(offer.actionDueAt)?.getTime();
+    const was = parseSqliteUtc(offer.offerExpiresAt)?.getTime();
+    return now !== undefined && was !== undefined && now < was;
+  })();
   const settleBy = offer.settlementDueAt ? formatDate(offer.settlementDueAt) : null;
   // Only while the decision is still ahead of him. On an accepted row the
   // counteroffer strip asks him to "Accept 20,070 LANA or not now" about a
@@ -178,6 +202,15 @@ export const WaitingOffer = ({
       <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
         {transfer ? OFFER.waitingTransferBody : OFFER.waitingDecisionBody}
       </p>
+
+      {/* And which clock this is, when it is not the one the offer carried.
+          Small and after the sentence above: it explains a number he has
+          already read, it is not a new demand on him. */}
+      {windowMoved && (
+        <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground" data-testid="window-moved">
+          {fill(OFFER.windowChangedShort, { was: formatMoment(offer.offerExpiresAt) })}
+        </p>
+      )}
 
       {/* The ref travels with the link. /offer resumes whichever live offer
           comes first in a created_at DESC list, so without it a card showing

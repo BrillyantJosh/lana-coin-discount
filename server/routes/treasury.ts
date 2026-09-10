@@ -247,7 +247,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
 
     db().transaction(() => {
       for (const r of v.rows) upsert.run(split, r.round, r.opensAt, r.discountPercent, adminHex);
-      if (lanapaysOnly !== null) setAppSetting(LANAPAYS_ONLY_KEY, lanapaysOnly ? '1' : '0');
+      if (lanapaysOnly !== null) setAppSetting(LANAPAYS_ONLY_KEY, lanapaysOnly ? '1' : '0', adminHex);
     })();
     if (lanapaysOnly !== null) {
       console.log(`[lana-discount] Acquiring ${lanapaysOnly ? 'ONLY from LanaPays.Us wallets' : 'from every sellable wallet class'} — set by ${adminHex.slice(0, 12)}…`);

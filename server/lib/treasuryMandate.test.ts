@@ -34,8 +34,12 @@ const open = (over: Partial<MandateSettings> = {}): MandateSettings => ({
   ...over,
 });
 
-const decide = (fiatValue: number, settings: MandateSettings, walletClass: WalletClass = 'other') =>
-  decideAcquisition({ walletClass, currency: 'EUR', fiatValue, settings });
+/**
+ * The number handed in is the PURCHASE PRICE — what the treasury would pay
+ * after the discount — not the reference gross. See `decideAcquisition`.
+ */
+const decide = (purchasePriceFiat: number, settings: MandateSettings, walletClass: WalletClass = 'other') =>
+  decideAcquisition({ walletClass, currency: 'EUR', purchasePriceFiat, settings });
 
 describe('a closed door is a real answer', () => {
   it('declines every offer in a currency we do not acquire in', () => {
@@ -93,6 +97,63 @@ describe('the ceiling', () => {
     expect(decide(10, open({ dueDays: 3 })).dueDays).toBe(3);
     expect(decide(10, open({ dueDays: 7, autoCap: 0 })).dueDays).toBe(7);
     expect(decide(10, open({ dueDays: 7, currencyEnabled: false })).dueDays).toBe(7);
+  });
+});
+
+/**
+ * THE CEILING IS THE CHEQUE, NOT THE MARKET VALUE.
+ *
+ * OFF-2026-059: 3,232.188 LANA, reference gross EUR 827.44, round discount
+ * 22 %, purchase price EUR 645.40 — and an auto cap of EUR 700 under a
+ * sentence reading "Anything larger goes to a person to decide". It went to a
+ * person anyway, because the cap was weighed against the gross, the one figure
+ * nobody is ever shown. These tests pin the fixed reading to those exact
+ * numbers, so anyone who "tidies" the call site back to the gross has to
+ * delete a test that names a real offer.
+ */
+describe('the ceiling weighs what we pay, not what it is worth', () => {
+  /**
+   * The arithmetic priceAcquisition does, repeated here on purpose: it keeps
+   * the figures in this file the ones from the screenshot rather than a
+   * rounded retelling of them, without this pure module importing the router.
+   */
+  const priced = (lana: number, rate: number, discountPercent: number) => {
+    const grossFiat = Math.round(lana * rate * 100) / 100;
+    const discountFiat = Math.round(grossFiat * discountPercent / 100 * 100) / 100;
+    return { grossFiat, purchasePriceFiat: Math.round((grossFiat - discountFiat) * 100) / 100 };
+  };
+
+  it('OFF-2026-059 sits inside a EUR 700 ceiling, because EUR 645.40 is what we pay', () => {
+    const p = priced(3232.188, 0.256, 22);
+    expect(p.grossFiat).toBe(827.44);
+    expect(p.purchasePriceFiat).toBe(645.40);
+
+    const s = open({ autoCap: 700 });
+    expect(decide(p.purchasePriceFiat, s, 'lanapays').outcome).toBe('accept');
+    expect(decide(p.purchasePriceFiat, s, 'lanapays').code).toBe('WITHIN_MANDATE');
+    // The old reading, kept only so the change is written down: the same offer
+    // judged on its gross is above the very same ceiling.
+    expect(decide(p.grossFiat, s, 'lanapays').code).toBe('ABOVE_AUTO_CAP');
+  });
+
+  it('the ceiling still bites — a price above it goes to a person, discount or no discount', () => {
+    const p = priced(3600, 0.256, 22);           // gross 921.60 → we would pay 718.85
+    expect(p.purchasePriceFiat).toBe(718.85);
+    expect(decide(p.purchasePriceFiat, open({ autoCap: 700 }), 'lanapays').code).toBe('ABOVE_AUTO_CAP');
+  });
+
+  it('the extra room the change buys is exactly cap / (1 - discount), and no more', () => {
+    // At a 30 % class discount a EUR 500 ceiling now reaches EUR 714.28 of
+    // market value — the last cent below cap / 0.7 — and stops there.
+    const s = open({ autoCap: 500 });
+    expect(decide(priced(2790, 0.256, 30).purchasePriceFiat, s).outcome).toBe('accept');   // gross 714.24 → 499.97
+    expect(decide(priced(2800, 0.256, 30).purchasePriceFiat, s).code).toBe('ABOVE_AUTO_CAP'); // gross 716.80 → 501.76
+  });
+
+  it('a 100 % discount is not a free automatic yes — a price of zero is unmeasurable', () => {
+    const p = priced(1000, 0.256, 100);
+    expect(p.purchasePriceFiat).toBe(0);
+    expect(decide(p.purchasePriceFiat, open({ autoCap: 700 })).code).toBe('UNMEASURABLE');
   });
 });
 
@@ -162,7 +223,7 @@ describe('the defaults written on migration', () => {
     expect(map[autoCapKey('EUR', 'lanapays')]).toBe('');
     const s = readMandateSettings(map, 'EUR', 'lanapays');
     expect(s.autoCap).toBeNull();
-    expect(decideAcquisition({ walletClass: 'lanapays', currency: 'EUR', fiatValue: 1e6, settings: s }).outcome)
+    expect(decideAcquisition({ walletClass: 'lanapays', currency: 'EUR', purchasePriceFiat: 1e6, settings: s }).outcome)
       .toBe('accept');
   });
 
@@ -170,9 +231,9 @@ describe('the defaults written on migration', () => {
     for (const cls of ['other'] as WalletClass[]) {
       const s = readMandateSettings(map, 'EUR', cls);
       expect(s.autoCap).toBe(DEFAULT_AUTO_CAP_OTHER);
-      expect(decideAcquisition({ walletClass: cls, currency: 'EUR', fiatValue: 100, settings: s }).outcome)
+      expect(decideAcquisition({ walletClass: cls, currency: 'EUR', purchasePriceFiat: 100, settings: s }).outcome)
         .toBe('accept');
-      expect(decideAcquisition({ walletClass: cls, currency: 'EUR', fiatValue: 5000, settings: s }).outcome)
+      expect(decideAcquisition({ walletClass: cls, currency: 'EUR', purchasePriceFiat: 5000, settings: s }).outcome)
         .toBe('review');
     }
   });
