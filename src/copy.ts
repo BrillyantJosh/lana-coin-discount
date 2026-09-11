@@ -510,6 +510,14 @@ export const OFFER = {
   // ── the counterparty's own record ───────────────────────────────────────
   myOffersTitle: 'Your offers',
   noOffersYet: 'You have not proposed anything yet.',
+  /**
+   * TAB LABELS, AND THEY ARE SHORT ON PURPOSE. A tab is not a heading: on a
+   * 375-pixel screen "Completed Treasury Acquisitions" wrapped onto two lines
+   * and pushed "Your offers" onto two of its own, so a bar meant to be read at
+   * a glance took four. The page around them already says what they are about.
+   */
+  tabDeals: 'Acquisitions',
+  tabOffers: 'Offers',
   // Said under a record that stops at twenty rows, so a short list never reads
   // as a lost one.
   showingNewest: 'Showing the {shown} most recent of {total}.',

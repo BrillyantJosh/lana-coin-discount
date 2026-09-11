@@ -434,15 +434,15 @@ const Dashboard = () => {
         <div className="max-w-4xl mx-auto mt-16">
           <div className="flex gap-1 border-b border-border" role="tablist">
             {([
-              ['deals', UI.history, sales.length],
-              ['offers', OFFER.myOffersTitle, rest.length],
+              ['deals', OFFER.tabDeals, sales.length],
+              ['offers', OFFER.tabOffers, rest.length],
             ] as const).map(([key, label, count]) => (
               <button
                 key={key}
                 role="tab"
                 aria-selected={tab === key}
                 onClick={() => setTab(key)}
-                className={`-mb-px px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${
+                className={`-mb-px whitespace-nowrap px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${
                   tab === key
                     ? 'border-primary text-foreground'
                     : 'border-transparent text-muted-foreground hover:text-foreground'

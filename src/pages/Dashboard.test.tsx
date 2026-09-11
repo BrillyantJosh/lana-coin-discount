@@ -441,7 +441,10 @@ describe('the two records', () => {
   it('opens on completed acquisitions, not on the paperwork', async () => {
     offers = [offer({ offerRef: 'OFF-2026-041', status: 'settled', actionDueAt: null, offerExpiresAt: null })];
     show();
-    await waitFor(() => expect(screen.getByText('Completed Treasury Acquisitions')).toBeInTheDocument());
+    // The tabs are named short on purpose: at 375px "Completed Treasury
+    // Acquisitions" wrapped onto two lines and pushed "Your offers" onto two
+    // of its own, so a bar meant to be read at a glance took four.
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Acquisitions/ })).toHaveAttribute('aria-selected', 'true'));
     expect(screen.queryByTestId('offers-record')).toBeNull();
   });
 
