@@ -1,9 +1,12 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { ADMIN_MANDATES, MANDATE, OFFER_STATUS_LABELS } from '@/copy';
+import {
+  matchesSettlement, settlementCounts, type SettlementFilter,
+} from '@/lib/mandateSettlement';
 import { fill } from '@/components/MandatePanel';
 import { knownNames, resolveNames } from '@/lib/counterpartyNames';
 import type { RoundState } from '../../server/lib/roundMandate';
@@ -178,6 +181,12 @@ export default function AdminMandates() {
   const [split, setSplit] = useState<number | null>(null);
   const [currency, setCurrency] = useState('');
   const [round, setRound] = useState('');
+  /**
+   * Whether the treasury has finished acquiring from a financer. Client-side:
+   * the rows are already here, and a round-trip per click would make the
+   * counts beside the choices impossible to show honestly.
+   */
+  const [settlement, setSettlement] = useState<SettlementFilter>('all');
   const [names, setNames] = useState<Record<string, string>>(() => knownNames());
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -490,12 +499,24 @@ export default function AdminMandates() {
     );
   };
 
-  const mandatesOfRound = (r: number) => (data?.mandates || []).filter(m => m.round === r);
+  const mandatesOfRound = (r: number) =>
+    (data?.mandates || []).filter(m => m.round === r && matchesSettlement(m, settlement));
+  /** Counted over everything the server sent, so the numbers do not move when a choice is made. */
+  const settled = settlementCounts(data?.mandates || []);
   const fundingOfRound = (r: number) => (data?.funding || []).find(f => f.round === r) || null;
-  const roundsShown = [...new Set([
-    ...(data?.mandates || []).map(m => m.round),
-    ...(data?.funding || []).filter(f => f.mandateCount > 0).map(f => f.round),
-  ])].sort((a, b) => a - b);
+  const roundsShown = [...new Set(
+    settlement === 'all'
+      ? [
+          ...(data?.mandates || []).map(m => m.round),
+          // A round with mandates but none in THIS view still has a header,
+          // because its funding line is about the round, not about the rows.
+          ...(data?.funding || []).filter(f => f.mandateCount > 0).map(f => f.round),
+        ]
+      // Filtered, a round whose every row was filtered out has nothing to say:
+      // its header over an empty space reads as "none of these are paid", which
+      // is a different claim from "these are the paid ones".
+      : (data?.mandates || []).filter(m => matchesSettlement(m, settlement)).map(m => m.round),
+  )].sort((a, b) => a - b);
 
   /** What one round still has to pay, per currency, under the list of its mandates. */
   const renderFunding = (f: RoundFunding | null) => {
@@ -644,10 +665,45 @@ export default function AdminMandates() {
             <option value="">All rounds</option>
             {[1, 2, 3].map(r => <option key={r} value={r}>Round {r}</option>)}
           </select>
+          {/* Finished or not. The counts sit in the labels so each choice says
+              how many rows it holds before it is chosen — a filter you have to
+              try in order to find out it is empty gets tried once. */}
+          <select
+            value={settlement}
+            onChange={e => setSettlement(e.target.value as SettlementFilter)}
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+          >
+            <option value="all">All mandates ({settled.all})</option>
+            <option value="unpaid">Not yet acquired ({settled.unpaid})</option>
+            <option value="paid">Fully acquired ({settled.paid})</option>
+          </select>
           <span className="text-xs text-muted-foreground">
             {(data?.rounds || []).map(r => `R${r.round}: ${r.opensAt ? fmtUtc(r.opensAt) : 'no date'} / ${r.discountPercent ?? '—'}%`).join(' · ')}
           </span>
         </div>
+
+        {/* WHAT "PAID" MEANS HERE, on screen rather than in a comment. It is
+            settled LANA: a mandate whose whole amount sits in an offer nobody
+            has answered has nothing left to reserve and yet nothing has
+            happened, and filing that under "paid" would hide the rows this
+            filter exists to find. */}
+        {settlement !== 'all' && (
+          <p className="mb-4 text-xs text-muted-foreground">
+            {settlement === 'unpaid' ? (
+              <>
+                Showing the {settled.unpaid} mandate{settled.unpaid === 1 ? '' : 's'} the treasury has not finished
+                acquiring — {fmtLana(settled.owedLana)} LANA still to come. An offer that has been made but not
+                completed counts here, not as acquired.
+              </>
+            ) : (
+              <>
+                Showing the {settled.paid} mandate{settled.paid === 1 ? '' : 's'} where every LANA has completed a
+                purchase. Whether the price has been sent is on{' '}
+                <Link to="/admin/payouts" className="underline underline-offset-2">Payouts</Link>.
+              </>
+            )}
+          </p>
+        )}
 
         {loading && !data ? (
           <div className="flex items-center justify-center py-20">
