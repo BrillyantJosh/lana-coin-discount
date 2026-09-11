@@ -144,3 +144,73 @@ export function addColumnIfMissing(db: Database.Database, alterSql: string): boo
  */
 /** ISO timestamp of the last relay sync that returned at least one verified mandate. */
 export const LAST_SYNC_SETTING_KEY = 'acq_mandates_last_sync_at';
+
+// ─── one-off data repairs, run at boot ────────────────────────────────────
+
+/**
+ * THE SENTENCE THAT LIVED IN THE DATABASE.
+ *
+ * `decision_reason` is a STORED column, so renaming the review state in the
+ * code on 10 Sept 2026 left every row written before it still handing the old
+ * words to the person who wrote the proposal — "This proposal is under
+ * treasury review." under a badge saying financial review, which is the exact
+ * wording the owner asked to be gone (we are not a ministry and not a treasury
+ * department to the counterparty). The rename was pinned by copy.test.ts for
+ * the code and nothing at all did the rows.
+ *
+ * It belongs here rather than in a command somebody runs on a server once: a
+ * repair that only exists in a shell history has not happened to staging, has
+ * not happened to a restored backup, and cannot be checked.
+ *
+ * EXACTLY IDEMPOTENT. The second condition is what makes it so — SQLite's LIKE
+ * is case-insensitive while REPLACE is not, so matching on LIKE alone would
+ * "update" a differently-cased row to itself on every single boot and report
+ * the same count for ever. Rows in another casing are deliberately left alone:
+ * no such row is known, and a blind lower-casing would rewrite sentences a
+ * person typed.
+ */
+export const REVIEW_PHRASE_WAS = 'under treasury review';
+export const REVIEW_PHRASE_IS = 'under financial review';
+
+export function rewriteStoredReviewPhrase(db: Database.Database): number {
+  return db.prepare(`
+    UPDATE acquisition_offers
+       SET decision_reason = REPLACE(decision_reason, ?, ?)
+     WHERE decision_reason LIKE ?
+       AND decision_reason <> REPLACE(decision_reason, ?, ?)
+  `).run(
+    REVIEW_PHRASE_WAS, REVIEW_PHRASE_IS,
+    `%${REVIEW_PHRASE_WAS}%`,
+    REVIEW_PHRASE_WAS, REVIEW_PHRASE_IS,
+  ).changes;
+}
+
+/**
+ * WHO IS BEING REFUSED, AS OPPOSED TO WHO HAS NOT GOT ROUND TO IT.
+ *
+ * An accepted offer with failed transfer rows against it looks, on every
+ * screen we have, exactly like an accepted offer nobody has opened yet. That
+ * is how OFF-2026-056 sat for a day while the treasury's own code refused it
+ * on every press. One line at boot, printed only when there is something to
+ * print, is the cheapest place to say it out loud.
+ */
+export function stuckTransfers(db: Database.Database): Array<{ offerRef: string; attempts: number; lastError: string | null }> {
+  try {
+    return db.prepare(`
+      SELECT o.offer_ref AS offerRef, COUNT(b.id) AS attempts,
+             (SELECT error_message FROM buyback_transactions x
+               WHERE x.offer_ref = o.offer_ref AND x.status = 'failed'
+               ORDER BY x.id DESC LIMIT 1) AS lastError
+        FROM acquisition_offers o
+        JOIN buyback_transactions b
+          ON b.offer_ref = o.offer_ref AND b.status = 'failed'
+       WHERE o.status = 'accepted' AND o.transaction_id IS NULL
+       GROUP BY o.offer_ref
+       ORDER BY attempts DESC
+    `).all() as any;
+  } catch {
+    // A column this query names may not exist on an older database. A boot
+    // must not fail over a diagnostic.
+    return [];
+  }
+}

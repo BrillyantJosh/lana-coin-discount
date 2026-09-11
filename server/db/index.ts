@@ -5,6 +5,8 @@ import { defaultMandateRows } from '../lib/treasuryMandate.js';
 import {
   ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, KIND_38888_SPLIT_ENDS_AT_COLUMN,
   OFFER_DECISION_REASON_STATUS_COLUMN, addColumnIfMissing,
+  rewriteStoredReviewPhrase,
+  stuckTransfers,
 } from './roundMandateSchema.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -298,6 +300,21 @@ db.exec(ROUND_MANDATE_SCHEMA_SQL);
 for (const sql of ROUND_MANDATE_OFFER_COLUMNS) addColumnIfMissing(db, sql);
 addColumnIfMissing(db, OFFER_DECISION_REASON_STATUS_COLUMN);
 addColumnIfMissing(db, KIND_38888_SPLIT_ENDS_AT_COLUMN);
+
+// The stored half of the 10 Sept rename, and the one thing that says out loud
+// which sellers our own code is refusing. Both idempotent, both quiet when
+// there is nothing to say.
+try {
+  const rewritten = rewriteStoredReviewPhrase(db);
+  if (rewritten > 0) console.log(`[lana-discount] Rewrote the review state on ${rewritten} stored decision reasons`);
+  const stuck = stuckTransfers(db);
+  if (stuck.length > 0) {
+    console.warn(`[lana-discount] ⚠ ${stuck.length} accepted offer(s) have FAILED transfer attempts against them:`);
+    for (const s of stuck) console.warn(`    ${s.offerRef} — ${s.attempts} attempt(s); last: ${s.lastError || 'no message recorded'}`);
+  }
+} catch (err: any) {
+  console.warn('[lana-discount] Stored-reason repair skipped:', err?.message);
+}
 
 // --- Seed the treasury mandate for the active currencies -------------------
 // INSERT OR IGNORE only: a row that exists is an owner's decision and must

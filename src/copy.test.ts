@@ -222,10 +222,17 @@ const REVIEW_PHRASE = 'under treasury review';
  * the moment someone fixes those two literals this goes red and tells them to
  * delete this line. Fix and deletion belong in the same commit.
  */
-// Nothing is exempt any more. The one file that was — acquisitionRestriction —
-// carried the worst of the six sentences, and a restricted seller is precisely
-// the person who gets sent to a human, so it was the one they read.
-const REVIEW_PHRASE_EXEMPT: string[] = [];
+/**
+ * One file, and it is here to DELETE the phrase, not to write it.
+ *
+ * `decision_reason` is a stored column, so the 10 Sept rename left older rows
+ * still handing the old words to the person who wrote the proposal. The repair
+ * is a boot migration, and a migration that rewrites a sentence has to name the
+ * sentence. Exempting it is safe only while that stays true — which the test
+ * straight after this list checks, so the exemption cannot quietly become a
+ * licence to write the words again.
+ */
+const REVIEW_PHRASE_EXEMPT: string[] = ['db/roundMandateSchema.ts'];
 
 const SERVER = path.resolve(SRC, '..', 'server');
 
@@ -288,6 +295,17 @@ describe('the review state is checked where it actually lives', () => {
       `"${REVIEW_PHRASE}" is written by: ${offenders.join(', ')} — it reaches the seller ` +
       'through acquisition_offers.decision_reason, under a badge that says UI.reviewState',
     ).toEqual([]);
+  });
+
+  it('the one exempt file names the phrase only in order to delete it', () => {
+    // The guard on the exemption. If this file ever starts BUILDING a sentence
+    // with those words instead of replacing them, this goes red and the
+    // exemption has to go with it.
+    const body = fs.readFileSync(path.join(SERVER, 'db', 'roundMandateSchema.ts'), 'utf8');
+    expect(body.toLowerCase()).toContain(REVIEW_PHRASE);
+    expect(body.toLowerCase()).toContain('under financial review');
+    expect(body).toMatch(/SET decision_reason = REPLACE\(/);
+    expect(withoutComments(body)).not.toMatch(/is\s+under treasury review/i);
   });
 
   it('no admin screen prints it either', () => {
