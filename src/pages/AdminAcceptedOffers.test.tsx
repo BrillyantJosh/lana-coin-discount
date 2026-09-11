@@ -205,7 +205,7 @@ describe('two clocks, kept apart', () => {
     body = payload({ transferWindowHours: 36 });
     show();
     await waitFor(() =>
-      expect(screen.getByText(/that window is 36 hours from acceptance/)).toBeInTheDocument(),
+      expect(screen.getByText(/window is 36 hours from the moment they accept/)).toBeInTheDocument(),
     );
   });
 

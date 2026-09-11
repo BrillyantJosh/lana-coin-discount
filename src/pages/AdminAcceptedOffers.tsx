@@ -401,7 +401,9 @@ const AdminAcceptedOffers = () => {
               constant typed in here, so it appears once the server has said it
               and not a moment before. */}
           {transferWindowHours !== null && (
-            <> On a round mandate that window is {transferWindowHours} hours from acceptance.</>
+            <> The seller's window is {transferWindowHours} hours from the moment they accept — every
+              accepted offer, not only those from a round mandate. Until 11 Sept 2026 it was whatever was
+              left of the OFFER's own window, which on an automatic offer is thirty minutes.</>
           )}
         </div>
 
