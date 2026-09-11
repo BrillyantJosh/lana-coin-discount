@@ -98,6 +98,10 @@ interface MandateRow {
   wallets: WalletRow[];
   currencies: string[];
   expectedLana: number;
+  /** Received minus settled — what has not completed a purchase. */
+  unsoldLana: number;
+  /** Could anybody still sell that? False = a crumb under the sale minimum. */
+  unsoldSellable: boolean;
   proposedLana: number;
   acceptedLana: number;
   settledLana: number;
@@ -682,11 +686,13 @@ export default function AdminMandates() {
           </span>
         </div>
 
-        {/* WHAT "PAID" MEANS HERE, on screen rather than in a comment. It is
-            settled LANA: a mandate whose whole amount sits in an offer nobody
-            has answered has nothing left to reserve and yet nothing has
-            happened, and filing that under "paid" would hide the rows this
-            filter exists to find. */}
+        {/* WHAT "PAID" MEANS HERE, on screen rather than only in a comment.
+            Settled LANA, and a crumb nobody could sell does not keep a mandate
+            open: a transfer almost never lands on the exact lanoshi, and 14 of
+            the 74 mandates of Split 8 had between 0.0003 and 0.73 LANA left
+            over — under a euro's worth, refused by the offer route as too
+            small, and enough on its own to file a financer who had been paid
+            in full beside people who had sold nothing. */}
         {settlement !== 'all' && (
           <p className="mb-4 text-xs text-muted-foreground">
             {settlement === 'unpaid' ? (
@@ -697,8 +703,9 @@ export default function AdminMandates() {
               </>
             ) : (
               <>
-                Showing the {settled.paid} mandate{settled.paid === 1 ? '' : 's'} where every LANA has completed a
-                purchase. Whether the price has been sent is on{' '}
+                Showing the {settled.paid} mandate{settled.paid === 1 ? '' : 's'} with nothing sellable left — either
+                fully acquired, or down to a remainder under the smallest purchase we make, which cannot be proposed
+                and is not coming. Whether the price has been sent is on{' '}
                 <Link to="/admin/payouts" className="underline underline-offset-2">Payouts</Link>.
               </>
             )}

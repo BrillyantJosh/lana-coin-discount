@@ -793,6 +793,36 @@ describe('/api/treasury', () => {
     expect((await get('/api/treasury/admin/mandates?split=8')).status).toBe(403);
   });
 
+  /**
+   * A CRUMB IS NOT A DEBT — 11 Sept 2026, caught by the owner within the hour.
+   *
+   * A transfer almost never lands on the exact lanoshi. Boštjan Zajc's mandate
+   * was for 32,535.08 LANA and 32,535.06 arrived; the 0.02 left over is worth
+   * well under a cent, the offer route refuses anything under min_sell as too
+   * small, and the round steps over it as a crumb. Subtraction alone called
+   * him unfinished and put him on the screen beside people who had sold
+   * nothing at all. Fourteen of Split 8's seventy-four mandates were in that
+   * state.
+   */
+  it('reports what is unsold, and whether anybody could still sell it', async () => {
+    const r = await get('/api/treasury/admin/mandates?split=8', { 'x-admin-hex-id': ADMIN });
+    const m = r.body.mandates[0];
+    // Untouched: the whole mandate is unsold, and plainly sellable.
+    expect(m.unsoldLana).toBe(1000);
+    expect(m.unsoldSellable).toBe(true);
+  });
+
+  it('a live offer does NOT make a mandate sold — only a completed purchase does', async () => {
+    await propose(600);
+    const r = await get('/api/treasury/admin/mandates?split=8', { 'x-admin-hex-id': ADMIN });
+    const m = r.body.mandates[0];
+    // 600 is reserved, so `remaining` has moved; nothing has settled, so the
+    // unsold figure has not. These two must not be confused for one another.
+    expect(m.remainingLana).toBe(400);
+    expect(m.unsoldLana).toBe(1000);
+    expect(m.unsoldSellable).toBe(true);
+  });
+
   it('PUT /admin/rounds validates and warns', async () => {
     const bad = await fetch(base + '/api/treasury/admin/rounds', { method: 'PUT', headers: { 'content-type': 'application/json', 'x-admin-hex-id': ADMIN },
       body: JSON.stringify({ split: 8, rounds: [{ round: 1, opensAt: '2026-09-21T00:00:00Z', discountPercent: 22 }, { round: 2, opensAt: '2026-09-14T00:00:00Z', discountPercent: 25 }] }) });

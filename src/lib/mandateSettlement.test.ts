@@ -3,62 +3,79 @@ import {
   owedLana, isPaid, matchesSettlement, settlementCounts, type SettlementShape,
 } from './mandateSettlement';
 
-const m = (expectedLana: number, settledLana: number): SettlementShape => ({ expectedLana, settledLana });
+/** unsoldLana, and whether anybody could still sell it — the server's answer. */
+const m = (unsoldLana: number, unsoldSellable: boolean): SettlementShape => ({ unsoldLana, unsoldSellable });
 
 describe('what the treasury still has to acquire', () => {
-  it('is the part of the mandate that has not completed', () => {
-    expect(owedLana(m(12_992.89, 0))).toBeCloseTo(12_992.89, 8);
-    expect(owedLana(m(12_992.89, 5_000))).toBeCloseTo(7_992.89, 8);
-    expect(owedLana(m(12_992.89, 12_992.89))).toBe(0);
+  it('is what is left unsold, while it can still be sold', () => {
+    expect(owedLana(m(12_992.89, true))).toBeCloseTo(12_992.89, 8);
+    expect(owedLana(m(7_992.89, true))).toBeCloseTo(7_992.89, 8);
+    expect(owedLana(m(0, false))).toBe(0);
   });
 
   /**
-   * A re-allocation can shrink what a budget received below what was already
-   * bought from it. The row carries its own warning for that; a negative
-   * "still owed" would also quietly subtract from the total below.
+   * THE ONE THE OWNER CAUGHT — 11 Sept 2026.
+   *
+   * Boštjan Zajc's mandate was for 32,535.08 LANA and 32,535.06 arrived. He
+   * had been bought out and paid, and the 0.02 LANA left over — a figure the
+   * offer route would refuse as below the minimum, and the round steps over as
+   * a crumb — put him in the unpaid list beside people who had sold nothing.
+   * A remainder nobody can sell is not a debt.
    */
-  it('never goes negative when a budget shrinks under a completed purchase', () => {
-    expect(owedLana(m(1_000, 1_500))).toBe(0);
+  it('a crumb too small to sell is NOT owed, however the subtraction reads', () => {
+    const bostjan = m(0.02, false);
+    expect(owedLana(bostjan)).toBe(0);
+    expect(isPaid(bostjan)).toBe(true);
   });
 
-  it('treats a difference smaller than a lanoshi as no difference', () => {
-    expect(owedLana(m(100, 100 - 1e-9))).toBe(0);
-    expect(owedLana(m(100, 99.999_999_99))).toBe(0);
+  it('but a remainder that could still be sold is owed, however small it looks', () => {
+    expect(isPaid(m(8.4, true))).toBe(false);
+    expect(owedLana(m(8.4, true))).toBeCloseTo(8.4, 8);
   });
 
   it('a tombstoned mandate with nothing on it owes nothing', () => {
-    expect(isPaid(m(0, 0))).toBe(true);
+    expect(isPaid(m(0, false))).toBe(true);
+  });
+
+  /**
+   * The rate and the per-currency minimum live on the server, and the browser
+   * has neither. A second opinion built out of neither is how a screen and a
+   * gate come to disagree about the same LANA, so this module takes the
+   * server's word and never overrides it.
+   */
+  it('never second-guesses the server: sellable is sellable, small or not', () => {
+    expect(isPaid(m(0.000_000_01, true))).toBe(false);
+    expect(isPaid(m(9_999, false))).toBe(true);
   });
 });
 
 /**
- * THE ONE THAT DECIDES WHETHER THIS FILTER IS USEFUL AT ALL.
- *
  * `remaining` reaches zero the moment a live offer reserves the last of a
  * mandate — but a live offer is not money, it is a question the seller has not
- * answered, and the cap comes straight back if they let it lapse. Filtering on
- * that would file the rows an operator is hunting for under "paid".
+ * answered, and the cap comes back if they let it lapse.
  */
 describe('an offer in flight is not a payment', () => {
   it('a mandate fully reserved by an unanswered offer is still unpaid', () => {
-    // expected 32,488.67 · proposed/accepted the whole of it · settled nothing.
-    expect(isPaid(m(32_488.67, 0))).toBe(false);
-    expect(owedLana(m(32_488.67, 0))).toBeCloseTo(32_488.67, 8);
+    // Gašper Zorman: expected 32,488.67, all of it in a live offer, nothing
+    // settled — so unsold is the whole amount and plainly sellable.
+    const gasper = m(32_488.67, true);
+    expect(isPaid(gasper)).toBe(false);
+    expect(owedLana(gasper)).toBeCloseTo(32_488.67, 8);
   });
 
-  it('and becomes paid only once the purchase completes', () => {
-    expect(isPaid(m(32_488.67, 32_488.67))).toBe(true);
+  it('and becomes paid once the purchase completes and only a crumb is left', () => {
+    expect(isPaid(m(0.018, false))).toBe(true);
   });
 
   it('a half-sold mandate whose rest lapsed stays unpaid — that LANA is still theirs', () => {
-    expect(isPaid(m(1_000, 500))).toBe(false);
+    expect(isPaid(m(500, true))).toBe(false);
   });
 });
 
 describe('choosing what to look at', () => {
-  const rows = [m(100, 100), m(100, 0), m(100, 40), m(0, 0)];
+  const rows = [m(0, false), m(100, true), m(60, true), m(0.02, false)];
 
-  it('all shows everything, including rows with nothing on them', () => {
+  it('all shows everything, including the finished ones', () => {
     expect(rows.filter(r => matchesSettlement(r, 'all'))).toHaveLength(4);
   });
 
@@ -74,12 +91,16 @@ describe('choosing what to look at', () => {
     expect(settlementCounts(rows)).toEqual({ all: 4, paid: 2, unpaid: 2, owedLana: 160 });
   });
 
+  it('leaves the unsellable crumbs OUT of the total, not just out of the count', () => {
+    expect(settlementCounts([m(0.02, false), m(0.018, false)]).owedLana).toBe(0);
+  });
+
   it('an empty list is empty rather than zero of everything owed', () => {
     expect(settlementCounts([])).toEqual({ all: 0, paid: 0, unpaid: 0, owedLana: 0 });
   });
 
   it('adds the owed LANA to the lanoshi, not to a rounded guess', () => {
-    expect(settlementCounts([m(12_992.890_625, 0), m(19_530.234_375, 0)]).owedLana)
+    expect(settlementCounts([m(12_992.890_625, true), m(19_530.234_375, true)]).owedLana)
       .toBe(32_523.125);
   });
 });

@@ -23,9 +23,10 @@
 import { Router, type Request, type Response } from 'express';
 import { lanapaysOnlyEnabled, LANAPAYS_ONLY_KEY } from '../lib/acquisitionScope.js';
 import {
-  getDbHandle, getAppSetting, setAppSetting, getSplitFromDb,
+  getDbHandle, getAppSetting, setAppSetting, getSplitFromDb, getAllAppSettings,
   getElectrumServersFromDb, getRelaysFromDb, getExchangeRatesFromDb,
 } from '../db/index.js';
+import { minimumFiatFor, proposalTooSmall } from '../lib/acquisitionMinimum.js';
 import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
 import { requireAdmin } from '../lib/adminAuth.js';
 import { requireApiKey } from '../lib/apiKeyAuth.js';
@@ -346,6 +347,30 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
       budgetMoney = null;
     }
     const rates = getExchangeRatesFromDb();
+    const settings = getAllAppSettings();
+
+    /**
+     * IS WHAT IS LEFT UNSOLD STILL SELLABLE BY ANYBODY?
+     *
+     * A mandate almost never settles to the exact lanoshi. Boštjan Zajc's
+     * round-1 mandate was for 32,535.08 LANA and 32,535.06 arrived: the
+     * proposal was for a figure rounded down from the mandate, and 0.02 LANA
+     * stayed behind. He has been bought out and paid — but a screen that
+     * measures "finished" by subtraction alone reads that 0.02 as unfinished
+     * business and files him beside people who have not sold anything.
+     *
+     * A remainder under min_sell_<currency> cannot be proposed at all: the
+     * offer route refuses it as BELOW_MINIMUM and the round steps over it as a
+     * crumb. So it is not owed, it is not coming, and the only honest answer
+     * about it is that this mandate is done. Judged with the SAME test the
+     * refusal uses, against the live rate, so the screen and the gate cannot
+     * disagree about the same LANA. Across the mandate's currencies, because a
+     * remainder one currency is too small for may be sellable in another.
+     */
+    const unsoldIsSellable = (lana: number, currencies: string[]): boolean => {
+      if (!(lana > 0)) return false;
+      return currencies.some(c => !proposalTooSmall(lana, rates[c] ?? null, minimumFiatFor(settings, c)));
+    };
 
     const now = Math.floor(Date.now() / 1000);
     const agg = { expected: 0, remaining: 0, proposed: 0, accepted: 0, settled: 0 };
@@ -432,6 +457,17 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         currencies: [...new Set(m.wallets.map(w => w.currency))],
         expectedLana: toLana(m.lanaReceivedLanoshis),
         expectedLanoshis: m.lanaReceivedLanoshis,
+        /** Received minus what actually completed — never negative. */
+        unsoldLana: toLana(Math.max(0, m.lanaReceivedLanoshis - tot.settled)),
+        /**
+         * True while somebody could still sell what is left. False means the
+         * remainder is under the smallest purchase the treasury makes, so this
+         * mandate is finished whatever the subtraction says.
+         */
+        unsoldSellable: unsoldIsSellable(
+          toLana(Math.max(0, m.lanaReceivedLanoshis - tot.settled)),
+          [...new Set(m.wallets.map(w => w.currency))],
+        ),
         proposedLana: toLana(tot.proposed), proposedLanoshis: tot.proposed,
         acceptedLana: toLana(tot.accepted), acceptedLanoshis: tot.accepted,
         settledLana: toLana(tot.settled), settledLanoshis: tot.settled,

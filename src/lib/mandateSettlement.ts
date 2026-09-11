@@ -6,53 +6,59 @@
  * exactly like the sixty that are finished. Owner, 11 Sept 2026: "želil bi si
  * da tukaj lahko izberem filter da mi pokaže seznam vseh, neplačane, plačane."
  *
- * WHAT COUNTS AS PAID, and why it is settled LANA rather than anything nearer:
+ * ── WHAT COUNTS AS PAID ───────────────────────────────────────────────────
  *
- *   expected  the LANA this budget received, and the ceiling of what the
- *             treasury may acquire from it
- *   proposed  the seller asked; we have not answered
- *   accepted  we agreed; the LANA has not arrived
- *   settled   the LANA arrived and the purchase completed
+ * Two things have to be true, and the first one alone is a trap I shipped and
+ * the owner caught within the hour.
  *
- * Only the last one is money that moved. A mandate whose whole amount sits in
- * a live offer has `remaining` of zero and yet nothing has happened — the
- * seller may let it lapse and the cap comes straight back. Calling that "paid"
- * would hide exactly the rows an operator is looking for. So what is still
- * owed is measured from `settled`, and everything short of it — untouched,
- * proposed, accepted, half sold, or abandoned half way — is not paid.
+ * 1. It is measured from SETTLED LANA — purchases that completed — and not
+ *    from `remaining`. `remaining` reaches zero the moment a live offer
+ *    reserves the last of a mandate, but an offer is a question the seller has
+ *    not answered and the cap comes straight back if they let it lapse.
+ *    Filing that under "paid" would hide exactly the rows this filter exists
+ *    to find.
  *
- * Note what this deliberately does NOT claim: that the fiat has reached the
- * person. A settled purchase means the LANA arrived and the treasury owes the
- * price; whether that price has been sent is the Payouts screen's question,
- * not this one. "Paid" here means the treasury has finished acquiring.
+ * 2. A REMAINDER TOO SMALL TO SELL IS NOT A DEBT. A mandate almost never
+ *    settles to the exact lanoshi. Boštjan Zajc's round-1 mandate was for
+ *    32,535.08 LANA and 32,535.06 arrived — the proposal was a figure rounded
+ *    down from the mandate, and 0.02 LANA stayed behind. He had been bought
+ *    out and paid, and subtraction alone put him in the unpaid list beside
+ *    people who have not sold anything at all.
+ *
+ *    That 0.02 cannot be proposed: the offer route refuses anything under
+ *    min_sell_<currency> and the round steps over it as a crumb. So it is not
+ *    owed and it is not coming. Whether a remainder is still sellable is
+ *    decided ON THE SERVER, with the same test the refusal uses and against
+ *    the same live rate, and arrives here as `unsoldSellable`. This module
+ *    does not second-guess it: a browser has neither the rate nor the
+ *    per-currency minimum, and a second opinion built out of neither is how
+ *    the screen and the gate come to disagree about the same LANA.
+ *
+ * And what "paid" does NOT claim, said on the screen as well as here: that the
+ * money reached the person. A settled purchase means the LANA arrived and the
+ * treasury owes the price; whether that price has been sent is the Payouts
+ * screen's question.
  */
-
-/** A tenth of a lanoshi in LANA — below this, two figures are the same figure. */
-const DUST = 1e-8;
 
 export type SettlementFilter = 'all' | 'unpaid' | 'paid';
 
 export interface SettlementShape {
-  expectedLana: number;
-  settledLana: number;
+  /** Received minus settled, in LANA. Never negative; the server floors it. */
+  unsoldLana: number;
+  /** Could anybody still sell what is left? The server's answer, not ours. */
+  unsoldSellable: boolean;
 }
 
-/**
- * What the treasury has still to acquire from this mandate, in LANA.
- *
- * Never negative: a re-allocation can shrink `expected` below what was already
- * bought, and a negative "still owed" is a number nobody can act on. That case
- * carries its own ACCEPTED_EXCEEDS_RECEIVED warning on the row; it must not
- * also quietly subtract from a total.
- */
+/** What the treasury has still to acquire — nothing, once it is unsellable. */
 export function owedLana(m: SettlementShape): number {
-  const owed = (Number(m.expectedLana) || 0) - (Number(m.settledLana) || 0);
-  return owed > DUST ? owed : 0;
+  if (!m.unsoldSellable) return 0;
+  const owed = Number(m.unsoldLana) || 0;
+  return owed > 0 ? owed : 0;
 }
 
-/** Paid = the treasury has finished acquiring: nothing is left to settle. */
+/** Paid = nothing is left that anybody could still sell us. */
 export function isPaid(m: SettlementShape): boolean {
-  return owedLana(m) === 0;
+  return !m.unsoldSellable;
 }
 
 export function matchesSettlement(m: SettlementShape, filter: SettlementFilter): boolean {
@@ -77,9 +83,8 @@ export function settlementCounts(rows: SettlementShape[]): SettlementCounts {
   let paid = 0;
   let owed = 0;
   for (const m of rows) {
-    const o = owedLana(m);
-    if (o === 0) paid += 1;
-    else owed += o;
+    if (isPaid(m)) paid += 1;
+    else owed += owedLana(m);
   }
   return {
     all: rows.length,
