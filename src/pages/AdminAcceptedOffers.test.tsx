@@ -248,32 +248,40 @@ describe('which one is running out first', () => {
   });
 });
 
+/**
+ * A WINDOW THAT HAS ALREADY CLOSED IS NOT ON THE LIST.
+ *
+ * Owner, 11 Sept 2026: "primere, ki so overdue, ne rabiš sploh prikazovati."
+ * A row past its transfer window owes nobody anything and can never complete;
+ * listing it fills the page with rows that are only in the way. It is counted
+ * in one line, with the door to void it, and that is all.
+ *
+ * These asserted the row's own presentation until that day. The presentation
+ * is still live — a row can run out while the page is open, and then its own
+ * clock says so — but it is no longer how a lapsed row arrives here.
+ */
 describe('a window that has already closed', () => {
-  it('says so on the row instead of counting down past zero', async () => {
-    body = payload({
-      offers: [offer({ transferDueAt: at(-1 * HOUR), nextDueAt: at(-1 * HOUR), transferLapsed: true })],
-      totals: {},
-      lapsed: { count: 1, byCurrency: { EUR: 651.32 } },
-    });
-    const row = await rowOf('OFF-2026-059');
-    expect(within(row).getByText('window closed')).toBeInTheDocument();
-    expect(within(row).getByText(/the sweep has not run yet/)).toBeInTheDocument();
+  const lapsedBody = (over = {}) => payload({
+    offers: [offer({ transferDueAt: at(-1 * HOUR), nextDueAt: at(-1 * HOUR), transferLapsed: true, ...over })],
+    totals: {},
+    lapsed: { count: 1, byCurrency: { EUR: 651.32 } },
   });
 
-  it('keeps its money out of the figure at the top, and says where it went', async () => {
-    body = payload({
-      offers: [offer({ transferDueAt: at(-1 * HOUR), nextDueAt: at(-1 * HOUR), transferLapsed: true })],
-      totals: {},
-      lapsed: { count: 1, byCurrency: { EUR: 651.32 } },
-    });
+  it('is not listed at all', async () => {
+    body = lapsedBody();
+    show();
+    await hero();
+    expect(screen.queryByText('OFF-2026-059')).not.toBeInTheDocument();
+  });
+
+  it('but its money is named, out of the figure at the top, with where to go', async () => {
+    body = lapsedBody();
     show();
     const card = await hero();
     // The bottom line is a dash, not the price of a row that can never
-    // complete; the money is named below it as explicitly NOT counted, and at
-    // a count of one it is named in the singular.
+    // complete; the money is named below it as explicitly not listed.
     expect(within(card).getByText('—')).toBeInTheDocument();
-    expect(within(card).getByText(/is past the transfer window and is NOT counted/)).toBeInTheDocument();
-    expect(within(card).getByText(/nothing is owed on it\. It still reserves what it was given/)).toBeInTheDocument();
+    expect(within(card).getByText(/is past its transfer window and is not listed above/)).toBeInTheDocument();
     expect(within(card).getByText(/€651\.32/)).toBeInTheDocument();
     expect(within(card).getByRole('link', { name: 'Offers' })).toHaveAttribute('href', '/admin/offers');
   });
@@ -286,37 +294,7 @@ describe('a window that has already closed', () => {
     });
     show();
     const card = await hero();
-    expect(within(card).getByText(/are past the transfer window and are NOT counted/)).toBeInTheDocument();
-  });
-
-  /**
-   * THE ONE CONFUSION THIS PAGE EXISTS TO PREVENT, ASSERTED ON THE CLASSES.
-   *
-   * On a row whose transfer window has closed the acquisition can never
-   * happen, so the settlement date on it will never be paid. Drawn in the
-   * page's amber — its "act on this soon" colour — it points the person
-   * running the treasury at a payment that does not exist, on the same row
-   * where the total says nothing is owed. Struck through and muted, like the
-   * price beside it, it stays readable and stops asking for anything.
-   */
-  it('stops the settlement date asking for attention once nothing is owed on it', async () => {
-    body = payload({
-      offers: [offer({
-        transferDueAt: at(-1 * HOUR), nextDueAt: at(-1 * HOUR), transferLapsed: true,
-        // Inside SETTLEMENT_AMBER_MS: this is exactly when it used to go amber.
-        settlementDueAt: at(2 * DAY),
-      })],
-      totals: {},
-      lapsed: { count: 1, byCurrency: { EUR: 651.32 } },
-    });
-    const row = await rowOf('OFF-2026-059');
-    const { settlement } = clockCells(row);
-    const figure = settlement.querySelector('span.font-mono') as HTMLElement;
-    expect(figure.className).not.toMatch(/amber/);
-    expect(figure.className).not.toMatch(/font-bold/);
-    expect(figure.className).toMatch(/line-through/);
-    // Still legible, and still the date we agreed — muted, not deleted.
-    expect(within(settlement).getByText(/^\d+d \d+h$/)).toBeInTheDocument();
+    expect(within(card).getByText(/are past their transfer window and are not listed above/)).toBeInTheDocument();
   });
 
   it('leaves the settlement date alone on a row that can still complete', async () => {
@@ -327,17 +305,15 @@ describe('a window that has already closed', () => {
     expect(figure.className).not.toMatch(/line-through/);
   });
 
-  it('names the one nothing sweeps, because that one waits for a person', async () => {
-    body = payload({
-      offers: [offer({
-        transferDueAt: at(-1 * HOUR), nextDueAt: at(-1 * HOUR),
-        transferLapsed: true, sweepsItself: false, mandateRef: null, round: null,
-      })],
-      totals: {},
-      lapsed: { count: 1, byCurrency: { EUR: 651.32 } },
-    });
+  /**
+   * The one way a closed window still reaches the table: it closes while
+   * somebody is reading the page. The server said it was live when the list
+   * was fetched, and the row's own clock is what notices.
+   */
+  it('a row that runs out while the page is open still says so on itself', async () => {
+    body = payload({ offers: [offer({ transferDueAt: at(-1 * HOUR), nextDueAt: at(-1 * HOUR) })] });
     const row = await rowOf('OFF-2026-059');
-    expect(within(row).getByText(/Nothing sweeps this one/)).toBeInTheDocument();
+    expect(within(row).getByText('window closed')).toBeInTheDocument();
   });
 });
 

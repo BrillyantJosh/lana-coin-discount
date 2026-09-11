@@ -438,44 +438,36 @@ export function expireStaleOffers(db: Database.Database): number {
        AND offer_expires_at IS NOT NULL
        AND offer_expires_at <= datetime('now')
   `).run().changes;
+  // EVERY accepted offer, not only the ones that came from a round mandate.
+  // The window is the same for both and always was — the mandate gate here was
+  // why an accepted offer with no mandate was swept by nothing at all and sat
+  // at the top of a dashboard for months.
   const untransferred = db.prepare(`
     UPDATE acquisition_offers
        SET status = 'expired', decision_reason = ?, decision_reason_status = 'expired',
            updated_at = datetime('now')
      WHERE status = 'accepted'
-       AND mandate_ref IS NOT NULL
        AND transaction_id IS NULL
        AND accepted_at IS NOT NULL
        AND accepted_at <= datetime('now', ?)
   `).run(TRANSFER_NOT_COMPLETED, `-${ACCEPTED_TRANSFER_WINDOW_HOURS} hours`).changes;
 
   /**
-   * THE ROWS NEITHER STATEMENT ABOVE COULD REACH.
-   *
-   * The first only sweeps `offered`. The second only sweeps `accepted` rows
-   * that came from a round mandate — `mandate_ref IS NOT NULL` — because the
-   * 24-hour transfer window is a mandate rule. So an ACCEPTED offer with no
-   * mandate whose own window has closed was swept by nothing at all: it stayed
-   * `accepted` for ever, and `accepted` means "waiting on the seller", which
-   * put it at the top of his dashboard under "waiting on you" for the rest of
-   * time. OFF-2026-003 was still sitting there on 11 Sept 2026, drawing itself
-   * as lapsed, months after it lapsed.
-   *
-   * Nothing about money changes here. assertTransferable already refuses these
-   * rows on the same timestamp (OFFER_EXPIRED), so they were dead already —
-   * this only makes the row say what was already true.
+   * An accepted row with no acceptance timestamp cannot be counted from, and
+   * an old one may have none. Its offer window is the only clock it has.
    */
-  const lapsedAccepted = db.prepare(`
+  const undatedAccepted = db.prepare(`
     UPDATE acquisition_offers
        SET status = 'expired', decision_reason = ?, decision_reason_status = 'expired',
            updated_at = datetime('now')
      WHERE status = 'accepted'
        AND transaction_id IS NULL
+       AND accepted_at IS NULL
        AND offer_expires_at IS NOT NULL
        AND offer_expires_at <= datetime('now')
   `).run(TRANSFER_NOT_COMPLETED).changes;
 
-  return unaccepted + untransferred + lapsedAccepted;
+  return unaccepted + untransferred + undatedAccepted;
 }
 
 /** `YYYY-MM-DD HH:MM:SS` UTC plus N hours, in the shape SQLite writes. */
@@ -513,17 +505,33 @@ function asUtcMs(ts: string): number {
  * opinion about which sweep applies to which row.
  */
 export function sellerActionDeadline(o: OfferRow): string | null {
+  // TWO WINDOWS, AND THEY ARE NOT THE SAME WINDOW.
+  //
+  // `offer_expires_at` is how long the OFFER stands — the time to say yes.
+  // Once it is said, what is left to do is the transfer, and that has its own
+  // clock: ACCEPTED_TRANSFER_WINDOW_HOURS from the moment of acceptance.
+  //
+  // Until 11 Sept 2026 this returned the EARLIER of the two, and for an
+  // automatic offer the earlier one is always the offer's own thirty minutes.
+  // So a seller who accepted a minute after we priced it had twenty-nine
+  // minutes to find a WIF private key, paste it and sign — and then
+  // assertTransferable refused on the same timestamp. Three people were
+  // stopped by it in one morning; the admin page showed a wall of "window
+  // closed" thirty minutes after each acceptance.
+  //
+  // The constant beside it has always said what it meant — "how long an
+  // ACCEPTED offer may sit without its transfer" — and so has the screen the
+  // seller reads, which is headed "Time left to transfer". The code was the
+  // only part that disagreed.
   if (o.status === 'offered') return o.offer_expires_at;
   if (o.status !== 'accepted') return null;
-  const candidates: string[] = [];
-  if (o.offer_expires_at) candidates.push(o.offer_expires_at);
-  if (o.mandate_ref && o.accepted_at) {
-    const swept = sqlitePlusHours(o.accepted_at, ACCEPTED_TRANSFER_WINDOW_HOURS);
-    if (swept) candidates.push(swept);
+  if (o.accepted_at) {
+    const byTransfer = sqlitePlusHours(o.accepted_at, ACCEPTED_TRANSFER_WINDOW_HOURS);
+    if (byTransfer && !isNaN(asUtcMs(byTransfer))) return byTransfer;
   }
-  const dated = candidates.filter(c => !isNaN(asUtcMs(c)));
-  if (dated.length === 0) return null;
-  return dated.reduce((a, b) => (asUtcMs(b) < asUtcMs(a) ? b : a));
+  // No acceptance timestamp to count from — an old row. The offer's own window
+  // is the only thing there is, and saying nothing would be worse.
+  return o.offer_expires_at && !isNaN(asUtcMs(o.offer_expires_at)) ? o.offer_expires_at : null;
 }
 
 /**
@@ -600,8 +608,16 @@ export function assertTransferable(
   }
   // An accepted offer whose window has since closed is still not a licence to
   // transfer: the price we agreed was priced for that window.
+  //
+  // WHICH window is the whole of the 11 Sept 2026 incident. This asked
+  // `offer_expires_at` — the time to say YES — of a row that had already said
+  // it, so an automatic offer left the seller the remainder of thirty minutes
+  // to sign a transfer. It asks the deadline the seller is actually shown now,
+  // which for an accepted row is ACCEPTED_TRANSFER_WINDOW_HOURS from
+  // acceptance. One definition, one clock, on screen and at the door.
   const clock = now ?? (db.prepare(`SELECT datetime('now') AS t`).get() as any).t;
-  if (offer.offer_expires_at && offer.offer_expires_at <= clock) {
+  const deadline = sellerActionDeadline(offer);
+  if (deadline && deadline <= clock) {
     return { ok: false, code: 'OFFER_EXPIRED', reason: 'This purchase offer has lapsed. Please submit a new offer.', offer };
   }
   if (offer.purchase_price_fiat === null || !(offer.purchase_price_fiat > 0)) {

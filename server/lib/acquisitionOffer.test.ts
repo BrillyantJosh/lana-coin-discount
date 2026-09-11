@@ -150,12 +150,22 @@ describe('a lapsed offer is not a price', () => {
     expect(assertTransferable(db, o.offer_ref, SELLER).ok).toBe(false);
   });
 
-  it('refuses an accepted offer whose window closed before the transfer', () => {
+  it('refuses an accepted offer whose TRANSFER window closed', () => {
     const ref = accepted();
-    db.prepare(`UPDATE acquisition_offers SET offer_expires_at = datetime('now','-1 minute') WHERE offer_ref = ?`).run(ref);
+    db.prepare(`UPDATE acquisition_offers SET accepted_at = datetime('now', ?) WHERE offer_ref = ?`)
+      .run(`-${ACCEPTED_TRANSFER_WINDOW_HOURS + 1} hours`, ref);
     const gate = assertTransferable(db, ref, SELLER);
     expect(gate.ok).toBe(false);
     expect(gate.code).toBe('OFFER_EXPIRED');
+  });
+
+  it('…but NOT one whose offer window closed while the transfer window runs', () => {
+    // The 11 Sept incident in one assertion: an automatic offer stands thirty
+    // minutes, the seller accepts in the first of them, and the door was shut
+    // on him twenty-nine minutes later.
+    const ref = accepted();
+    db.prepare(`UPDATE acquisition_offers SET offer_expires_at = datetime('now','-1 minute') WHERE offer_ref = ?`).run(ref);
+    expect(assertTransferable(db, ref, SELLER).ok).toBe(true);
   });
 
   /**
@@ -171,21 +181,25 @@ describe('a lapsed offer is not a price', () => {
    * makes the row say what was already true — and releases the mandate cap it
    * was holding for a sale that could never happen.
    */
-  it('lapses an unaccepted offer AND an accepted one whose window has closed', () => {
+  it('lapses an unaccepted offer, and an accepted one only when ITS window closes', () => {
     const stale = insertOffer(db, draft());
     markOffered(db, stale.offer_ref, price({ offerExpiresAt: sqliteFuture(db, '-1 minute') }));
     const live = insertOffer(db, draft());
     markOffered(db, live.offer_ref, price());
-    const acceptedButLapsed = accepted();
+    const transferWindowGone = accepted();
+    db.prepare(`UPDATE acquisition_offers SET accepted_at = datetime('now', ?) WHERE offer_ref = ?`)
+      .run(`-${ACCEPTED_TRANSFER_WINDOW_HOURS + 1} hours`, transferWindowGone);
+    // Accepted, and the OFFER window has closed — which is now none of the
+    // sweep's business, because the seller is inside his transfer window.
+    const offerWindowGone = accepted();
     db.prepare(`UPDATE acquisition_offers SET offer_expires_at = datetime('now','-1 minute') WHERE offer_ref = ?`)
-      .run(acceptedButLapsed);
-    const acceptedAndLive = accepted();   // window still open — must survive
+      .run(offerWindowGone);
 
     expect(expireStaleOffers(db)).toBe(2);
     expect(getOfferByRef(db, stale.offer_ref)!.status).toBe('expired');
     expect(getOfferByRef(db, live.offer_ref)!.status).toBe('offered');
-    expect(getOfferByRef(db, acceptedButLapsed)!.status).toBe('expired');
-    expect(getOfferByRef(db, acceptedAndLive)!.status).toBe('accepted');
+    expect(getOfferByRef(db, transferWindowGone)!.status).toBe('expired');
+    expect(getOfferByRef(db, offerWindowGone)!.status).toBe('accepted');
   });
 
   it('and never one that has already settled, whatever its dates say', () => {
@@ -254,21 +268,20 @@ describe('an accepted offer whose transfer never comes', () => {
     expect(consumedByMandate(db, [MANDATE]).get(MANDATE)).toBe(100_000_000_000);
   });
 
-  it('a LEGACY accepted offer (no mandate_ref) is NOT lapsed by the 24 h sweep — that path is unchanged from before rounds', () => {
-    // At HEAD the sweeper touched only 'offered' rows. The transfer-window
-    // sweep exists to free a financer's cap, which a legacy offer never held,
-    // so it must stay outside the sweep; the admin void still reaches it.
+  it('EVERY accepted offer is lapsed by the transfer sweep, mandate or not', () => {
+    // This asserted the opposite until 11 Sept 2026, on the reasoning that the
+    // sweep exists to free a financer's cap and a legacy offer holds none. But
+    // the window is the SELLER's, and it is the same window either way — and
+    // leaving legacy rows outside the sweep is why one sat at the top of a
+    // dashboard, in a status that means "waiting on you", for months.
     const legacy = accepted();
     acceptedHoursAgo(legacy, ACCEPTED_TRANSFER_WINDOW_HOURS + 1);
     const mandate = acceptedUnderMandate();
     acceptedHoursAgo(mandate, ACCEPTED_TRANSFER_WINDOW_HOURS + 1);
 
-    expect(expireStaleOffers(db)).toBe(1);
-    expect(getOfferByRef(db, legacy)!.status).toBe('accepted');
-    expect(getOfferByRef(db, legacy)!.decision_reason).toBeNull();
+    expect(expireStaleOffers(db)).toBe(2);
+    expect(getOfferByRef(db, legacy)!).toMatchObject({ status: 'expired', decision_reason: TRANSFER_NOT_COMPLETED });
     expect(getOfferByRef(db, mandate)!).toMatchObject({ status: 'expired', decision_reason: TRANSFER_NOT_COMPLETED });
-    expect(markVoidedByAdmin(db, legacy, 'seller asked', OTHER)).toBe(true);
-    expect(getOfferByRef(db, legacy)!.status).toBe('withdrawn');
   });
 
   it('an admin can void it with a reason, which frees the mandate and records who did it', () => {
@@ -421,20 +434,41 @@ describe('the deadline the seller is actually working to', () => {
     expect(new Date(`${due.replace(' ', 'T')}Z`).getTime()).toBe(sweepsAt);
   });
 
-  it('a legacy accepted offer is never swept, so its window is the whole story', () => {
+  /**
+   * THE TWO WINDOWS ARE NOT ONE WINDOW — 11 September 2026.
+   *
+   * These two used to assert the opposite: that the EARLIER of the two wins,
+   * and so that an automatic offer's own thirty minutes is all a seller gets
+   * to sign a transfer in. Three people were stopped by that in one morning.
+   * `offer_expires_at` is the time to say yes; once it is said, the clock that
+   * matters is the transfer's, and it starts at acceptance.
+   */
+  it('the transfer window starts when the seller accepts, not when we priced it', () => {
+    const o = insertOffer(db, draft({ mandateRef: '8:1:seller', round: 1 }));
+    markOffered(db, o.offer_ref, price());            // stands 30 minutes
+    markAccepted(db, o.offer_ref, 'v1.0');
+    const row = getOfferByRef(db, o.offer_ref)!;
+    expect(sellerActionDeadline(row)).not.toBe(row.offer_expires_at);
+    const hours = (Date.parse(sellerActionDeadline(row)!.replace(' ', 'T') + 'Z')
+      - Date.parse(row.accepted_at!.replace(' ', 'T') + 'Z')) / 3_600_000;
+    expect(hours).toBe(ACCEPTED_TRANSFER_WINDOW_HOURS);
+  });
+
+  it('and a legacy offer gets the same window — the rule never depended on a mandate', () => {
+    const o = insertOffer(db, draft());               // no mandate_ref
+    markOffered(db, o.offer_ref, price({ offerExpiresAt: eightDays() }));
+    markAccepted(db, o.offer_ref, 'v1.0');
+    const row = getOfferByRef(db, o.offer_ref)!;
+    const hours = (Date.parse(sellerActionDeadline(row)!.replace(' ', 'T') + 'Z')
+      - Date.parse(row.accepted_at!.replace(' ', 'T') + 'Z')) / 3_600_000;
+    expect(hours).toBe(ACCEPTED_TRANSFER_WINDOW_HOURS);
+  });
+
+  it('while an offer nobody has accepted is still held to the offer\'s own window', () => {
     const until = eightDays();
     const o = insertOffer(db, draft());
     markOffered(db, o.offer_ref, price({ offerExpiresAt: until }));
-    markAccepted(db, o.offer_ref, 'v1.0');
     expect(sellerActionDeadline(getOfferByRef(db, o.offer_ref)!)).toBe(until);
-  });
-
-  it('a 30-minute window beats the 24-hour sweep, because it closes first', () => {
-    const o = insertOffer(db, draft({ mandateRef: '8:1:seller', round: 1 }));
-    markOffered(db, o.offer_ref, price());
-    markAccepted(db, o.offer_ref, 'v1.0');
-    const row = getOfferByRef(db, o.offer_ref)!;
-    expect(sellerActionDeadline(row)).toBe(row.offer_expires_at);
   });
 });
 

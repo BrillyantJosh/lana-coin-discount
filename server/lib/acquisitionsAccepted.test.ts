@@ -180,12 +180,15 @@ describe('the two clocks are two fields', () => {
     expect(row.sweepsItself).toBe(true);
   });
 
-  it('on a legacy row nothing sweeps, so the offer window IS the seller\'s window', async () => {
-    const offerExpiresAt = at(3 * DAY);
-    insert({ mandateRef: null, round: null, acceptedAt: at(-2 * HOUR), offerExpiresAt });
+  it('a legacy row gets the same transfer window as any other — and the same sweep', async () => {
+    // Until 11 Sept 2026 a legacy row's deadline was the OFFER's window and
+    // nothing swept it. Both were wrong in the same way: the window belongs to
+    // the seller's transfer, and it does not depend on a mandate.
+    const acceptedAt = at(-2 * HOUR);
+    insert({ mandateRef: null, round: null, acceptedAt, offerExpiresAt: at(3 * DAY) });
     const row = only((await list()).body);
-    expect(row.transferDueAt).toBe(offerExpiresAt);
-    expect(row.sweepsItself).toBe(false);
+    expect(row.transferDueAt).not.toBe(at(3 * DAY));
+    expect(row.sweepsItself).toBe(true);
   });
 });
 

@@ -1255,7 +1255,9 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
          * cap), so on a legacy row a passed window is not an ending — it waits
          * for a person to void it, and the screen has to be able to say so.
          */
-        sweepsItself: Boolean(o.mandate_ref),
+        // Every accepted offer does now, mandate or not: the transfer window is
+        // the seller's and never depended on where the offer came from.
+        sweepsItself: Boolean(o.accepted_at),
         /**
          * The seller's window has already closed. assertTransferable refuses
          * such a transfer, so this row can never become a sale and the money

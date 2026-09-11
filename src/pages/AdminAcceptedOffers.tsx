@@ -382,8 +382,8 @@ const AdminAcceptedOffers = () => {
             <p className="mt-1 text-[11px] text-red-700 dark:text-red-400">
               {lapsed.count} more ({listMoney(lapsed.byCurrency)}){' '}
               {lapsed.count === 1
-                ? 'is past the transfer window and is NOT counted: it can no longer complete, so nothing is owed on it. It still reserves what it was given — void it on '
-                : 'are past the transfer window and are NOT counted: they can no longer complete, so nothing is owed on them. They still reserve what they were given — void them on '}
+                ? 'is past its transfer window and is not listed above: it can no longer complete, so nothing is owed on it. It still reserves what it was given until the sweep voids it — or void it now on '
+                : 'are past their transfer window and are not listed above: they can no longer complete, so nothing is owed on them. They still reserve what they were given until the sweep voids them — or void them now on '}
               <Link to="/admin/offers" className="underline underline-offset-2">Offers</Link>.
             </p>
           )}
@@ -439,7 +439,13 @@ const AdminAcceptedOffers = () => {
                 </tr>
               </thead>
               <tbody>
-                {offers.map(offer => (
+                {/* WHAT CAN STILL BECOME A SALE, and nothing else. Owner, 11
+                    Sept 2026: "primere, ki so overdue, ne rabiš sploh
+                    prikazovati." A row past its transfer window owes nobody
+                    anything and cannot complete; it is counted in one line
+                    above, with the door to void it, rather than filling the
+                    page with rows that are only in the way. */}
+                {offers.filter(o => !o.transferLapsed).map(offer => (
                   <Row
                     key={offer.offerRef}
                     offer={offer}
