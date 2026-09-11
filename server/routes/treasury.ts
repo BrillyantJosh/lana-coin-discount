@@ -316,7 +316,11 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
 
     const terms = loadRoundTerms(db(), split);
     const termsByRound = new Map<number, RoundTerms>(terms.map(t => [t.round, t]));
-    syncRoundOpenings(db(), split);
+    // Only for the split whose window is actually open. Viewing an upcoming
+    // split must not stamp "the window opened" on a window that has not, even
+    // though the gate would refuse anyone anyway: a record that says a round
+    // opened before it could have is a record that lies when it is read back.
+    if (currentSplit !== null && split === currentSplit - BUYBACK_SPLIT_OFFSET) syncRoundOpenings(db(), split);
     const allForSplit = listMandatesForSplit(db(), split);
     let mandates = allForSplit;
     if (roundFilter) mandates = mandates.filter(m => m.round === roundFilter);
