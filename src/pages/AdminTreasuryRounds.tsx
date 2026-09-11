@@ -286,22 +286,33 @@ const AdminTreasuryRounds = () => {
                  * whose date has not arrived. A round that cannot open is only
                  * alarming when it says who is standing behind it.
                  */
-                const stuck = (data?.rounds || []).filter(r => !r.canEverOpen && r.mandateCount > 0);
+                // Two ways a round can be unreachable, and they are equally
+                // silent: no way to open, or no price to open at. A round that
+                // opens on time and then refuses everyone for want of a
+                // discount is no better off than one that never opens.
+                const stuck = (data?.rounds || []).filter(
+                  r => r.mandateCount > 0 && (!r.canEverOpen || r.discountPercent === null),
+                );
                 if (stuck.length === 0) return null;
                 const people = stuck.reduce((t, r) => t + r.mandateCount, 0);
                 const lana = stuck.reduce((t, r) => t + r.waitingLana, 0);
+                const missing = (r: RoundRow) => {
+                  const bits: string[] = [];
+                  if (!r.canEverOpen) bits.push('no date and no rule for opening');
+                  if (r.discountPercent === null) bits.push('no discount');
+                  return `round ${r.round}: ${bits.join(', ')}`;
+                };
                 return (
                   <div className="rounded-lg border-2 border-red-300 bg-red-50 dark:bg-red-950/30 dark:border-red-800 px-4 py-3 space-y-1">
                     <p className="text-sm font-bold text-red-800 dark:text-red-300">
-                      Split {data?.split}: round{stuck.length > 1 ? 's' : ''} {stuck.map(r => r.round).join(', ')} can never open
+                      Split {data?.split}: {people} financing mandate{people > 1 ? 's' : ''} cannot be answered
                     </p>
                     <p className="text-xs text-red-700 dark:text-red-400">
-                      {people} mandate{people > 1 ? 's' : ''} holding{' '}
-                      {lana.toLocaleString('en-GB', { maximumFractionDigits: 2 })} LANA point at{' '}
-                      {stuck.length > 1 ? 'these rounds' : 'this round'}, and {stuck.length > 1 ? 'they have' : 'it has'}{' '}
-                      neither a date nor a rule for opening. Nothing will happen on its own, and the financers
-                      will simply be turned away without being told why. Set a date, or have the round follow
-                      the one before it.
+                      {lana.toLocaleString('en-GB', { maximumFractionDigits: 2 })} LANA is waiting behind{' '}
+                      {stuck.length > 1 ? 'rounds' : 'a round'} that cannot serve it — {stuck.map(missing).join('; ')}.
+                      Nothing will change on its own: every proposal against{' '}
+                      {stuck.length > 1 ? 'these rounds' : 'this round'} is refused, and the financer is not told
+                      that the reason is on our side.
                     </p>
                   </div>
                 );
