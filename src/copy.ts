@@ -658,9 +658,11 @@ export const OFFER_ERRORS: Record<string, string> = {
   TRANSFER_NOT_COMPLETED:
     'The LANA did not reach our treasury wallet in time, so this purchase offer lapsed. Nothing was ' +
     'transferred, and you may propose again.',
-  EMPTY_WALLET_EXCEEDS_MANDATE:
-    'This wallet holds more than the amount the treasury agreed to acquire, so it cannot be emptied into this ' +
-    'acquisition. Transfer the agreed amount only.',
+  // EMPTY_WALLET_EXCEEDS_MANDATE was here until 11 Sept 2026. The server no
+  // longer sends it: it told a seller to "transfer the agreed amount only"
+  // when transferring the agreed amount is exactly what the button already
+  // does and exactly what he could not make happen. Nothing is refused for
+  // holding a little more now — the agreed amount simply moves.
   BALANCE_UNVERIFIABLE: 'The wallet balance could not be read right now. Please try again shortly.',
   BELOW_MINIMUM: 'This proposal is below the minimum acquisition value.',
   MANDATE_EXHAUSTED: 'This mandate has been used up: the treasury has acquired everything it covers. Nothing more can be proposed under it.',

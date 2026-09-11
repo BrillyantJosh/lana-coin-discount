@@ -1012,12 +1012,26 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         }
         emptyWallet = true;
       } else if (balanceLanoshis - agreedLanoshis > EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS + roundingSlack) {
-        if (askedToEmpty) {
-          return res.status(409).json({
-            error: 'This wallet holds more than the amount the treasury agreed to acquire, so it cannot be emptied into this acquisition. Transfer the agreed amount only.',
-            code: 'EMPTY_WALLET_EXCEEDS_MANDATE',
-          });
-        }
+        // A WALLET HOLDING MORE IS NOT SWEPT — and that is the whole of it.
+        //
+        // Until 11 Sept 2026 a browser that had also concluded "empty" was
+        // answered 409 EMPTY_WALLET_EXCEEDS_MANDATE here, on the theory that a
+        // seller who ASKED to empty deserves to be told rather than quietly
+        // sent the long way. But nobody asks: there is no such control on the
+        // page. The flag is DERIVED, from `balances[wallet]` — which
+        // /wallets/balances rounds to 0.01 LANA — while this rule turns on
+        // 100,800 lanoshis, which is 0.001008. The browser's number is ten
+        // times too coarse to ever agree, so any surplus between those two
+        // figures made the page say "empty" and this line say "no", and the
+        // seller was refused for something he never asked for and could not
+        // change. OFF-2026-062: wallet 3,237.03125, offer 3,237.03, page saw
+        // 3,237.03, refused on every press.
+        //
+        // Nothing was protected by refusing. The alternative is to send the
+        // agreed amount the ordinary way, which is safe, is what the seller
+        // wants, and is what happens now. The one refusal that stays is the
+        // 503 above, where the balance could not be read at all — that one is
+        // about evidence, not about a flag.
       } else {
         emptyWallet = true;
       }
@@ -1041,9 +1055,16 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         // The mandate, in exact lanoshis, for the one layer that knows the
         // exact balance. `roundingSlack` is 0 whenever the chain's own integer
         // came through, so this is normally the mandate itself.
-        sweepCeilingLanoshis: emptyWallet
-          ? agreedLanoshis + EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS + roundingSlack
-          : undefined,
+        // ALWAYS, not only when this layer already thinks it is a sweep.
+        //
+        // Its presence is what tells the chain layer that emptying this wallet
+        // is within the mandate at all; the layer then decides the shape from
+        // the UTXOs, which is the only place the real fee is known. Passing it
+        // only on the sweep road left the ordinary road unable to fall back,
+        // and that is the band OFF-2026-062 fell into: 0.00125 LANA too much
+        // to sweep under the constant below, 0.000487 LANA too little to pay
+        // for a change output at its wallet's real six-piece fee.
+        sweepCeilingLanoshis: agreedLanoshis + EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS + roundingSlack,
         electrumServers: getElectrumServersFromDb(),
       });
       // What the chain layer actually did, which is not always what was asked.

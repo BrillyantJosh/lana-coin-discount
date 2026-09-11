@@ -77,6 +77,7 @@ import { makeKey, mandateEvent, signedHeaders, setSplit, setSetting, setRoundTer
 const AGREED_LANA = 3261.796875;
 const AGREED_LANOSHIS = 326_179_687_500;
 const FEE_WHEN_EMPTYING = 168_600;    // 6 inputs, 1 output
+const FEE_WHEN_ORDINARY = 173_700;    // 6 inputs, 2 outputs — the change costs 5,100
 const PRINTED_LANA = 3261.8;
 
 /** A real key in this chain's WIF form (version byte 0xB0), and its address. */
@@ -240,6 +241,44 @@ describe('the eight failures of 10 September 2026, end to end', () => {
     expect(outs).toHaveLength(2);
     expect(outs[0].value).toBe(AGREED_LANOSHIS);       // the agreed amount, exactly
     expect(outs[0].value + outs[1].value + r.body.fee).toBe(exact);
+  });
+
+  /**
+   * THE DEAD BAND — OFF-2026-062, 11 September 2026.
+   *
+   * "This wallet holds more than the amount the treasury agreed to acquire, so
+   * it cannot be emptied into this acquisition. Transfer the agreed amount
+   * only." He could not: the agreed amount was exactly what he could not send.
+   *
+   * Two numbers that had to agree and never could. "Is this a sweep?" was
+   * asked one layer up against a CONSTANT dust allowance priced on a ONE-input
+   * transaction — 100,800 lanoshis. The fee a wallet actually pays is priced
+   * on its real pieces: 173,700 for six. A surplus between the two is too much
+   * to sweep and too little to pay for a change output, and there is nothing
+   * the seller can do to either figure.
+   *
+   * 125,000 over, 48,700 short. On his own numbers, scaled to this file's.
+   */
+  it('a surplus too big to sweep and too small to pay its own change still completes', async () => {
+    const SURPLUS = 125_000;
+    chain.utxos = sixPieces().map((u, i) => ({ ...u, value: u.value + (i === 5 ? SURPLUS : 0) }));
+    const exact = AGREED_LANOSHIS + SURPLUS;
+    // Neither shape works on the old rules, and that was the whole trap.
+    expect(SURPLUS).toBeGreaterThan(100_800);            // too much to sweep
+    expect(SURPLUS).toBeLessThan(FEE_WHEN_ORDINARY);     // too little for change
+
+    const ref = await acceptedWholeWallet();
+    const r = await press(ref);
+
+    expect(r.status).toBe(200);
+    expect(chain.broadcast).toHaveLength(1);
+    const outs = outputsOf(chain.broadcast[0]);
+    // Swept: one output, no change, the fee out of the amount.
+    expect(outs).toHaveLength(1);
+    expect(outs[0].value).toBe(exact - FEE_WHEN_EMPTYING);
+    // AND NEVER MORE THAN WAS AGREED. This is the bound the band is stated on.
+    expect(outs[0].value).toBeLessThanOrEqual(AGREED_LANOSHIS);
+    expect(failedRows()).toHaveLength(0);
   });
 
   /**

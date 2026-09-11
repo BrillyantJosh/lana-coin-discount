@@ -453,13 +453,24 @@ describe('POST /:ref/transfer — the server decides the emptying', () => {
     expect(r.body.emptyWallet).toBe(false);        // what actually happened
   });
 
-  it('the browser asking to empty a wallet that holds more is still refused', async () => {
+  /**
+   * A FLAG FROM THE BROWSER CANNOT REFUSE ANYBODY.
+   *
+   * It used to: a browser that had concluded "empty" about a wallet this layer
+   * would not empty got 409 EMPTY_WALLET_EXCEEDS_MANDATE. Nobody asks for that
+   * flag — there is no such control on the page. It is derived from
+   * `balances[wallet]`, which is rounded to 0.01 LANA, while the rule it was
+   * judged against turns on 0.001008. The browser's number is ten times too
+   * coarse to agree, so the seller was refused for something he never chose
+   * and could not change (OFF-2026-062, 11 Sept 2026).
+   */
+  it('the browser asking to empty a wallet that holds more is NOT refused — the agreed amount moves', async () => {
     const ref = await acceptedWholeWallet(1000);
     world.balance = 3261.8; // far more than the 1000 agreed
     const r = await transfer(ref, { emptyWallet: true });
-    expect(r.status).toBe(409);
-    expect(r.body.code).toBe('EMPTY_WALLET_EXCEEDS_MANDATE');
-    expect(world.sent).toHaveLength(0);
+    expect(r.status).toBe(200);
+    expect(world.sent[0].emptyWallet).toBe(false);   // decided by the balance
+    expect(world.sent[0].amount).toBe(1000);         // and not a lanoshi more
   });
 
   it('a wallet that holds more is not emptied by the server either — the agreed amount moves', async () => {
@@ -470,7 +481,87 @@ describe('POST /:ref/transfer — the server decides the emptying', () => {
     expect(r.body.emptyWallet).toBe(false);
     expect(world.sent[0].emptyWallet).toBe(false);
     expect(world.sent[0].amount).toBe(1000);
-    expect(world.sent[0].sweepCeilingLanoshis).toBeUndefined();
+    // The ceiling rides along on EVERY transfer now — it is permission, not an
+    // instruction. The chain layer is the only place the real fee is known, so
+    // it is the only place that can tell a wallet which cannot pay for its own
+    // change from one that can.
+    expect(world.sent[0].sweepCeilingLanoshis).toBeGreaterThan(1000 * 100_000_000);
+  });
+
+  /**
+   * THE DEAD BAND — OFF-2026-062, 11 September 2026.
+   *
+   * His wallet held 3,237.03125 LANA against an agreed 3,237.03: a surplus of
+   * 125,000 lanoshis. Too much to sweep, because "is this a sweep?" was asked
+   * against a CONSTANT dust allowance priced on a ONE-input transaction
+   * (100,800); too little to send the ordinary way, because the fee his
+   * six-piece wallet actually pays is 173,700 and he was 48,700 short of it.
+   * Two numbers that had to agree and never could: one is a constant, the
+   * other depends on how many pieces the wallet is in.
+   *
+   * The band closes at the only layer that can see both — and on the only
+   * figure that matters, what arrives.
+   */
+  it('hands the chain layer both the amount AND the permission, so it can fall back', async () => {
+    // The route reads a BALANCE and cannot know the fee, which is priced on
+    // the wallet's pieces — so it does not try to. It says "this much was
+    // agreed" and "emptying up to here is within the mandate", and the layer
+    // that can see the coins decides the shape. That handover is the fix; the
+    // sweep itself is proved end to end in transferEndToEnd.test.ts.
+    const AGREED = 3237.03;
+    const ref = await acceptedWholeWallet(AGREED);
+    world.balance = 3237.03125;                 // 125,000 lanoshis over
+    const r = await transfer(ref);
+    expect(r.status).toBe(200);
+    expect(world.sent[0].emptyWallet).toBe(false);   // by the balance, correctly
+    expect(world.sent[0].amount).toBe(AGREED);
+    expect(world.sent[0].sweepCeilingLanoshis).toBeGreaterThan(0);
+  });
+
+  it('…and the treasury is never handed more than it agreed to buy that way', () => {
+    const AGREED_L = 323_703_000_000;
+    const utxos: UTXO[] = Array.from({ length: 6 }, (_, i) => ({
+      tx_hash: String(i + 50).repeat(64).slice(0, 64), tx_pos: 0,
+      value: 323_703_125_000 / 6, height: 1_055_567,
+    }));
+    const plan = planTransfer({
+      utxos, amountLanoshis: AGREED_L, emptyWallet: false,
+      sweepCeilingLanoshis: AGREED_L + 100_800,
+    });
+    expect(planFailed(plan)).toBe(false);
+    if (planFailed(plan)) return;
+    expect(plan.emptyWallet).toBe(true);
+    // 3,237.029564 — a hair UNDER the agreed amount, never over.
+    expect(plan.amountLanoshis).toBe(323_703_125_000 - estimateFeeLanoshis(6, 1));
+    expect(plan.amountLanoshis).toBeLessThanOrEqual(AGREED_L);
+  });
+
+  it('but one lanoshi more in the wallet, and it is the honest shortfall again', () => {
+    // The bound is on what ARRIVES. One lanoshi past it, a sweep would hand the
+    // treasury more than it bought, so it does not happen — the seller is told
+    // he is short instead, which he can act on.
+    const AGREED_L = 323_703_000_000;
+    const over = 323_703_000_000 + estimateFeeLanoshis(6, 1) + 1;
+    const utxos: UTXO[] = Array.from({ length: 6 }, (_, i) => ({
+      tx_hash: String(i + 60).repeat(64).slice(0, 64), tx_pos: 0,
+      value: Math.floor(over / 6) + (i === 5 ? over % 6 : 0), height: 1_055_567,
+    }));
+    const plan = planTransfer({
+      utxos, amountLanoshis: AGREED_L, emptyWallet: false,
+      sweepCeilingLanoshis: AGREED_L + 100_800,
+    });
+    expect(planFailed(plan)).toBe(true);
+  });
+
+  it('and a caller that never mentioned emptying still gets the shortfall', () => {
+    // No ceiling means no permission: this function does not decide on its own
+    // that delivering less than the amount asked for is acceptable.
+    const utxos: UTXO[] = Array.from({ length: 6 }, (_, i) => ({
+      tx_hash: String(i + 70).repeat(64).slice(0, 64), tx_pos: 0,
+      value: 323_703_125_000 / 6, height: 1_055_567,
+    }));
+    const plan = planTransfer({ utxos, amountLanoshis: 323_703_000_000, emptyWallet: false });
+    expect(planFailed(plan)).toBe(true);
   });
 
   it('an unreadable balance is still not permission to empty when the browser ASKS for it', async () => {

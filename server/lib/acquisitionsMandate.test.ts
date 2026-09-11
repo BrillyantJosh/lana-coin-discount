@@ -494,14 +494,17 @@ describe('transfer', () => {
     expect(row(o.offerRef).status).toBe('settled');
   });
 
-  it('…and a seller who ASKS to empty such a wallet is told so, not quietly downgraded', async () => {
-    // The old branch swallowed the ask in silence, because it had already
-    // decided the shape before reading the flag or the balance.
+  it('…and the browser saying "empty" about it changes nothing, in either direction', async () => {
+    // This asserted a 409 for one day, on the reasoning that a seller who ASKS
+    // to empty deserves to be told. Nobody asks: the flag is derived by the
+    // page from a balance rounded to 0.01 LANA, against a server rule that
+    // turns on 0.001008, so it cannot agree and its disagreement cost a real
+    // seller his transfer. It is advisory now, and advice does not refuse.
     const o = await accepted(1500);
     const r = await post(`/api/acquisitions/${o.offerRef}/transfer`, { hexId: seller.pub, privateKey: 'k', emptyWallet: true });
-    expect(r.status).toBe(409);
-    expect(r.body.code).toBe('EMPTY_WALLET_EXCEEDS_MANDATE');
-    expect(world.sent).toHaveLength(0);
+    expect(r.status).toBe(200);
+    expect(world.sent[0].emptyWallet).toBe(false);
+    expect(world.sent[0].amount).toBe(1000);
   });
 
   it('a counteroffer whose wallet holds EXACTLY the agreed amount is swept, not refused for ever', async () => {
@@ -526,17 +529,15 @@ describe('transfer', () => {
     expect(world.sent[0].emptyWallet).toBe(true);
   });
 
-  it('…but not one holding more than the mandate covers', async () => {
+  it('…but not one holding more than the mandate covers, whatever the browser says', async () => {
     const o = await accepted(600);
     world.balances[W1] = 1000;
+    // The flag is advisory; what decides is the balance, and 1000 against an
+    // agreed 600 is not an emptying case by any reading.
     const r = await post(`/api/acquisitions/${o.offerRef}/transfer`, { hexId: seller.pub, privateKey: 'k', emptyWallet: true });
-    expect(r.status).toBe(409);
-    expect(r.body.code).toBe('EMPTY_WALLET_EXCEEDS_MANDATE');
-    expect(world.sent).toHaveLength(0);
-    // Without emptyWallet the agreed amount still moves.
-    const ok = await post(`/api/acquisitions/${o.offerRef}/transfer`, { hexId: seller.pub, privateKey: 'k', emptyWallet: false });
-    expect(ok.status).toBe(200);
-    expect(world.sent[0].amount).toBe(600);
+    expect(r.status).toBe(200);
+    expect(world.sent[0].emptyWallet).toBe(false);
+    expect(world.sent[0].amount).toBe(600);   // the agreed amount, and no more
   });
 
   it('an unreadable balance is not permission to empty', async () => {

@@ -735,6 +735,71 @@ export function planTransfer(params: {
 
   if (totalSelected < wanted + feeLanoshis) {
     if (totalBalance >= wanted + feeLanoshis && utxos.length > MAX_TRANSACTION_INPUTS) return tooMany();
+
+    // THE MIRROR OF THE CEILING ABOVE — AND THE LAST THING TRIED.
+    //
+    // A sweep that meets a wallet holding MORE than its ceiling is sent the
+    // ordinary way. This is the other direction: an ordinary transfer whose
+    // wallet turns out to hold the agreed amount and not enough on top of it
+    // to pay for a change output. There is no change to take the fee from and
+    // none is needed — a wallet with nothing to spare IS being emptied,
+    // whatever the caller called it.
+    //
+    // THIS IS THE DEAD BAND, and it had nothing to do with the caller's
+    // intent. One layer up, "is this a sweep?" was answered against a CONSTANT
+    // dust allowance priced on a one-input transaction (100,800 lanoshis),
+    // while the fee a wallet actually pays is priced on its real pieces —
+    // 173,700 for six. Between those two numbers neither shape worked: too
+    // much surplus to sweep, too little to pay for the change. OFF-2026-062
+    // sat exactly there, 125,000 lanoshis over, 48,700 short, with nothing the
+    // seller could do to either number.
+    //
+    // THE BAND IS STATED ON THE DELIVERY, WHICH IS THE ONLY NUMBER THAT MATTERS,
+    // and it needs no constant at all:
+    //
+    //   utxos.length <= MAX      a sweep carries every input; when it cannot,
+    //                            the honest answer is the shortfall below.
+    //   totalBalance >= wanted   the agreed amount really is in the wallet. No
+    //                            tolerance: the floor above forgives a rounded
+    //                            balance, this does not, because here the
+    //                            UTXOs are exact.
+    //   delivered <= wanted      the treasury cannot receive a lanoshi more
+    //                            than it agreed to buy. This is the sweep
+    //                            ceiling expressed on what arrives rather than
+    //                            on what the wallet holds, and it is strictly
+    //                            tighter than any ceiling the caller could
+    //                            hand down — so no mandate can be exceeded
+    //                            through this road, whatever was passed.
+    //
+    // ORDER. Reached only after an ordinary plan has been attempted and has
+    // failed on the balance, and that is not tidiness: the sweep fee is sized
+    // on EVERY input and the ordinary fee only on the selected ones. Asked
+    // first, this would sweep wallets that could comfortably have paid for
+    // their own change, delivering less than agreed to do it. Asked last it
+    // cannot — an ordinary plan succeeds whenever the balance allows it, which
+    // puts that wallet outside this band.
+    //   a ceiling was given  the caller has to have SAID that emptying this
+    //                          wallet is within its mandate. This function does
+    //                          not invent consent: delivering less than the
+    //                          amount asked for is a decision, and a caller
+    //                          that never mentioned emptying gets the honest
+    //                          shortfall instead. The ceiling's own NUMBER is
+    //                          not used here — the delivery bound above is
+    //                          stricter in what arrives — but its presence is
+    //                          the permission.
+    const sweepFeeLanoshis = estimateFeeLanoshis(utxos.length, 1);
+    if (
+      sweepCeilingLanoshis !== undefined &&
+      utxos.length <= MAX_TRANSACTION_INPUTS &&
+      totalBalance >= wanted &&
+      totalBalance - sweepFeeLanoshis <= wanted
+    ) {
+      // The ceiling is NOT forwarded: the guard above already binds what
+      // arrives, and forwarding it would bounce the plan back to this branch.
+      const swept = planTransfer({ utxos, amountLanoshis: wanted, emptyWallet: true });
+      if (!planFailed(swept)) return swept;
+    }
+
     return short(wanted + feeLanoshis, totalSelected, feeLanoshis, selected.length);
   }
 

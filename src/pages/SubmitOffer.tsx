@@ -516,12 +516,16 @@ const SubmitOffer = () => {
   // wallet IS the emptying case.
   //
   // BOTH WAYS ROUND, since 11 Sept 2026. It only ever set the flag, never
-  // cleared it, so a wallet that GREW after the page had decided — one payment
-  // arriving while the offer sat waiting — kept saying "empty me" about a
-  // wallet the treasury may no longer empty, and the server answers that with
-  // EMPTY_WALLET_EXCEEDS_MANDATE. The seller could not clear it from the page
-  // at all; only a reload would. The flag is a reading of the balance, so it
-  // follows the balance.
+  // cleared it, so a wallet that GREW after the page had decided kept saying
+  // "empty me" about a wallet that no longer should be, and nothing on the
+  // page could clear it — only a reload. The flag is a reading of the balance,
+  // so it follows the balance.
+  //
+  // It is ADVICE, and only advice: `balances[…]` is rounded to 0.01 LANA,
+  // which is ten times coarser than the 0.001008 the server's rule turns on,
+  // so this can be wrong and sometimes must be. The server decides the shape
+  // from the exact balance and the chain layer from the coins themselves;
+  // since 11 Sept nothing here can cause a refusal.
   useEffect(() => {
     if (!offer) return;
     const balance = balances[offer.senderWallet];
