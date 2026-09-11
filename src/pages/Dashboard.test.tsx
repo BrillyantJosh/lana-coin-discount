@@ -15,7 +15,7 @@
  * and neither is ever both.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import Dashboard from './Dashboard';
 
@@ -67,6 +67,14 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const show = () => render(<MemoryRouter><Dashboard /></MemoryRouter>);
 
+/**
+ * The page with the OFFERS record open. The tab lives in the address, so a
+ * test opens it the way a link would rather than by clicking through — which
+ * is also how a seller returns to it after a refresh.
+ */
+const showOffers = () =>
+  render(<MemoryRouter initialEntries={['/dashboard?tab=offers']}><Dashboard /></MemoryRouter>);
+
 describe('the offer that is waiting on the seller', () => {
   it('says whose turn it is, for how much, and for how long', async () => {
     offers = [offer()];
@@ -98,10 +106,10 @@ describe('the offer that is waiting on the seller', () => {
 
   it('is lifted out of the record below, and the record says where it went', async () => {
     offers = [offer(), offer({ offerRef: 'OFF-2026-041', status: 'settled', actionDueAt: null, offerExpiresAt: null })];
-    show();
+    showOffers();
 
-    await waitFor(() => expect(screen.getByText('Waiting for your decision')).toBeInTheDocument());
-    const record = screen.getByText('Your offers').closest('div')!;
+    await waitFor(() => expect(screen.getByTestId('offers-record')).toBeInTheDocument());
+    const record = screen.getByTestId('offers-record');
     expect(within(record).getByText('OFF-2026-041')).toBeInTheDocument();
     expect(within(record).queryByText('OFF-2026-048')).not.toBeInTheDocument();
     expect(screen.getByText('Anything waiting on you is shown at the top of this page.')).toBeInTheDocument();
@@ -176,7 +184,7 @@ describe('two of them, and none', () => {
 
   it('with nothing waiting, the block is not there at all — no empty state', async () => {
     offers = [offer({ offerRef: 'OFF-2026-041', status: 'settled', actionDueAt: null })];
-    show();
+    showOffers();
 
     await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
     expect(screen.queryByText('Waiting for your decision')).not.toBeInTheDocument();
@@ -187,7 +195,7 @@ describe('two of them, and none', () => {
 
   it('a proposal still with the treasury is not called waiting — the seller cannot move it', async () => {
     offers = [offer({ status: 'under_review', purchasePrice: null, actionDueAt: null, offerExpiresAt: null })];
-    show();
+    showOffers();
     await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
     expect(screen.queryByText('Waiting for your decision')).not.toBeInTheDocument();
   });
@@ -219,9 +227,10 @@ describe('the clock and the sweeper disagree for up to a minute', () => {
       offer({ actionDueAt: sqliteUtc(-60_000), offerExpiresAt: sqliteUtc(-60_000) }),
       offer({ offerRef: 'OFF-2026-041', status: 'settled', actionDueAt: null, offerExpiresAt: null }),
     ];
-    show();
-    await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
-    const record = screen.getByText('Your offers').closest('div')!;
+    showOffers();
+    const record = await screen.findByTestId('offers-record');
+    // Still at the top, drawing itself as lapsed — inside the grace, because
+    // one minute of drift is ours to doubt, not his to lose an offer over.
     expect(within(record).queryByText('OFF-2026-048')).not.toBeInTheDocument();
     expect(screen.getByText('Anything waiting on you is shown at the top of this page.')).toBeInTheDocument();
   });
@@ -233,7 +242,7 @@ describe('the record below, once an offer is over', () => {
       offerRef: 'OFF-2026-045', status: 'expired', actionDueAt: null, offerExpiresAt: null,
       decisionReason: 'TRANSFER_NOT_COMPLETED',
     })];
-    show();
+    showOffers();
     await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
     expect(screen.queryByText(/We settle by/)).not.toBeInTheDocument();
   });
@@ -251,7 +260,7 @@ describe('the record below, once an offer is over', () => {
   it('an offer whose window closed long ago is not at the top', async () => {
     const longPast = sqliteUtc(-3 * DAY);
     offers = [offer({ status: 'offered', actionDueAt: longPast, offerExpiresAt: longPast })];
-    show();
+    showOffers();
     await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
     expect(screen.queryByText('Waiting for your decision')).not.toBeInTheDocument();
   });
@@ -282,7 +291,7 @@ describe('the record below, once an offer is over', () => {
       offerRef: 'OFF-2026-045', status: 'expired', actionDueAt: null, offerExpiresAt: null,
       decisionReason: 'TRANSFER_NOT_COMPLETED',
     })];
-    show();
+    showOffers();
     await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
     expect(screen.queryByText('OFF-2026-045')).not.toBeInTheDocument();
     expect(screen.getByTestId('came-to-nothing').textContent).toMatch(/1 earlier proposal came to nothing/);
@@ -296,7 +305,7 @@ describe('the record below, once an offer is over', () => {
       actionDueAt: null, offerExpiresAt: null, settlementDueAt: null,
       decisionReason: 'Above the amount this mandate covers.',
     })];
-    show();
+    showOffers();
     await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
     expect(screen.queryByText('OFF-2026-044')).not.toBeInTheDocument();
     expect(screen.queryByText('Above the amount this mandate covers.')).not.toBeInTheDocument();
@@ -311,7 +320,7 @@ describe('the record below, once an offer is over', () => {
       actionDueAt: null, offerExpiresAt: null, settlementDueAt: null,
       decisionReason: 'This proposal is under financial review.',
     })];
-    show();
+    showOffers();
     await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
     expect(screen.getByText('OFF-2026-046')).toBeInTheDocument();
     expect(screen.queryByTestId('came-to-nothing')).toBeNull();
@@ -417,5 +426,53 @@ describe('a server that predates the field', () => {
     show();
     await waitFor(() => expect(screen.getByText('Waiting for your transfer')).toBeInTheDocument());
     expect(screen.queryByText('Time left to transfer')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * TWO RECORDS, ONE AT A TIME — owner, 11 Sept 2026: "naredi dva taba (offers
+ * in izvedeni posli), po defaultu je odprt izvedeni posli... ne rabi biti vse
+ * na prvi strani in omeji na 20 izpisov."
+ *
+ * What is WAITING on him stays above both, where no tab can hide it. That is
+ * the one thing these must never undo.
+ */
+describe('the two records', () => {
+  it('opens on completed acquisitions, not on the paperwork', async () => {
+    offers = [offer({ offerRef: 'OFF-2026-041', status: 'settled', actionDueAt: null, offerExpiresAt: null })];
+    show();
+    await waitFor(() => expect(screen.getByText('Completed Treasury Acquisitions')).toBeInTheDocument());
+    expect(screen.queryByTestId('offers-record')).toBeNull();
+  });
+
+  it('and the address opens the other one, so it can be linked to and refreshed back into', async () => {
+    offers = [offer({ offerRef: 'OFF-2026-041', status: 'settled', actionDueAt: null, offerExpiresAt: null })];
+    showOffers();
+    expect(await screen.findByTestId('offers-record')).toBeInTheDocument();
+  });
+
+  it('anything waiting on him is above both, whichever tab is open', async () => {
+    offers = [offer()];   // live, waiting on the seller
+    showOffers();
+    await waitFor(() => expect(screen.getByText('Waiting for your decision')).toBeInTheDocument());
+  });
+
+  it('stops at twenty rows and says what it is not printing', async () => {
+    offers = Array.from({ length: 26 }, (_, i) => offer({
+      offerRef: `OFF-2026-1${String(i).padStart(2, '0')}`,
+      status: 'settled', actionDueAt: null, offerExpiresAt: null,
+    }));
+    showOffers();
+    const record = await screen.findByTestId('offers-record');
+    expect(within(record).getByTestId('offers-truncated').textContent).toMatch(/Showing the 20 most recent of 26/);
+    expect(within(record).getByText('OFF-2026-100')).toBeInTheDocument();   // the newest is printed
+    expect(within(record).queryByText('OFF-2026-125')).not.toBeInTheDocument(); // the 26th is not
+  });
+
+  it('says nothing about a cap it is not hitting', async () => {
+    offers = [offer({ offerRef: 'OFF-2026-041', status: 'settled', actionDueAt: null, offerExpiresAt: null })];
+    showOffers();
+    await screen.findByTestId('offers-record');
+    expect(screen.queryByTestId('offers-truncated')).toBeNull();
   });
 });

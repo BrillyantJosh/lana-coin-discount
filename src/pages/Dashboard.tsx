@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   BRAND, LANDING, UI, OFFER,
@@ -88,6 +88,14 @@ const NOTHING_WAS_ACQUIRED = ['declined', 'expired', 'withdrawn'];
  */
 const LAPSE_GRACE_MS = 10 * 60 * 1000;
 
+/**
+ * How many rows a record shows before it stops. "Ne rabi biti vse na prvi
+ * strani" — a page that prints every row a seller has ever had is a page
+ * nobody reads to the end. The newest are the ones being looked for; the count
+ * below says what is not printed, so a short list never reads as a lost one.
+ */
+const ROWS_SHOWN = 20;
+
 /** Wire field names are the server's; only the type name says what it is. */
 interface Settlement {
   id: number;
@@ -161,6 +169,26 @@ const Dashboard = () => {
   const { session, isAdmin, logout } = useAuth();
   const navigate = useNavigate();
 
+  /**
+   * WHICH OF THE TWO RECORDS IS OPEN. Completed acquisitions first, because
+   * that is the one a seller comes back to look at — the offers are the
+   * paperwork on the way there (owner, 11 Sept 2026: "po defaultu je odprt
+   * izvedeni posli"). Anything waiting on him is ABOVE both, where it cannot
+   * be hidden behind a tab nobody clicked.
+   *
+   * IN THE ADDRESS, not in a useState. A tab that lives only in memory cannot
+   * be linked to, cannot be come back to, and is lost on every refresh — and
+   * this page reloads itself after a transfer. `?tab=offers` costs nothing and
+   * makes all three work. Anything that is not that one word is the default,
+   * so a mistyped address opens the page rather than breaking it.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab: 'deals' | 'offers' = searchParams.get('tab') === 'offers' ? 'offers' : 'deals';
+  const setTab = (next: 'deals' | 'offers') => {
+    const p = new URLSearchParams(searchParams);
+    if (next === 'deals') p.delete('tab'); else p.set('tab', next);
+    setSearchParams(p, { replace: true });
+  };
   const [sales, setSales] = useState<Acquisition[]>([]);
   const [salesLoading, setSalesLoading] = useState(true);
   const [offers, setOffers] = useState<OfferSummary[]>([]);
@@ -402,18 +430,53 @@ const Dashboard = () => {
           </Link>
         </div>
 
+        {/* ============ THE TWO RECORDS ============ */}
+        <div className="max-w-4xl mx-auto mt-16">
+          <div className="flex gap-1 border-b border-border" role="tablist">
+            {([
+              ['deals', UI.history, sales.length],
+              ['offers', OFFER.myOffersTitle, rest.length],
+            ] as const).map(([key, label, count]) => (
+              <button
+                key={key}
+                role="tab"
+                aria-selected={tab === key}
+                onClick={() => setTab(key)}
+                className={`-mb-px px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${
+                  tab === key
+                    ? 'border-primary text-foreground'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {label}
+                {count > 0 && <span className="ml-1.5 text-xs font-mono text-muted-foreground">{count}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* ============ OFFERS ============
             The record, minus whatever is waiting on the seller: one offer
             appears in exactly one place, because showing the live one here as
             well is what blended it back into the history. The pointer says
             where it went, so a missing row never reads as a lost one. */}
-        {(rest.length > 0 || cameToNothing > 0) && (
-          <div className="max-w-4xl mx-auto mt-16">
+        {tab === 'offers' && (rest.length === 0 && cameToNothing === 0) && (
+          <div className="max-w-4xl mx-auto mt-8 rounded-2xl border-2 border-dashed border-border p-12 text-center">
+            <p className="text-muted-foreground font-medium">{OFFER.noOffersYet}</p>
+          </div>
+        )}
+        {tab === 'offers' && (rest.length > 0 || cameToNothing > 0) && (
+          <div className="max-w-4xl mx-auto mt-8" data-testid="offers-record">
             <h2 className="text-2xl font-bold text-foreground">{OFFER.myOffersTitle}</h2>
             <div className="mb-6">
               <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">{OFFER.myOffersIntro}</p>
               {waiting.length > 0 && (
                 <p className="mt-1 text-sm text-muted-foreground leading-relaxed">{OFFER.waitingPointer}</p>
+              )}
+              {rest.length > ROWS_SHOWN && (
+                <p className="mt-1 text-xs text-muted-foreground/80 leading-relaxed" data-testid="offers-truncated">
+                  {fill(OFFER.showingNewest, { shown: ROWS_SHOWN, total: rest.length })}
+                </p>
               )}
               {cameToNothing > 0 && (
                 <p className="mt-1 text-xs text-muted-foreground/80 leading-relaxed" data-testid="came-to-nothing">
@@ -425,7 +488,7 @@ const Dashboard = () => {
             </div>
 
             <div className="space-y-3">
-              {rest.map(o => {
+              {rest.slice(0, ROWS_SHOWN).map(o => {
                 const tone = OFFER_TONE[o.status] || 'bg-muted text-muted-foreground';
                 const label = OFFER_STATUS_LABELS[o.status] || o.status;
                 const offerSym = CURRENCY_SYMBOLS[o.currency] || o.currency;
@@ -501,8 +564,8 @@ const Dashboard = () => {
         )}
 
         {/* ============ COMPLETED TREASURY ACQUISITIONS ============ */}
-        <div className="max-w-4xl mx-auto mt-16">
-          <h2 className="text-2xl font-bold text-foreground mb-6">{UI.history}</h2>
+        {tab === 'deals' && (
+        <div className="max-w-4xl mx-auto mt-8">
 
           {salesLoading ? (
             <div className="flex items-center justify-center py-12">
@@ -553,7 +616,7 @@ const Dashboard = () => {
 
               {/* Acquisitions */}
               <div className="space-y-3">
-                {sales.map(sale => {
+                {sales.slice(0, ROWS_SHOWN).map(sale => {
                   const isExpanded = expandedSale === sale.id;
                   const progress = sale.netFiat > 0 ? Math.min((sale.totalPaid / sale.netFiat) * 100, 100) : 0;
                   const saleSym = CURRENCY_SYMBOLS[sale.currency] || sale.currency;
@@ -728,6 +791,11 @@ const Dashboard = () => {
                 })}
               </div>
 
+              {sales.length > ROWS_SHOWN && (
+                <p className="mt-4 text-xs text-muted-foreground/80 leading-relaxed" data-testid="deals-truncated">
+                  {fill(OFFER.showingNewest, { shown: ROWS_SHOWN, total: sales.length })}
+                </p>
+              )}
               <p className="mt-6 text-xs text-muted-foreground leading-relaxed">
                 {OFFER.settlementTiming}{' '}
                 <Link to="/obligations" className="font-medium underline hover:text-foreground transition-colors">
@@ -737,6 +805,7 @@ const Dashboard = () => {
             </>
           )}
         </div>
+        )}
       </div>
 
       {/* Footer */}

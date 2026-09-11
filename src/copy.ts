@@ -509,6 +509,10 @@ export const OFFER = {
 
   // ── the counterparty's own record ───────────────────────────────────────
   myOffersTitle: 'Your offers',
+  noOffersYet: 'You have not proposed anything yet.',
+  // Said under a record that stops at twenty rows, so a short list never reads
+  // as a lost one.
+  showingNewest: 'Showing the {shown} most recent of {total}.',
   myOffersIntro:
     'Proposals you have submitted and what we did with each one. Nothing is owed either way until you accept ' +
     'a purchase offer.',
