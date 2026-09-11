@@ -13,6 +13,7 @@
 
 import * as crypto from 'crypto';
 import { electrumCall } from './electrum.js';
+import { BACKING_TOLERANCE_LANOSHIS } from './acquisitionBacking.js';
 
 // ==============================================
 // Base58 Encoding/Decoding
@@ -624,6 +625,48 @@ export function planTransfer(params: {
       // No amount to fall back to: the caller asked only for a sweep, so the
       // ceiling is the whole of its instruction and refusing it is the answer.
       return { ok: false, code: 'EMPTY_WALLET_EXCEEDS_CEILING', totalBalance, ceilingLanoshis: sweepCeilingLanoshis };
+    }
+    // THE FLOOR. A SWEEP HAD A CEILING AND NO FLOOR, AND THAT IS A HOLE.
+    //
+    // Emptying sends whatever is there, less the fee — and said ok. Nothing
+    // asked whether "whatever is there" is anywhere near the amount the
+    // treasury agreed to buy, because the wallet was assumed to hold it. Two
+    // readings of one wallet disagree: the route asks electrum for a BALANCE,
+    // which is confirmed + unconfirmed (electrum.ts), while this layer spends
+    // `listunspent`, which is CONFIRMED ONLY. So an incoming payment that never
+    // confirms — a low fee, a replacement — shows in the balance, backs the
+    // proposal, and cannot be spent here.
+    //
+    // Without this line: a wallet holding 1 LANA confirmed and 3,260 LANA
+    // unconfirmed against an agreed 3,261.796875 swept ONE LANA, returned
+    // success, and the row and the published event both recorded 3,261.796875
+    // LANA acquired at the full purchase price. The treasury would have paid
+    // for LANA that never arrived.
+    //
+    // So a sweep is now what its name says: a wallet holding the agreed amount
+    // that cannot ALSO pay the fee out of change. Below the amount it is not an
+    // emptying transfer, it is a short wallet, and the honest answer is the
+    // same shortfall an ordinary transfer would have given. The fee itself
+    // stays the tolerance — that much is unavoidable and is the whole point of
+    // the shape — so the test is on the WALLET, not on what is delivered.
+    //
+    // HOW FAR BELOW IS STILL "THE AGREED AMOUNT"? The repo has already answered
+    // that, once, in acquisitionBacking: BACKING_TOLERANCE_LANOSHIS is what the
+    // route forgives at every step that commits something. Reusing it means the
+    // two layers cannot disagree — a wallet the route called backed is never
+    // refused here as short, and a wallet the route would have refused is never
+    // swept here. A seller who consolidates his pieces and loses the merge fee
+    // stays inside it; an unconfirmed credit that never lands does not.
+    const floorLanoshis = params.amountLanoshis !== undefined && params.amountLanoshis > 0
+      ? params.amountLanoshis - BACKING_TOLERANCE_LANOSHIS
+      : undefined;
+    if (floorLanoshis !== undefined && totalBalance < floorLanoshis) {
+      const feeLanoshis = estimateFeeLanoshis(Math.min(utxos.length, MAX_TRANSACTION_INPUTS), 1);
+      return {
+        ok: false, code: 'INSUFFICIENT_FUNDS',
+        requiredLanoshis: params.amountLanoshis!, availableLanoshis: totalBalance,
+        shortfallLanoshis: params.amountLanoshis! - totalBalance, feeLanoshis, totalBalance,
+      };
     }
     // A genuine sweep DOES have to carry every piece, so here the count is the
     // real constraint and the refusal is the honest answer.

@@ -118,6 +118,84 @@ describe('planTransfer, on the exact figures of 10 September 2026', () => {
    * gone through the ordinary way became a permanent refusal inside a 24-hour
    * window. One small payment arriving after acceptance was enough.
    */
+  /**
+   * THE OTHER END OF THE SAME RULE — A SWEEP HAD A CEILING AND NO FLOOR.
+   *
+   * Emptying sent whatever was in the wallet, less the fee, and said ok. It
+   * never asked whether "whatever was in the wallet" was anywhere near the
+   * amount the treasury had agreed to buy, because the layer above had checked
+   * a balance. But the two layers read two different numbers: the route asks
+   * electrum for a BALANCE, which is confirmed + unconfirmed, and this layer
+   * spends `listunspent`, which is CONFIRMED ONLY.
+   *
+   * So: a payment into the wallet that never confirms. The route sees it, the
+   * proposal is backed, the sweep is authorised — and the chain layer can spend
+   * none of it. Before 11 Sept 2026 that swept the one confirmed LANA, returned
+   * success, and left the row and the published event both saying 3,261.796875
+   * LANA had been acquired at the full purchase price.
+   */
+  it('a sweep of a wallet that cannot pay what was agreed is refused, not delivered short', () => {
+    // One confirmed LANA. The other 3,260 are an incoming payment that never
+    // landed — visible to get_balance, unspendable here.
+    const utxos: UTXO[] = [{ tx_hash: 'a'.repeat(64), tx_pos: 0, value: 100_000_000, height: 1 }];
+    const plan = planTransfer({
+      utxos, amountLanoshis: AGREED_LANOSHIS, emptyWallet: true,
+      sweepCeilingLanoshis: AGREED_LANOSHIS + 100_800,
+    });
+    expect(planFailed(plan)).toBe(true);
+    if (!planFailed(plan)) return;
+    expect(plan.code).toBe('INSUFFICIENT_FUNDS');
+    // The sentence is about the wallet, in LANA, and names the real gap.
+    expect(describePlanFailure(plan).error).toContain('LANA');
+    expect((plan as any).shortfallLanoshis).toBe(AGREED_LANOSHIS - 100_000_000);
+  });
+
+  it('…but the fee a seller spent getting there is not "short"', () => {
+    // He did what an earlier refusal told him to do and consolidated his
+    // pieces; the merge cost him a fee, so the wallet is now a hair under the
+    // agreed amount. BACKING_TOLERANCE_LANOSHIS is what the route forgives at
+    // every step that commits something, so this layer forgives exactly it —
+    // one definition, two places, and no wallet the route called backed is
+    // refused here as short.
+    const short = AGREED_LANOSHIS - 400_000; // 0.004 LANA, inside the tolerance
+    const utxos: UTXO[] = [{ tx_hash: 'c'.repeat(64), tx_pos: 0, value: short, height: 1 }];
+    const plan = planTransfer({
+      utxos, amountLanoshis: AGREED_LANOSHIS, emptyWallet: true,
+      sweepCeilingLanoshis: AGREED_LANOSHIS + 100_800,
+    });
+    expect(planFailed(plan)).toBe(false);
+    if (planFailed(plan)) return;
+    expect(plan.emptyWallet).toBe(true);
+    expect(plan.amountLanoshis).toBe(short - estimateFeeLanoshis(1, 1));
+  });
+
+  /**
+   * THE PRODUCTION CASE OF 11 SEPTEMBER 2026, AT THIS LAYER.
+   *
+   * OFF-2026-056: the mandate trimmed the ask to 3,261.796875 LANA and the
+   * wallet held 3,261.796875 LANA, in the six pieces below. Asked the ordinary
+   * way it is short by the fee for ever; asked as what it is, it goes.
+   */
+  it('a wallet holding EXACTLY the agreed amount is short the ordinary way and fine swept', () => {
+    const ordinary = planTransfer({ utxos: PROD_UTXOS, amountLanoshis: AGREED_LANOSHIS, emptyWallet: false });
+    expect(planFailed(ordinary)).toBe(true);
+    if (!planFailed(ordinary)) return;
+    expect(ordinary.code).toBe('INSUFFICIENT_FUNDS');
+    if (ordinary.code === 'INSUFFICIENT_FUNDS') {
+      // 0.001737 LANA — the fee, with nowhere to come from. The sentence the
+      // seller read on 11 September, to the lanoshi.
+      expect(ordinary.shortfallLanoshis).toBe(estimateFeeLanoshis(6, 2));
+    }
+
+    const swept = planTransfer({
+      utxos: PROD_UTXOS, amountLanoshis: AGREED_LANOSHIS, emptyWallet: true,
+      sweepCeilingLanoshis: AGREED_LANOSHIS + 100_800,
+    });
+    expect(planFailed(swept)).toBe(false);
+    if (planFailed(swept)) return;
+    expect(swept.amountLanoshis).toBe(AGREED_LANOSHIS - estimateFeeLanoshis(6, 1));
+  });
+
   it('a wallet a hair above the sweep ceiling is SENT the ordinary way, not refused', () => {
     const SURPLUS = 712_500; // 0.007125 LANA — invisible at two decimals
     const utxos: UTXO[] = [...PROD_UTXOS, { tx_hash: 'e'.repeat(64), tx_pos: 0, value: SURPLUS, height: 200 }];

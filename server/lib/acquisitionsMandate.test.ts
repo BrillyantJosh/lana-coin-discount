@@ -8,7 +8,7 @@
  * signature → ownership → the transaction that reads the cap and writes the
  * offer → accept → transfer — and the two properties the plan calls out:
  * two racing proposals cannot both take the last of a mandate, and a
- * counteroffer can never empty a wallet.
+ * counteroffer never takes more than the mandate.
  */
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import http from 'http';
@@ -473,13 +473,45 @@ describe('transfer', () => {
     return o;
   };
 
-  it('a counteroffer transfer forces emptyWallet=false and moves exactly the agreed amount', async () => {
+  /**
+   * A COUNTEROFFER IS DECIDED FROM THE WALLET, LIKE EVERY OTHER OFFER.
+   *
+   * Until 11 Sept 2026 the route began `if (isCounteroffer) emptyWallet = false`
+   * and never looked at the balance. What the mandate trimmed and what the
+   * wallet holds are different facts, and OFF-2026-056 was the case where they
+   * pulled apart: countered to 3,261.796875 LANA, wallet holding exactly that,
+   * refused by the 0.001737 LANA fee on every press for as long as the seller
+   * kept pressing. These three say what decides it now.
+   */
+  it('a counteroffer on a wallet holding more moves the agreed amount and nothing else', async () => {
     const o = await accepted(1500);
     expect(o.isCounteroffer).toBe(true);
-    const r = await post(`/api/acquisitions/${o.offerRef}/transfer`, { hexId: seller.pub, privateKey: 'k', emptyWallet: true });
+    const r = await post(`/api/acquisitions/${o.offerRef}/transfer`, { hexId: seller.pub, privateKey: 'k' });
     expect(r.status).toBe(200);
     expect(r.body.emptyWallet).toBe(false);
     expect(world.sent[0].emptyWallet).toBe(false);
+    expect(world.sent[0].amount).toBe(1000);
+    expect(row(o.offerRef).status).toBe('settled');
+  });
+
+  it('…and a seller who ASKS to empty such a wallet is told so, not quietly downgraded', async () => {
+    // The old branch swallowed the ask in silence, because it had already
+    // decided the shape before reading the flag or the balance.
+    const o = await accepted(1500);
+    const r = await post(`/api/acquisitions/${o.offerRef}/transfer`, { hexId: seller.pub, privateKey: 'k', emptyWallet: true });
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('EMPTY_WALLET_EXCEEDS_MANDATE');
+    expect(world.sent).toHaveLength(0);
+  });
+
+  it('a counteroffer whose wallet holds EXACTLY the agreed amount is swept, not refused for ever', async () => {
+    const o = await accepted(1500);          // countered down to 1000
+    world.balances[W1] = 1000;               // …and 1000 is all there is
+    const r = await post(`/api/acquisitions/${o.offerRef}/transfer`, { hexId: seller.pub, privateKey: 'k', emptyWallet: true });
+    expect(r.status).toBe(200);
+    expect(world.sent[0].emptyWallet).toBe(true);
+    // The agreed amount still rides along: it is what the chain layer falls
+    // back to if the exact UTXO total turns out to sit above the ceiling.
     expect(world.sent[0].amount).toBe(1000);
     expect(row(o.offerRef).status).toBe('settled');
   });

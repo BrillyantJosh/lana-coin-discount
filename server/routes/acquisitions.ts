@@ -902,7 +902,6 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       }
 
       const agreedLanoshis = offer.lana_amount_lanoshis;
-      const isCounteroffer = offer.proposed_lana_lanoshis !== null && offer.proposed_lana_lanoshis !== undefined;
 
       // ONE READING OF THE WALLET, and everything below decided from it: the
       // repeat guard, whether the coins are still there, and who pays the fee.
@@ -972,12 +971,28 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       // moment of signing: it is handed both the sweep ceiling and the agreed
       // amount, so a wallet that turns out to sit above the ceiling is sent
       // the agreed amount the ordinary way instead of being refused.
+      //
+      // AND NOT FROM THE OFFER'S HISTORY. Until 11 Sept 2026 this chain began
+      // `if (isCounteroffer) emptyWallet = false`, on the premise that "a
+      // counteroffer was made for the remaining mandate precisely because the
+      // wallet holds more". It was not. A counter is made when the REQUESTED
+      // amount exceeds the REMAINING MANDATE — a fact about the mandate ledger,
+      // which says nothing whatever about the chain. The two are routinely the
+      // same number: the mandate IS the LANA that wallet received.
+      //
+      // OFF-2026-056 sat in that gap. The mandate trimmed the ask to
+      // 3,261.796875 LANA and the wallet held 3,261.796875 LANA exactly, so the
+      // ordinary shape needed 3,261.798612 and was refused by 0.001737 — the
+      // fee — on every press, with nothing the seller could do about it. The
+      // branch was written when `emptyWallet` came from the browser and it was
+      // a VETO on the seller's flag; once the server took the decision over it
+      // became the FIRST arm of this chain and pre-empted the measurement.
+      //
+      // It is also redundant. The balance arm below already refuses to sweep a
+      // wallet holding more than the mandate — by measuring it, which is the
+      // only honest way to know.
       let emptyWallet = false;
-      if (isCounteroffer) {
-        // A counteroffer was made for the remaining mandate precisely because
-        // the wallet holds more. The change output pays the fee.
-        emptyWallet = false;
-      } else if (balanceLanoshis === null) {
+      if (balanceLanoshis === null) {
         // AN ELECTRUM OUTAGE USED TO RESTORE THE 10 SEPT BUG IN FULL: with no
         // balance and no browser flag, a whole-wallet offer fell through to an
         // ordinary transfer and failed by the fee, every press. The question
