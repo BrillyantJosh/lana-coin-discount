@@ -100,10 +100,6 @@ export function timingLine(m: MandateView): string {
   switch (m.state) {
     case 'upcoming_split': return MANDATE.upcomingSplit;
     case 'not_open': return fill(MANDATE.notOpen, { round: m.round, date: fmtUtc(m.opensAt) });
-    // No date to quote, and that is the honest answer rather than a gap: this
-    // round opens when the treasury has finished acquiring the one in front of
-    // it, and nobody can say in advance how long that takes.
-    case 'awaiting_turn': return fill(MANDATE.awaitingTurn, { round: m.round, prev: m.round - 1 });
     case 'open': return fill(MANDATE.open, { round: m.round, remaining: fmtLana(m.remainingLana) });
     case 'released': return MANDATE.released;
     case 'fully_acquired': return MANDATE.fullyAcquired;
@@ -151,7 +147,7 @@ export function proposalGate(info: MandateInfo | null): ProposalGate {
   const sorted = [...info.mandates].sort((a, b) => (a.split - b.split) || (a.round - b.round));
   const open = sorted.find(roundIsProposable);
   if (open) return { allowed: true, openRound: open };
-  const blocked = sorted.find(m => m.state === 'not_open' || m.state === 'awaiting_turn' || m.state === 'upcoming_split' || m.state === 'terms_missing')
+  const blocked = sorted.find(m => m.state === 'not_open' || m.state === 'upcoming_split' || m.state === 'terms_missing')
     || sorted[0];
   return { allowed: false, reason: timingLine(blocked) };
 }
@@ -221,7 +217,7 @@ export function availabilityOf(info: MandateInfo | null): Availability | null {
   // Waiting on a date, not spent and not gone: 'fully_acquired', 'window_passed'
   // and 'closed' are none of the holder's remaining business.
   const laterRounds = sorted.filter(
-    m => (m.state === 'not_open' || m.state === 'awaiting_turn' || m.state === 'upcoming_split' || m.state === 'terms_missing') && m.remainingLana > 0,
+    m => (m.state === 'not_open' || m.state === 'upcoming_split' || m.state === 'terms_missing') && m.remainingLana > 0,
   );
   const sum = (rows: MandateView[]) => rows.reduce((t, m) => t + m.remainingLana, 0);
   const first = openRounds[0] || null;
@@ -242,7 +238,6 @@ const STATE_TONE: Record<string, string> = {
   open: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
   released: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
   not_open: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  awaiting_turn: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
   upcoming_split: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
   fully_acquired: 'bg-muted text-muted-foreground',
   terms_missing: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
@@ -403,7 +398,6 @@ export function MandatePanel({ info, loading, error, lanaAmount, currency, showI
                     amount: fmtLana(m.remainingLana),
                     round: m.round,
                     when: m.state === 'not_open' && m.opensAt ? fmtUtc(m.opensAt)
-                      : m.state === 'awaiting_turn' ? MANDATE.availableAfterRoundBefore
                       : m.state === 'upcoming_split' ? MANDATE.availableAfterSplit
                       : MANDATE.availableTermsPending,
                   })}

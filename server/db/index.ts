@@ -4,7 +4,7 @@ import fs from 'fs';
 import { defaultMandateRows } from '../lib/treasuryMandate.js';
 import {
   ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, KIND_38888_SPLIT_ENDS_AT_COLUMN,
-  OFFER_DECISION_REASON_STATUS_COLUMN, ROUND_OPENS_MODE_COLUMN, addColumnIfMissing,
+  OFFER_DECISION_REASON_STATUS_COLUMN, addColumnIfMissing,
   rewriteStoredReviewPhrase,
   stuckTransfers,
 } from './roundMandateSchema.js';
@@ -306,7 +306,6 @@ db.exec(ROUND_MANDATE_SCHEMA_SQL);
 for (const sql of ROUND_MANDATE_OFFER_COLUMNS) addColumnIfMissing(db, sql);
 addColumnIfMissing(db, OFFER_DECISION_REASON_STATUS_COLUMN);
 addColumnIfMissing(db, KIND_38888_SPLIT_ENDS_AT_COLUMN);
-addColumnIfMissing(db, ROUND_OPENS_MODE_COLUMN);
 
 // The stored half of the 10 Sept rename, and the one thing that says out loud
 // which sellers our own code is refusing. Both idempotent, both quiet when

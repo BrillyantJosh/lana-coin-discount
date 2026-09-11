@@ -21,20 +21,9 @@ import { DISCOUNT_BAND } from '../../server/lib/roundMandate';
  * so, and the ISO the server stores is what it shows back.
  */
 
-type OpensMode = 'date' | 'sequence' | null;
-
 interface RoundRow {
   round: number;
   opensAt: string | null;
-  /** How this round opens. null = nothing chosen = it never will. */
-  opensMode: OpensMode;
-  /** Set once its turn came and was recorded; from then on it is open. */
-  openedAt: string | null;
-  /** False when the round has neither a date nor a rule — the silent block. */
-  canEverOpen: boolean;
-  /** Live mandates pointing at this round, and what they are holding. */
-  mandateCount: number;
-  waitingLana: number;
   discountPercent: number | null;
   prefillDiscountPercent: number | null;
   updatedBy: string | null;
@@ -87,7 +76,6 @@ const AdminTreasuryRounds = () => {
   // The three rows as edited.
   const [opens, setOpens] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
   const [discount, setDiscount] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
-  const [mode, setMode] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
   const [serverWarnings, setServerWarnings] = useState<string[]>([]);
   const [lanapaysOnly, setLanapaysOnly] = useState(false);
 
@@ -111,13 +99,12 @@ const AdminTreasuryRounds = () => {
       if (!res.ok || json.error) throw new Error(json.error || 'Failed to load round terms');
       setData(json);
       if (s === null) setSplit(json.split);
-      const o: Record<number, string> = {}; const d: Record<number, string> = {}; const m: Record<number, string> = {};
+      const o: Record<number, string> = {}; const d: Record<number, string> = {};
       for (const r of json.rounds) {
         o[r.round] = isoToLocalUtc(r.opensAt);
         d[r.round] = r.discountPercent === null ? '' : String(r.discountPercent);
-        m[r.round] = r.opensMode ?? '';
       }
-      setOpens(o); setDiscount(d); setMode(m);
+      setOpens(o); setDiscount(d);
       setLanapaysOnly(json.lanapaysOnly === true);
       setServerWarnings([]);
     } catch (err: any) {
@@ -159,7 +146,6 @@ const AdminTreasuryRounds = () => {
         round,
         opensAt: localUtcToIso(opens[round]),
         discountPercent: (discount[round] || '').trim() === '' ? null : Number(discount[round]),
-        opensMode: (mode[round] || '') === '' ? null : mode[round],
       }));
       const res = await fetch('/api/treasury/admin/rounds', {
         method: 'PUT',
@@ -276,54 +262,11 @@ const AdminTreasuryRounds = () => {
                 </button>
               </div>
 
-              {(() => {
-                /**
-                 * THE WARNING NOBODY GOT.
-                 *
-                 * Split 9 sat with three empty rounds and five mandates
-                 * pointing at them, and every screen was quiet about it,
-                 * because a round with no date looks exactly like a round
-                 * whose date has not arrived. A round that cannot open is only
-                 * alarming when it says who is standing behind it.
-                 */
-                // Two ways a round can be unreachable, and they are equally
-                // silent: no way to open, or no price to open at. A round that
-                // opens on time and then refuses everyone for want of a
-                // discount is no better off than one that never opens.
-                const stuck = (data?.rounds || []).filter(
-                  r => r.mandateCount > 0 && (!r.canEverOpen || r.discountPercent === null),
-                );
-                if (stuck.length === 0) return null;
-                const people = stuck.reduce((t, r) => t + r.mandateCount, 0);
-                const lana = stuck.reduce((t, r) => t + r.waitingLana, 0);
-                const missing = (r: RoundRow) => {
-                  const bits: string[] = [];
-                  if (!r.canEverOpen) bits.push('no date and no rule for opening');
-                  if (r.discountPercent === null) bits.push('no discount');
-                  return `round ${r.round}: ${bits.join(', ')}`;
-                };
-                return (
-                  <div className="rounded-lg border-2 border-red-300 bg-red-50 dark:bg-red-950/30 dark:border-red-800 px-4 py-3 space-y-1">
-                    <p className="text-sm font-bold text-red-800 dark:text-red-300">
-                      Split {data?.split}: {people} financing mandate{people > 1 ? 's' : ''} cannot be answered
-                    </p>
-                    <p className="text-xs text-red-700 dark:text-red-400">
-                      {lana.toLocaleString('en-GB', { maximumFractionDigits: 2 })} LANA is waiting behind{' '}
-                      {stuck.length > 1 ? 'rounds' : 'a round'} that cannot serve it — {stuck.map(missing).join('; ')}.
-                      Nothing will change on its own: every proposal against{' '}
-                      {stuck.length > 1 ? 'these rounds' : 'this round'} is refused, and the financer is not told
-                      that the reason is on our side.
-                    </p>
-                  </div>
-                );
-              })()}
-
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs text-muted-foreground border-b border-border">
                       <th className="py-2 pr-3">Round</th>
-                      <th className="py-2 pr-3">Opens</th>
                       <th className="py-2 pr-3">{ADMIN_ROUNDS.opensLabel}</th>
                       <th className="py-2 pr-3">{ADMIN_ROUNDS.discountLabel}</th>
                       <th className="py-2">Last change</th>
@@ -335,40 +278,7 @@ const AdminTreasuryRounds = () => {
                       const warns = localWarnings(round);
                       return (
                         <tr key={round} className="border-b border-border/50 align-top">
-                          <td className="py-3 pr-3 font-bold">
-                            Round {round}
-                            {row && row.mandateCount > 0 && (
-                              <p className="mt-1 text-[11px] font-normal text-muted-foreground">
-                                {row.mandateCount} mandate{row.mandateCount > 1 ? 's' : ''} ·{' '}
-                                {row.waitingLana.toLocaleString('en-GB', { maximumFractionDigits: 2 })} LANA
-                              </p>
-                            )}
-                          </td>
-                          <td className="py-3 pr-3">
-                            <select
-                              value={mode[round] || ''}
-                              onChange={e => setMode(prev => ({ ...prev, [round]: e.target.value }))}
-                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-                            >
-                              <option value="">— not set (stays shut)</option>
-                              <option value="date">On the date</option>
-                              <option value="sequence">
-                                {round === 1 ? 'As soon as the window opens' : `When round ${round - 1} runs out`}
-                              </option>
-                            </select>
-                            {mode[round] === 'sequence' && (
-                              <p className="mt-1 max-w-xs text-[11px] text-muted-foreground">
-                                {round === 1
-                                  ? 'Opens the moment this Split enters its buyback window. No date needed.'
-                                  : `Opens once the treasury has acquired what round ${round - 1} is holding. A date, if you also set one, stays as the day it opens at the latest — never later.`}
-                              </p>
-                            )}
-                            {row?.openedAt && (
-                              <p className="mt-1 text-[11px] font-medium text-green-700 dark:text-green-400">
-                                Opened {row.openedAt}
-                              </p>
-                            )}
-                          </td>
+                          <td className="py-3 pr-3 font-bold">Round {round}</td>
                           <td className="py-3 pr-3">
                             <input
                               type="datetime-local"

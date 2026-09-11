@@ -21,11 +21,6 @@ import type Database from 'better-sqlite3';
 import { verifyEventSignature, queryEventsFromRelays, type NostrEvent } from './nostr.js';
 import type { MandateCandidate, MandateWallet, RoundTerms } from './roundMandate.js';
 import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
-import { consumedByMandate } from './acquisitionOffer.js';
-import {
-  roundStandings, sequenceOpenings, remainingOfMember,
-  type RoundOpening, type OpensMode,
-} from './roundSequence.js';
 
 /** The LanaPays.us processor key — the ONLY author whose mandates count. */
 export const LANAPAYS_PROCESSOR_PUBKEY = '79730aba75d71584e8a4f9d0cc1173085e75590ce489760078d2bf6f5210d692';
@@ -233,105 +228,15 @@ export function listMandatesForSplit(db: Database.Database, split: number): Mand
     .map(rowToCandidate);
 }
 
-/**
- * acquisition_rounds for one split, as the decision module wants them —
- * including HOW each round opens and whether its turn has already come.
- *
- * The recorded turn is joined in here rather than looked up separately so that
- * the gate, the seller's panel and the admin worklist cannot end up asking
- * different questions about the same round. One row, one answer.
- */
+/** acquisition_rounds for one split, as the decision module wants them. */
 export function loadRoundTerms(handle: Database.Database, split: number): RoundTerms[] {
-  const rows = handle.prepare(`
-    SELECT r.round, r.opens_at, r.discount_percent, r.opens_mode, o.opened_at
-      FROM acquisition_rounds r
-      LEFT JOIN acquisition_round_opens o ON o.split = r.split AND o.round = r.round
-     WHERE r.split = ?
-  `).all(split) as any[];
-  return rows
-    .map(r => {
-      // An unparseable date must not take the whole row with it. It used to:
-      // the row was dropped, so "this round opens by sequence, and its date is
-      // gibberish" became indistinguishable from "nothing was ever published
-      // for this round" — and the second one is the state that hides a
-      // financer's money from them.
-      const parsed = r.opens_at ? Math.floor(Date.parse(r.opens_at) / 1000) : null;
-      const openedParsed = r.opened_at ? Math.floor(Date.parse(r.opened_at + 'Z') / 1000) : null;
-      return {
-        round: Number(r.round),
-        opensAt: parsed !== null && Number.isFinite(parsed) ? parsed : null,
-        discountPercent: r.discount_percent === null || r.discount_percent === undefined ? null : Number(r.discount_percent),
-        opensMode: (r.opens_mode === 'date' || r.opens_mode === 'sequence' ? r.opens_mode : null) as OpensMode,
-        openedAt: openedParsed !== null && Number.isFinite(openedParsed) ? openedParsed : null,
-      };
-    });
-}
-
-/** 24 h: below that a quiet relay is a blip, above it we stop assuming. */
-export const SEQUENCE_SYNC_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-/**
- * Have we verifiably heard from a relay recently enough to act on what we hold?
- *
- * The last-sync stamp is written only when at least one VERIFIED event came
- * back, so "we asked and heard nothing" never reads as "we are in sync". A
- * round's turn is read off mandates, and stale mandates are a reason to wait
- * rather than to open a treasury cap.
- */
-export function syncIsFresh(handle: Database.Database, now = Date.now()): boolean {
-  const row = handle.prepare('SELECT value FROM app_settings WHERE key = ?').get(LAST_SYNC_SETTING_KEY) as any;
-  const ms = row?.value ? Date.parse(String(row.value)) : NaN;
-  return Number.isFinite(ms) && now - ms <= SEQUENCE_SYNC_MAX_AGE_MS;
-}
-
-/**
- * RECORD ANY ROUND WHOSE TURN HAS COME. Idempotent, monotone, cheap.
- *
- * Called from the proposal transaction (so the proposal that empties a round
- * opens the next one in the same breath), from the heartbeat (so a round opens
- * even on a quiet day), and from the reads (so the screen never shows a shut
- * round the gate would have opened — that gap is a dead button in front of an
- * open door, and it is the exact failure this whole module exists to end).
- *
- * Writing from a read is deliberate. What is written is not the reader's
- * doing: it is a fact about mandates and offers that was already true, and
- * INSERT OR IGNORE means the first observer merely stamps the moment we first
- * noticed. Nothing a caller passes can change the outcome.
- */
-export function syncRoundOpenings(
-  handle: Database.Database,
-  split: number,
-  opts: { now?: number; syncFresh?: boolean } = {},
-): { round: number; trigger: string }[] {
-  const nowMs = opts.now ?? Date.now();
-  const syncFresh = opts.syncFresh ?? syncIsFresh(handle, nowMs);
-  const terms = loadRoundTerms(handle, split);
-  const openings: RoundOpening[] = terms.map(t => ({
-    round: t.round, opensAt: t.opensAt,
-    opensMode: t.opensMode ?? null, openedAt: t.openedAt ?? null,
-  }));
-  if (!openings.some(o => o.opensMode === 'sequence' && o.openedAt === null)) return [];
-
-  const live = listMandatesForSplit(handle, split).filter(m => m.status === 'announced');
-  const consumed = consumedByMandate(handle, live.map(m => m.dTag));
-  const standings = roundStandings(live.map(m => ({
-    round: m.round,
-    remainingLanoshis: remainingOfMember(m.lanaReceivedLanoshis, consumed.get(m.dTag) || 0),
-  })));
-
-  const due = sequenceOpenings({ openings, standings, syncFresh });
-  if (due.length === 0) return [];
-  const insert = handle.prepare(
-    'INSERT OR IGNORE INTO acquisition_round_opens (split, round, evidence) VALUES (?, ?, ?)',
-  );
-  const written: { round: number; trigger: string }[] = [];
-  for (const d of due) {
-    if (insert.run(split, d.round, d.trigger).changes === 1) {
-      written.push(d);
-      console.log(`[lana-discount] Split ${split} round ${d.round} opened by sequence — ${d.trigger}`);
-    }
-  }
-  return written;
+  return (handle.prepare('SELECT round, opens_at, discount_percent FROM acquisition_rounds WHERE split = ?').all(split) as any[])
+    .map(r => ({
+      round: Number(r.round),
+      opensAt: r.opens_at ? Math.floor(Date.parse(r.opens_at) / 1000) : null,
+      discountPercent: r.discount_percent === null || r.discount_percent === undefined ? null : Number(r.discount_percent),
+    }))
+    .filter(t => t.opensAt === null || Number.isFinite(t.opensAt));
 }
 
 export function loadReleases(handle: Database.Database, dTags: string[]): Set<string> {

@@ -587,9 +587,9 @@ export const MANDATE = {
   roundDetailToggle: 'Round-by-round detail ({count})',
   title: 'Your financing-round mandate',
   intro:
-    'The treasury acquires from financing budgets round by round — round 1, then 2, then 3 — and from each ' +
-    'budget up to the LANA it received. A round opens on its published date where it has one, and otherwise ' +
-    'once the round before it has been acquired. This is what applies to the wallet you selected.',
+    'The treasury acquires from financing budgets round by round — round 1, then 2, then 3 — each from its ' +
+    'published date, and from each budget up to the LANA it received. This is what applies to the wallet ' +
+    'you selected.',
   roundLabel: 'Round {round}',
   expectedLabel: 'Received by this budget',
   remainingLabel: 'Remaining under the mandate',
@@ -601,12 +601,6 @@ export const MANDATE = {
   // The timing line, one per state (server/lib/roundMandate.ts RoundState).
   upcomingSplit: 'This Split is still running; your mandate opens after the Split, on the round date',
   notOpen: 'Round {round} opens on {date}',
-  // No date, and none can honestly be given: this round follows the one
-  // before it, and how long that takes is how long the treasury takes to
-  // acquire what round {prev} is holding.
-  awaitingTurn: 'Round {round} follows round {prev} — it opens once round {prev} has been acquired. We cannot say in advance when that will be.',
-  /** The same fact, shortened for the one-line "available later" note. */
-  availableAfterRoundBefore: 'after the round before it',
   open: 'Round {round} is open — you may propose up to {remaining} LANA',
   released: 'Opened early by the treasury',
   fullyAcquired: 'Fully acquired',
@@ -671,9 +665,6 @@ export const MANDATE = {
 
 export const OFFER_ERRORS: Record<string, string> = {
   MANDATE_NOT_OPEN: OFFER.notOpenBody,
-  AWAITING_TURN:
-    'The treasury is still acquiring from the round before this one. Yours follows it, and there is no date ' +
-    'we could give you for that — it opens once the round in front of it has been acquired.',
   TERMS_MISSING: 'The treasury has not yet published its terms for this round. Please try again later.',
   SPLIT_WINDOW: 'This mandate is not in the window the treasury acquires from right now.',
   FULLY_ACQUIRED: 'The treasury has already acquired the full amount this mandate covers.',

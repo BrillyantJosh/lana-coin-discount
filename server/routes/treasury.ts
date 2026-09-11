@@ -34,8 +34,7 @@ import { fetchBatchBalances as realFetchBatchBalances } from '../lib/electrum.js
 import {
   roundState, validateRoundTerms, remainingOf, type RoundTerms,
 } from '../lib/roundMandate.js';
-import { ingestMandateEvent, pullRoundMandates, listMandatesForSplit, loadRoundTerms, loadReleases, syncRoundOpenings } from '../lib/roundMandateSync.js';
-import { roundCanEverOpen } from '../lib/roundSequence.js';
+import { ingestMandateEvent, pullRoundMandates, listMandatesForSplit, loadRoundTerms, loadReleases } from '../lib/roundMandateSync.js';
 import { consumedByMandate, offerRowsForFunding, offerTotalsByMandate } from '../lib/acquisitionOffer.js';
 import { fundingByRound, modelReturnPercent, OFF_MODEL_POINTS, projectPrice, referenceForCurrency } from '../lib/roundFunding.js';
 import { fetchBudgetMoney, type BudgetMoneyIndex } from '../lib/fundBudgets.js';
@@ -59,12 +58,7 @@ function currentSplitNumber(): number | null {
 }
 
 function termsRows(split: number) {
-  return (db().prepare(`
-    SELECT r.round, r.opens_at, r.discount_percent, r.opens_mode, r.updated_by, r.updated_at, o.opened_at
-      FROM acquisition_rounds r
-      LEFT JOIN acquisition_round_opens o ON o.split = r.split AND o.round = r.round
-     WHERE r.split = ? ORDER BY r.round
-  `).all(split) as any[]);
+  return (db().prepare('SELECT round, opens_at, discount_percent, updated_by, updated_at FROM acquisition_rounds WHERE split = ? ORDER BY round').all(split) as any[]);
 }
 
 export interface TreasuryDeps {
@@ -80,9 +74,6 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
 
   router.get('/rounds', (req: Request, res: Response) => {
     const currentSplit = currentSplitNumber();
-    // Same sweep as the gate runs, so the two can never describe the same
-    // round differently. See syncRoundOpenings on why a read may write.
-    if (currentSplit !== null) syncRoundOpenings(db(), currentSplit - BUYBACK_SPLIT_OFFSET);
     // Default to the split whose mandates are (or will next be) in the window.
     const split = parseSplitParam(req.query.split, currentSplit === null ? null : currentSplit - BUYBACK_SPLIT_OFFSET);
     if (split === null) return res.status(400).json({ error: 'split must be a positive integer' });
@@ -209,20 +200,6 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
 
     const stored = termsRows(split);
     const df = await directFundFees();
-    // HOW MANY PEOPLE EACH ROUND IS HOLDING.
-    //
-    // Without this the terms page is an empty form with no stakes on it, and
-    // that is how Split 9 came to sit with nothing filled in while five
-    // mandates pointed at it. A round that cannot open is only alarming when
-    // the screen says who is waiting behind it.
-    const waiting = new Map<number, { mandates: number; lanoshis: number }>();
-    for (const m of listMandatesForSplit(db(), split)) {
-      if (m.status !== 'announced') continue;
-      const w = waiting.get(m.round) || { mandates: 0, lanoshis: 0 };
-      w.mandates += 1;
-      w.lanoshis += Number(m.lanaReceivedLanoshis) || 0;
-      waiting.set(m.round, w);
-    }
     const rounds = [1, 2, 3].map(round => {
       const row = stored.find(r => Number(r.round) === round);
       const storedDiscount = row?.discount_percent ?? null;
@@ -230,18 +207,9 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
       return {
         round,
         opensAt: row?.opens_at ?? null,
-        opensMode: (row?.opens_mode === 'date' || row?.opens_mode === 'sequence') ? row.opens_mode : null,
-        openedAt: row?.opened_at ?? null,
-        /** No date and no sequence rule: this round can never open, whatever it looks like. */
-        canEverOpen: roundCanEverOpen({
-          opensAt: row?.opens_at ? Math.floor(Date.parse(row.opens_at) / 1000) : null,
-          opensMode: (row?.opens_mode === 'date' || row?.opens_mode === 'sequence') ? row.opens_mode : null,
-        }),
         discountPercent: storedDiscount,
         // Filled ONLY where the stored field is empty.
         prefillDiscountPercent: storedDiscount === null ? suggested : null,
-        mandateCount: waiting.get(round)?.mandates ?? 0,
-        waitingLana: (waiting.get(round)?.lanoshis ?? 0) / 100_000_000,
         updatedBy: row?.updated_by ?? null,
         updatedAt: row?.updated_at ?? null,
       };
@@ -265,11 +233,10 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     if (!v.ok) return res.status(400).json({ error: v.error, warnings: v.warnings });
 
     const upsert = db().prepare(`
-      INSERT INTO acquisition_rounds (split, round, opens_at, discount_percent, opens_mode, updated_by, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      INSERT INTO acquisition_rounds (split, round, opens_at, discount_percent, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(split, round) DO UPDATE SET
         opens_at = excluded.opens_at, discount_percent = excluded.discount_percent,
-        opens_mode = excluded.opens_mode,
         updated_by = excluded.updated_by, updated_at = datetime('now')
     `);
     // Only written when the field is actually present. A caller that sends just
@@ -279,7 +246,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     const lanapaysOnly = scopeSent ? req.body.lanapaysOnly === true : null;
 
     db().transaction(() => {
-      for (const r of v.rows) upsert.run(split, r.round, r.opensAt, r.discountPercent, r.opensMode, adminHex);
+      for (const r of v.rows) upsert.run(split, r.round, r.opensAt, r.discountPercent, adminHex);
       if (lanapaysOnly !== null) setAppSetting(LANAPAYS_ONLY_KEY, lanapaysOnly ? '1' : '0', adminHex);
     })();
     if (lanapaysOnly !== null) {
@@ -316,11 +283,6 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
 
     const terms = loadRoundTerms(db(), split);
     const termsByRound = new Map<number, RoundTerms>(terms.map(t => [t.round, t]));
-    // Only for the split whose window is actually open. Viewing an upcoming
-    // split must not stamp "the window opened" on a window that has not, even
-    // though the gate would refuse anyone anyway: a record that says a round
-    // opened before it could have is a record that lies when it is read back.
-    if (currentSplit !== null && split === currentSplit - BUYBACK_SPLIT_OFFSET) syncRoundOpenings(db(), split);
     const allForSplit = listMandatesForSplit(db(), split);
     let mandates = allForSplit;
     if (roundFilter) mandates = mandates.filter(m => m.round === roundFilter);
@@ -508,22 +470,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
       lastSyncAt: lastSync,
       degraded: {
         noEvents: mandates.length === 0,
-        // WAS `terms.length === 0`, AND THAT IS WHY NOBODY WAS TOLD.
-        //
-        // Split 9 has three rows in acquisition_rounds and every field in them
-        // is empty — the admin page saves all three rounds whether or not they
-        // were filled in, so rows exist for rounds nobody ever set. Counting
-        // rows, this said "terms are present" and stayed quiet while five
-        // mandates pointed at a split that could never open. A row is not
-        // terms: a round has terms when it has a price AND some way to open.
-        // …and measured against EVERY mandate of the split, never the filtered
-        // view: a warning that switches off when the admin clicks "Round 2" is
-        // a warning that is absent exactly when it is being looked for.
-        noTerms: allForSplit.filter(m => m.status === 'announced').some(m => {
-          const t = termsByRound.get(m.round);
-          return !t || t.discountPercent === null
-            || !roundCanEverOpen({ opensAt: t.opensAt ?? null, opensMode: t.opensMode ?? null });
-        }),
+        noTerms: terms.length === 0,
         splitUnknown: currentSplit === null,
         staleSync: !Number.isFinite(lastSyncMs) || Date.now() - lastSyncMs > STALE_SYNC_MS,
         balancesPartial,
