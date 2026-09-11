@@ -6,6 +6,7 @@ import {
   OFFER_STATUS_LABELS, ACQUISITION_STATUS_LABELS,
 } from '@/copy';
 import { WaitingOffer } from '@/components/WaitingOffer';
+import { fill } from '@/components/MandatePanel';
 import { parseSqliteUtc, formatDate } from '@/lib/offerClock';
 import { formatFiat, formatLana } from '@/lib/money';
 import { describeDecisionReason } from '@/lib/offerErrors';
@@ -78,6 +79,14 @@ const WAITING_ON_SELLER = ['offered', 'accepted'];
  * owe money by, on an acquisition that never took place.
  */
 const NOTHING_WAS_ACQUIRED = ['declined', 'expired', 'withdrawn'];
+
+/**
+ * How far past its deadline an offer may be and still be drawn as waiting.
+ *
+ * Twice the drift the signature check already calls suspicious. It exists so a
+ * fast clock cannot bury a live offer — never so a dead one can linger.
+ */
+const LAPSE_GRACE_MS = 10 * 60 * 1000;
 
 /** Wire field names are the server's; only the type name says what it is. */
 interface Settlement {
@@ -223,6 +232,23 @@ const Dashboard = () => {
   const waiting = offers
     .filter(o => WAITING_ON_SELLER.includes(o.status))
     .map(o => ({ ...o, actionDueAt: dueFor(o) ?? null }))
+    // …AND STILL PLAUSIBLY OPEN. The status is the server's answer and it is
+    // the right one, but a row it has not swept yet — or cannot sweep — kept
+    // appearing here as "waiting on you" long after the window shut: OFF-2026
+    // -003 sat at the top of the owner's dashboard for months, drawing itself
+    // as lapsed under a heading saying it needed him (11 Sept 2026: "na vrhu
+    // imam neko ponudbo, ki nima kaj na vrhu biti").
+    //
+    // The grace is what keeps the old cure: a device whose clock runs fast
+    // must never bury a live offer, and the app already treats five minutes of
+    // drift as suspicious (SIGNATURE_STALE). Ten is twice that and nowhere
+    // near a window anyone has. Inside it the card still draws itself as
+    // lapsed with a Refresh, exactly as before; beyond it, the row belongs to
+    // the record.
+    .filter(o => {
+      const due = parseSqliteUtc(o.actionDueAt);
+      return !due || due.getTime() > Date.now() - LAPSE_GRACE_MS;
+    })
     .sort((a, b) => {
       // What runs out first, first. Not newest-first, which is the order the
       // wire gives and the order the record below keeps: when time is the
@@ -243,8 +269,22 @@ const Dashboard = () => {
     return !due || due.getTime() > Date.now();
   }).length;
   const waitingRefs = new Set(waiting.map(o => o.offerRef));
-  /** Everything else, in the order the server gave it. */
-  const rest = offers.filter(o => !waitingRefs.has(o.offerRef));
+  /**
+   * THE RECORD: what happened, and what is still happening. Nothing else.
+   *
+   * Owner, 11 Sept 2026: "spodaj pa želim imeti samo zaključene, vse ostalo je
+   * dust." A declined, lapsed or withdrawn proposal is a row where nothing was
+   * acquired and nothing ever will be — it is the same three statuses
+   * NOTHING_WAS_ACQUIRED already names, so there is one definition of "came to
+   * nothing" and not two.
+   *
+   * A proposal still being decided STAYS, on his instruction: it has not come
+   * to nothing, and a page that showed a seller nothing at all after he had
+   * just submitted is the complaint that was fixed two days ago.
+   */
+  const rest = offers.filter(o => !waitingRefs.has(o.offerRef) && !NOTHING_WAS_ACQUIRED.includes(o.status));
+  /** How many came to nothing — said in one line, never listed. */
+  const cameToNothing = offers.filter(o => !waitingRefs.has(o.offerRef) && NOTHING_WAS_ACQUIRED.includes(o.status)).length;
 
   /**
    * Part-settlement is not a stored status: the row still says what it says
@@ -367,13 +407,20 @@ const Dashboard = () => {
             appears in exactly one place, because showing the live one here as
             well is what blended it back into the history. The pointer says
             where it went, so a missing row never reads as a lost one. */}
-        {rest.length > 0 && (
+        {(rest.length > 0 || cameToNothing > 0) && (
           <div className="max-w-4xl mx-auto mt-16">
             <h2 className="text-2xl font-bold text-foreground">{OFFER.myOffersTitle}</h2>
             <div className="mb-6">
               <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">{OFFER.myOffersIntro}</p>
               {waiting.length > 0 && (
                 <p className="mt-1 text-sm text-muted-foreground leading-relaxed">{OFFER.waitingPointer}</p>
+              )}
+              {cameToNothing > 0 && (
+                <p className="mt-1 text-xs text-muted-foreground/80 leading-relaxed" data-testid="came-to-nothing">
+                  {cameToNothing === 1
+                    ? OFFER.cameToNothingOne
+                    : fill(OFFER.cameToNothingMany, { count: cameToNothing })}
+                </p>
               )}
             </div>
 

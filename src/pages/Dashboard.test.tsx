@@ -238,18 +238,59 @@ describe('the record below, once an offer is over', () => {
     expect(screen.queryByText(/We settle by/)).not.toBeInTheDocument();
   });
 
-  it('and explains itself in English, not in the token the sweeper wrote', async () => {
+  /**
+   * AND THE TOP IS FOR WHAT IS WAITING, NOT FOR WHAT HAS FINISHED WAITING.
+   *
+   * The status is the server's answer and it is the right one — but a row the
+   * server has not swept, or could not sweep, kept appearing under "waiting on
+   * you" long after its window shut. OFF-2026-003 sat there for months, drawing
+   * itself as lapsed (11 Sept 2026: "na vrhu imam neko ponudbo, ki nima kaj na
+   * vrhu biti"). The grace below is what keeps a fast device clock from burying
+   * a LIVE offer, which is the older bug and the worse one.
+   */
+  it('an offer whose window closed long ago is not at the top', async () => {
+    const longPast = sqliteUtc(-3 * DAY);
+    offers = [offer({ status: 'offered', actionDueAt: longPast, offerExpiresAt: longPast })];
+    show();
+    await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
+    expect(screen.queryByText('Waiting for your decision')).not.toBeInTheDocument();
+  });
+
+  it('but one that has only just passed still is, because the clock may be ours', async () => {
+    const justPast = sqliteUtc(-2 * 60_000);   // two minutes, well inside the grace
+    offers = [offer({ status: 'offered', actionDueAt: justPast, offerExpiresAt: justPast })];
+    show();
+    // It is kept, and it draws itself as lapsed with a Refresh rather than
+    // vanishing — which is the whole point of the grace: if OUR clock is the
+    // wrong one, the seller can find out in a click.
+    await waitFor(() => expect(screen.getByText(/has lapsed/i)).toBeInTheDocument());
+    expect(screen.queryByTestId('came-to-nothing')).toBeNull();
+  });
+
+  /**
+   * WHAT CAME TO NOTHING IS NOT THE RECORD — owner, 11 Sept 2026: "spodaj pa
+   * želim imeti samo zaključene, vse ostalo je dust."
+   *
+   * A declined, lapsed or withdrawn proposal is a row where nothing was
+   * acquired and nothing ever will be. It is not listed. It is also not
+   * pretended out of existence: one muted line says how many there were, so a
+   * seller who remembers proposing something does not find the page silent
+   * about it.
+   */
+  it('a lapsed offer is not listed — it is counted, in one line', async () => {
     offers = [offer({
       offerRef: 'OFF-2026-045', status: 'expired', actionDueAt: null, offerExpiresAt: null,
       decisionReason: 'TRANSFER_NOT_COMPLETED',
     })];
     show();
     await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
+    expect(screen.queryByText('OFF-2026-045')).not.toBeInTheDocument();
+    expect(screen.getByTestId('came-to-nothing').textContent).toMatch(/1 earlier proposal came to nothing/);
+    // And the token the sweeper wrote never reaches a person, listed or not.
     expect(screen.queryByText('TRANSFER_NOT_COMPLETED')).not.toBeInTheDocument();
-    expect(screen.getByText(/did not reach our treasury wallet in time/)).toBeInTheDocument();
   });
 
-  it('a sentence a person wrote is shown as they wrote it', async () => {
+  it('nor a declined one, however well its reason was written', async () => {
     offers = [offer({
       offerRef: 'OFF-2026-044', status: 'declined', purchasePrice: null,
       actionDueAt: null, offerExpiresAt: null, settlementDueAt: null,
@@ -257,7 +298,23 @@ describe('the record below, once an offer is over', () => {
     })];
     show();
     await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
-    expect(screen.getByText('Above the amount this mandate covers.')).toBeInTheDocument();
+    expect(screen.queryByText('OFF-2026-044')).not.toBeInTheDocument();
+    expect(screen.queryByText('Above the amount this mandate covers.')).not.toBeInTheDocument();
+    expect(screen.getByTestId('came-to-nothing')).toBeInTheDocument();
+  });
+
+  it('but a proposal still being decided STAYS — it has not come to nothing', async () => {
+    // Hiding this is what left a seller staring at an empty page the moment he
+    // submitted, which is the complaint that was fixed two days ago.
+    offers = [offer({
+      offerRef: 'OFF-2026-046', status: 'under_review', purchasePrice: null,
+      actionDueAt: null, offerExpiresAt: null, settlementDueAt: null,
+      decisionReason: 'This proposal is under financial review.',
+    })];
+    show();
+    await waitFor(() => expect(screen.getByText('Your offers')).toBeInTheDocument());
+    expect(screen.getByText('OFF-2026-046')).toBeInTheDocument();
+    expect(screen.queryByTestId('came-to-nothing')).toBeNull();
   });
 });
 

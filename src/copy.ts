@@ -523,6 +523,11 @@ export const OFFER = {
   // After a completed sale, when another round is still open. Rounds carry
   // their own discount, so one offer cannot span two of them — the holder
   // sells in two goes, and this is what points at the second.
+  // One line, never a list. Hiding the rows was the point; destroying the fact
+  // that they existed was not — a seller who remembers proposing something
+  // must not find the page silent about it.
+  cameToNothingOne: '1 earlier proposal came to nothing — declined, lapsed or withdrawn.',
+  cameToNothingMany: '{count} earlier proposals came to nothing — declined, lapsed or withdrawn.',
   remainingTitle: 'You can still propose',
   remainingBody:
     'A proposal draws on one financing round, and round {round} still has {amount} LANA open under your mandate. ' +

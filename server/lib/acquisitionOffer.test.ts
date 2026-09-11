@@ -158,19 +158,45 @@ describe('a lapsed offer is not a price', () => {
     expect(gate.code).toBe('OFFER_EXPIRED');
   });
 
-  it('the sweeper lapses only unaccepted offers', () => {
+  /**
+   * THIS ASSERTED THE OPPOSITE UNTIL 11 SEPT 2026 — "the sweeper lapses only
+   * unaccepted offers" — and an ACCEPTED offer whose own window had closed was
+   * therefore swept by nothing at all. It stayed `accepted`, `accepted` means
+   * "waiting on the seller", and so it sat at the top of his dashboard under
+   * "waiting on you" for ever. OFF-2026-003 was still there months later,
+   * drawing itself as lapsed.
+   *
+   * Nothing about money changes: assertTransferable already refuses on that
+   * same timestamp, so such a row was dead before this ran. The sweep only
+   * makes the row say what was already true — and releases the mandate cap it
+   * was holding for a sale that could never happen.
+   */
+  it('lapses an unaccepted offer AND an accepted one whose window has closed', () => {
     const stale = insertOffer(db, draft());
     markOffered(db, stale.offer_ref, price({ offerExpiresAt: sqliteFuture(db, '-1 minute') }));
     const live = insertOffer(db, draft());
     markOffered(db, live.offer_ref, price());
-    const alreadyAccepted = accepted();
+    const acceptedButLapsed = accepted();
     db.prepare(`UPDATE acquisition_offers SET offer_expires_at = datetime('now','-1 minute') WHERE offer_ref = ?`)
-      .run(alreadyAccepted);
+      .run(acceptedButLapsed);
+    const acceptedAndLive = accepted();   // window still open — must survive
 
-    expect(expireStaleOffers(db)).toBe(1);
+    expect(expireStaleOffers(db)).toBe(2);
     expect(getOfferByRef(db, stale.offer_ref)!.status).toBe('expired');
     expect(getOfferByRef(db, live.offer_ref)!.status).toBe('offered');
-    expect(getOfferByRef(db, alreadyAccepted)!.status).toBe('accepted');
+    expect(getOfferByRef(db, acceptedButLapsed)!.status).toBe('expired');
+    expect(getOfferByRef(db, acceptedAndLive)!.status).toBe('accepted');
+  });
+
+  it('and never one that has already settled, whatever its dates say', () => {
+    // transaction_id IS NULL is the guard: coins that moved are not undone by
+    // a clock.
+    const settled = accepted();
+    const txId = Number(db.prepare('INSERT INTO buyback_transactions (net_fiat) VALUES (101.12)').run().lastInsertRowid);
+    db.prepare(`UPDATE acquisition_offers SET transaction_id = ?, offer_expires_at = datetime('now','-1 day') WHERE offer_ref = ?`)
+      .run(txId, settled);
+    expect(expireStaleOffers(db)).toBe(0);
+    expect(getOfferByRef(db, settled)!.status).toBe('accepted');
   });
 });
 

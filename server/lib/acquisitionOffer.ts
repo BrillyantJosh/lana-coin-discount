@@ -448,7 +448,34 @@ export function expireStaleOffers(db: Database.Database): number {
        AND accepted_at IS NOT NULL
        AND accepted_at <= datetime('now', ?)
   `).run(TRANSFER_NOT_COMPLETED, `-${ACCEPTED_TRANSFER_WINDOW_HOURS} hours`).changes;
-  return unaccepted + untransferred;
+
+  /**
+   * THE ROWS NEITHER STATEMENT ABOVE COULD REACH.
+   *
+   * The first only sweeps `offered`. The second only sweeps `accepted` rows
+   * that came from a round mandate — `mandate_ref IS NOT NULL` — because the
+   * 24-hour transfer window is a mandate rule. So an ACCEPTED offer with no
+   * mandate whose own window has closed was swept by nothing at all: it stayed
+   * `accepted` for ever, and `accepted` means "waiting on the seller", which
+   * put it at the top of his dashboard under "waiting on you" for the rest of
+   * time. OFF-2026-003 was still sitting there on 11 Sept 2026, drawing itself
+   * as lapsed, months after it lapsed.
+   *
+   * Nothing about money changes here. assertTransferable already refuses these
+   * rows on the same timestamp (OFFER_EXPIRED), so they were dead already —
+   * this only makes the row say what was already true.
+   */
+  const lapsedAccepted = db.prepare(`
+    UPDATE acquisition_offers
+       SET status = 'expired', decision_reason = ?, decision_reason_status = 'expired',
+           updated_at = datetime('now')
+     WHERE status = 'accepted'
+       AND transaction_id IS NULL
+       AND offer_expires_at IS NOT NULL
+       AND offer_expires_at <= datetime('now')
+  `).run(TRANSFER_NOT_COMPLETED).changes;
+
+  return unaccepted + untransferred + lapsedAccepted;
 }
 
 /** `YYYY-MM-DD HH:MM:SS` UTC plus N hours, in the shape SQLite writes. */
