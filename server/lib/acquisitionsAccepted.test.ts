@@ -271,9 +271,40 @@ describe('the money that is NOT on this list', () => {
     insert({ status: 'offered', price: 10, currency: 'GBP', offerExpiresAt: at(2 * DAY) });
     insert({ price: 7 });
     const { body } = await list();
-    expect(body.stillWithSellers).toEqual({ count: 2, byCurrency: { EUR: 300, GBP: 10 } });
+    expect(body.stillWithSellers.count).toBe(2);
+    expect(body.stillWithSellers.byCurrency).toEqual({ EUR: 300, GBP: 10 });
     // And it is nowhere near the figure the screen leads with.
     expect(body.totals.EUR.owed).toBe(7);
+  });
+
+  /**
+   * THE ROWS, NOT ONLY THE SUM — 11 Sept 2026.
+   *
+   * A count told the operator that two offers were out with sellers, and he
+   * remembered one of them by name and could not find it on any screen: the
+   * review page holds what waits on US, this page held what a seller had
+   * already accepted, and the step between the two was a sentence. An offer
+   * nobody can find is an offer nobody chases.
+   */
+  it('lists them, so the operator can see WHOSE they are', async () => {
+    insert({ ref: 'OFF-WAIT', status: 'offered', price: 300, offerExpiresAt: at(20 * 60_000) });
+    insert({ ref: 'OFF-GONE', status: 'offered', price: 44, offerExpiresAt: at(-1 * HOUR) });
+    const { body } = await list();
+    const refs = body.stillWithSellers.offers.map((o: any) => o.offerRef);
+    expect(refs).toContain('OFF-WAIT');
+    // A lapsed offer is not waiting on anybody, and must not be listed as if it were.
+    expect(refs).not.toContain('OFF-GONE');
+    const row = body.stillWithSellers.offers.find((o: any) => o.offerRef === 'OFF-WAIT');
+    expect(row.purchasePrice).toBe(300);
+    expect(row.userHexId).toBeTruthy();
+    expect(row.standsUntil).toBeTruthy();
+  });
+
+  it('puts the offer closest to lapsing first — that is the one worth a nudge', async () => {
+    insert({ ref: 'OFF-LATER', status: 'offered', price: 1, offerExpiresAt: at(3 * DAY) });
+    insert({ ref: 'OFF-SOON', status: 'offered', price: 2, offerExpiresAt: at(1 * HOUR) });
+    const { body } = await list();
+    expect(body.stillWithSellers.offers.map((o: any) => o.offerRef)).toEqual(['OFF-SOON', 'OFF-LATER']);
   });
 
   it('reports an empty world as empty rather than as zero owed everywhere', async () => {
@@ -281,7 +312,7 @@ describe('the money that is NOT on this list', () => {
     expect(body.offers).toEqual([]);
     expect(body.totals).toEqual({});
     expect(body.lapsed).toEqual({ count: 0, byCurrency: {} });
-    expect(body.stillWithSellers).toEqual({ count: 0, byCurrency: {} });
+    expect(body.stillWithSellers).toEqual({ count: 0, byCurrency: {}, offers: [] });
   });
 });
 

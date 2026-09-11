@@ -70,7 +70,7 @@ const payload = (over: Record<string, unknown> = {}) => ({
   offers: [offer()],
   totals: { EUR: { owed: 651.32, lana: 3261.797, count: 1, unpriced: 0 } },
   lapsed: { count: 0, byCurrency: {} },
-  stillWithSellers: { count: 0, byCurrency: {} },
+  stillWithSellers: { count: 0, byCurrency: {}, offers: [] },
   transferWindowHours: 24,
   updated_at: new Date().toISOString(),
   ...over,
@@ -351,13 +351,50 @@ describe('what this page is NOT', () => {
     expect(screen.getByRole('link', { name: 'Payouts' })).toHaveAttribute('href', '/admin/payouts');
   });
 
+  /** A waiting offer, as the server now ships it. */
+  const waiting = (over: Record<string, unknown> = {}) => ({
+    offerRef: 'OFF-2026-073', userHexId: 'b'.repeat(64), senderWallet: 'LV3gKHtyahtZSP1g56FSCgYrJjCDj6WJtW',
+    currency: 'EUR', lanaAmount: 32488.67, purchasePrice: 6487.34, discountPercent: 22,
+    round: 1, mandateRef: '8:1:' + 'b'.repeat(64),
+    createdAt: at(-6 * HOUR), pricedAt: at(-3 * HOUR), standsUntil: at(7 * DAY), ...over,
+  });
+
   it('names what is still out with sellers as separate, uncounted money', async () => {
-    body = payload({ stillWithSellers: { count: 2, byCurrency: { EUR: 300 } } });
+    body = payload({ stillWithSellers: { count: 2, byCurrency: { EUR: 300 }, offers: [waiting()] } });
     show();
     await waitFor(() =>
-      expect(screen.getByText(/2 purchase offers are still out with sellers/)).toBeInTheDocument(),
+      expect(screen.getByText(/Waiting on sellers/)).toBeInTheDocument(),
     );
     expect(screen.getByText(/not counted above/)).toBeInTheDocument();
+  });
+
+  /**
+   * THE ROWS, NOT THE SUM — 11 Sept 2026.
+   *
+   * The owner remembered an offer by name and could not find it on any screen:
+   * a summary line said two were out with sellers and named neither. What he
+   * needed was whose, how much, and how long it still stands.
+   */
+  it('LISTS the offers waiting on sellers, with who and how long', async () => {
+    body = payload({ stillWithSellers: { count: 1, byCurrency: { EUR: 6487.34 }, offers: [waiting()] } });
+    show();
+    await waitFor(() => expect(screen.getByText('Waiting on the seller')).toBeInTheDocument());
+    // Scoped to the block: the same figure also appears in the summary line
+    // above it, and the point of this test is that the ROW exists.
+    const section = screen.getByText('Waiting on the seller').closest('section') as HTMLElement;
+    expect(within(section).getByText('OFF-2026-073')).toBeInTheDocument();
+    expect(within(section).getByText(/32,488\.67/)).toBeInTheDocument();
+    expect(within(section).getByText(/6,487\.34/)).toBeInTheDocument();
+    expect(within(section).getByText(/at 22%/)).toBeInTheDocument();
+    // And it must not be mistaken for money the treasury owes.
+    expect(screen.getByText(/Nothing is owed yet/)).toBeInTheDocument();
+  });
+
+  it('says nothing at all when no offer is waiting', async () => {
+    body = payload();
+    show();
+    await waitFor(() => expect(screen.getByText(/Once the LANA arrives/)).toBeInTheDocument());
+    expect(screen.queryByText('Waiting on the seller')).not.toBeInTheDocument();
   });
 
   it('has an empty state that explains when a row appears and when it leaves', async () => {

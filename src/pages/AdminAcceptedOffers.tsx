@@ -72,9 +72,41 @@ interface AcceptedResponse {
   offers: AcceptedOffer[];
   totals: Record<string, { owed: number; lana: number; count: number; unpriced: number }>;
   lapsed: { count: number; byCurrency: Record<string, number> };
-  stillWithSellers: { count: number; byCurrency: Record<string, number> };
+  stillWithSellers: {
+    count: number;
+    byCurrency: Record<string, number>;
+    /** The rows, not only the sum: an offer nobody can find is an offer nobody chases. */
+    offers: WaitingOnSeller[];
+  };
   transferWindowHours: number;
   updated_at: string;
+}
+
+/** How long an offer still stands, ticking. A component: useCountdown is a hook. */
+const Standing = ({ until }: { until: string }) => {
+  const { msLeft } = useCountdown(until);
+  if (msLeft === null) return null;
+  return (
+    <span className={`block text-[11px] ${msLeft <= 24 * 60 * 60 * 1000 ? 'font-semibold text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}>
+      {formatLeftToMinute(msLeft)} left
+    </span>
+  );
+};
+
+/** Priced by us and sent; standing while the seller decides. */
+interface WaitingOnSeller {
+  offerRef: string;
+  userHexId: string;
+  senderWallet: string;
+  currency: string;
+  lanaAmount: number | null;
+  purchasePrice: number | null;
+  discountPercent: number | null;
+  round: number | null;
+  mandateRef: string | null;
+  createdAt: string;
+  pricedAt: string | null;
+  standsUntil: string;
 }
 
 /**
@@ -298,7 +330,9 @@ const AdminAcceptedOffers = () => {
       setData(body as AcceptedResponse);
       // A hex says nothing about who sold; the name does.
       const list: AcceptedOffer[] = body.offers || [];
-      const missing = [...new Set(list.map(o => o.userHexId))].filter(h => h && names[h] === undefined);
+      const waiting: WaitingOnSeller[] = body.stillWithSellers?.offers || [];
+      const missing = [...new Set([...list, ...waiting].map(o => o.userHexId))]
+        .filter(h => h && names[h] === undefined);
       if (missing.length) resolveNames(missing).then(found => setNames(prev => ({ ...prev, ...found })));
     } catch (err: any) {
       console.error('Failed to load accepted offers:', err);
@@ -315,7 +349,8 @@ const AdminAcceptedOffers = () => {
   const liveCount = owedByCurrency.reduce((n, [, cell]) => n + cell.count, 0);
   const unpricedCount = owedByCurrency.reduce((n, [, cell]) => n + cell.unpriced, 0);
   const lapsed = data?.lapsed || { count: 0, byCurrency: {} };
-  const stillOut = data?.stillWithSellers || { count: 0, byCurrency: {} };
+  const stillOut = data?.stillWithSellers || { count: 0, byCurrency: {}, offers: [] };
+  const waitingOnSellers = data?.stillWithSellers?.offers || [];
   const transferWindowHours = data?.transferWindowHours ?? null;
 
   const listMoney = (byCurrency: Record<string, number>) =>
@@ -460,6 +495,88 @@ const AdminAcceptedOffers = () => {
           </div>
         )}
 
+        {/* ONE STEP BEFORE THE TABLE ABOVE: priced by us, sent, and standing
+            while the seller decides.
+            Owner, 11 Sept 2026: he remembered an offer by name and could not
+            find it on any screen. /admin/offers holds what waits on US, the
+            table above holds what a seller has already accepted, and this — the
+            largest money in reach on the page — was a single line of summary
+            text. It is not owed, because the seller may simply let it lapse;
+            it is owed the moment they say yes, and that is reason enough to be
+            able to see whose it is. */}
+        {waitingOnSellers.length > 0 && (
+          <section className="mt-10">
+            <h2 className="text-lg font-bold text-foreground">Waiting on the seller</h2>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              We have priced {waitingOnSellers.length === 1 ? 'this offer' : 'these offers'} and sent{' '}
+              {waitingOnSellers.length === 1 ? 'it' : 'them'}. Nothing is owed yet — the seller may accept or let the
+              offer lapse, and the mandate behind it comes back if they do. It is not counted in the figure above.
+            </p>
+
+            <div className="mt-4 overflow-x-auto rounded-xl border border-border bg-card">
+              <table className="w-full min-w-[640px] text-left">
+                <thead className="border-b border-border text-[11px] uppercase tracking-wider text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2">Offer</th>
+                    <th className="px-3 py-2">Counterparty</th>
+                    <th className="px-3 py-2 text-right">LANA</th>
+                    <th className="px-3 py-2 text-right">If accepted</th>
+                    <th className="px-3 py-2">Priced</th>
+                    <th className="px-3 py-2">Stands until</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {waitingOnSellers.map(o => (
+                    <tr key={o.offerRef} className="border-b border-border/60 align-top">
+                      <td className="px-3 py-3">
+                        <span className="block font-mono text-sm font-bold text-foreground">{o.offerRef}</span>
+                        {o.round !== null && (
+                          <span
+                            title={o.mandateRef || undefined}
+                            className="mt-1 inline-flex items-center whitespace-nowrap rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-700"
+                          >
+                            Round {o.round}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 min-w-0">
+                        {names[o.userHexId] && (
+                          <span className="block truncate text-sm font-semibold text-foreground">{names[o.userHexId]}</span>
+                        )}
+                        <span className="block font-mono text-[11px] text-muted-foreground" title={o.userHexId}>
+                          {short(o.userHexId)}
+                        </span>
+                        <span className="block font-mono text-[11px] text-muted-foreground" title={o.senderWallet}>
+                          {short(o.senderWallet)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 text-right whitespace-nowrap">
+                        <span className="font-mono text-sm text-foreground">{formatLana(o.lanaAmount)}</span>
+                        <span className="ml-1 text-[11px] text-muted-foreground">LANA</span>
+                      </td>
+                      <td className="px-3 py-3 text-right whitespace-nowrap">
+                        <span className="font-mono text-sm text-foreground">
+                          {o.purchasePrice === null ? '—' : formatFiat(sym(o.currency), o.purchasePrice)}
+                        </span>
+                        {o.discountPercent !== null && (
+                          <span className="ml-1 text-[11px] text-muted-foreground">at {o.discountPercent}%</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap text-sm text-muted-foreground">
+                        {formatMoment(o.pricedAt)}
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <span className="block font-mono text-sm text-foreground">{formatMoment(o.standsUntil)}</span>
+                        <Standing until={o.standsUntil} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
         {/* Where the money goes next, and where it came from — so the figure at
             the top is never mistaken for everything the treasury owes. */}
         <div className="mt-6 space-y-2 text-xs text-muted-foreground">
@@ -469,9 +586,8 @@ const AdminAcceptedOffers = () => {
           </p>
           {stillOut.count > 0 && (
             <p>
-              {stillOut.count} purchase offer{stillOut.count === 1 ? ' is' : 's are'} still out with sellers
-              ({listMoney(stillOut.byCurrency)}) and not counted above — nobody has accepted them, and they may
-              simply lapse.
+              Waiting on sellers: {listMoney(stillOut.byCurrency)} across {stillOut.count} offer
+              {stillOut.count === 1 ? '' : 's'}, listed below and not counted above.
             </p>
           )}
         </div>

@@ -1316,11 +1316,47 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
          AND offer_expires_at > datetime('now')
        GROUP BY currency
     `).all() as any[];
+    // The rows themselves, not only the sum of them.
+    //
+    // A count said "2 purchase offers are still out with sellers" and an
+    // operator who remembered one of them by name could not find it anywhere:
+    // /admin/offers holds what is waiting on US (under_review), this page held
+    // what a seller had already accepted, and the step between the two — priced
+    // by us, sent, standing for its window while the seller decides — was on no
+    // screen at all. That is the largest money on the page in reach: not owed,
+    // because the seller may let it lapse, but owed the moment they say yes.
+    const withSellerRows = db().prepare(`
+      SELECT offer_ref, user_hex_id, sender_wallet_id, currency, lana_amount_display,
+             purchase_price_fiat, discount_percent, round, mandate_ref,
+             created_at, decided_at, offer_expires_at
+        FROM acquisition_offers
+       WHERE status = 'offered'
+         AND offer_expires_at IS NOT NULL
+         AND offer_expires_at > datetime('now')
+       ORDER BY offer_expires_at ASC
+    `).all() as any[];
+
     const stillWithSellers = {
       count: liveOffers.reduce((n, r) => n + Number(r.n || 0), 0),
       byCurrency: Object.fromEntries(
         liveOffers.map(r => [String(r.currency), Math.round(Number(r.fiat || 0) * 100) / 100]),
       ) as Record<string, number>,
+      offers: withSellerRows.map(o => ({
+        offerRef: o.offer_ref,
+        userHexId: o.user_hex_id,
+        senderWallet: o.sender_wallet_id,
+        currency: o.currency,
+        lanaAmount: o.lana_amount_display,
+        purchasePrice: o.purchase_price_fiat,
+        discountPercent: o.discount_percent ?? null,
+        round: o.round ?? null,
+        mandateRef: o.mandate_ref ?? null,
+        createdAt: o.created_at,
+        /** When we priced it — which is when the seller's window started. */
+        pricedAt: o.decided_at ?? null,
+        /** Until when it stands; after this it lapses and the cap comes back. */
+        standsUntil: o.offer_expires_at,
+      })),
     };
 
     return res.json({
