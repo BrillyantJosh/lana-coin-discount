@@ -243,6 +243,18 @@ describe('the eight failures of 10 September 2026, end to end', () => {
     expect(outs[0].value + outs[1].value + r.body.fee).toBe(exact);
   });
 
+  it('records what ARRIVED beside what was agreed, when a sweep delivers less', async () => {
+    // The books said the agreed amount every time, sweep or not, so a fee's
+    // worth of difference existed nowhere. It is a column now.
+    const ref = await acceptedWholeWallet();
+    const r = await press(ref);
+    expect(r.status).toBe(200);
+    const row = db.prepare("SELECT * FROM buyback_transactions WHERE offer_ref = ? AND status != 'failed'").get(ref) as any;
+    expect(row.lana_amount_lanoshis).toBe(AGREED_LANOSHIS);
+    expect(row.lana_received_lanoshis).toBe(AGREED_LANOSHIS - FEE_WHEN_EMPTYING);
+    expect(row.lana_received_lanoshis).toBeLessThan(row.lana_amount_lanoshis);
+  });
+
   /**
    * THE DEAD BAND — OFF-2026-062, 11 September 2026.
    *

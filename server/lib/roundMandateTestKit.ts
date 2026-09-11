@@ -126,7 +126,10 @@ export function createMandateTestDb(): Database.Database {
       commission_percent REAL NOT NULL DEFAULT 30, commission_fiat REAL NOT NULL, net_fiat REAL NOT NULL,
       tx_hash TEXT, tx_fee_lanoshis INTEGER, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT,
       created_at TEXT DEFAULT (datetime('now')), completed_at TEXT,
-      offer_ref TEXT, settlement_due_at TEXT
+      offer_ref TEXT, settlement_due_at TEXT,
+      -- What the chain actually moved, beside what was agreed. A sweep
+      -- delivers the balance less the fee, so the two differ by design.
+      lana_received_lanoshis INTEGER
     );
     CREATE TABLE acquisition_offers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,12 +216,17 @@ export function dbModuleStub(db: Database.Database) {
     isAdminUser: (hex: string) => !!db.prepare('SELECT 1 FROM admin_users WHERE hex_id = ?').get(hex),
     getApiKeyByHash: (hash: string) => db.prepare('SELECT * FROM api_keys WHERE key_hash = ?').get(hash) ?? null,
     updateApiKeyLastUsed: (id: number) => db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?").run(id),
+    // Mirrors db/index.ts insertBuybackTransaction. A column added there and
+    // not here is a column the route can write and no test can ever see — so
+    // when that file gains one, this gains it too.
     insertBuybackTransaction: (d: any) => Number(db.prepare(`
       INSERT INTO buyback_transactions (user_hex_id, sender_wallet_id, buyback_wallet_id, lana_amount_lanoshis, lana_amount_display,
-        currency, exchange_rate, split, gross_fiat, commission_percent, commission_fiat, net_fiat, tx_hash, tx_fee_lanoshis, status, error_message)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        currency, exchange_rate, split, gross_fiat, commission_percent, commission_fiat, net_fiat, tx_hash, tx_fee_lanoshis, status, error_message,
+        lana_received_lanoshis)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(d.user_hex_id, d.sender_wallet_id, d.buyback_wallet_id, d.lana_amount_lanoshis, d.lana_amount_display, d.currency,
       d.exchange_rate, d.split, d.gross_fiat, d.commission_percent, d.commission_fiat, d.net_fiat,
-      d.tx_hash ?? null, d.tx_fee_lanoshis ?? null, d.status, d.error_message ?? null).lastInsertRowid),
+      d.tx_hash ?? null, d.tx_fee_lanoshis ?? null, d.status, d.error_message ?? null,
+      d.lana_received_lanoshis ?? null).lastInsertRowid),
   };
 }

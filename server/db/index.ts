@@ -273,6 +273,12 @@ db.exec(`
 // --- Safe migrations: add columns to buyback_transactions ---
 const migrationColumns = [
   "ALTER TABLE buyback_transactions ADD COLUMN source TEXT NOT NULL DEFAULT 'internal'",
+  // WHAT ACTUALLY ARRIVED, as opposed to what was agreed. A swept transfer
+  // delivers the balance less the fee, which is at most the agreed amount and
+  // can be a fee's worth under it — and every row until 11 Sept 2026 recorded
+  // the agreed figure regardless, so the difference existed nowhere. NULL on
+  // older rows and on failures, which is honest: nobody measured those.
+  "ALTER TABLE buyback_transactions ADD COLUMN lana_received_lanoshis INTEGER",
   "ALTER TABLE buyback_transactions ADD COLUMN api_key_id INTEGER REFERENCES api_keys(id)",
   "ALTER TABLE buyback_transactions ADD COLUMN verified_at TEXT",
   "ALTER TABLE buyback_transactions ADD COLUMN verified_by TEXT",
@@ -574,6 +580,8 @@ export interface BuybackTransactionData {
   tx_fee_lanoshis?: number;
   status: string;
   error_message?: string;
+  /** What the chain actually moved. Null when nothing was measured. */
+  lana_received_lanoshis?: number | null;
 }
 
 export function insertBuybackTransaction(data: BuybackTransactionData): number {
@@ -582,14 +590,15 @@ export function insertBuybackTransaction(data: BuybackTransactionData): number {
       user_hex_id, sender_wallet_id, buyback_wallet_id,
       lana_amount_lanoshis, lana_amount_display, currency, exchange_rate,
       split, gross_fiat, commission_percent, commission_fiat, net_fiat,
-      tx_hash, tx_fee_lanoshis, status, error_message,
+      tx_hash, tx_fee_lanoshis, status, error_message, lana_received_lanoshis,
       completed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${data.status === 'completed' ? "datetime('now')" : 'NULL'})
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${data.status === 'completed' ? "datetime('now')" : 'NULL'})
   `).run(
     data.user_hex_id, data.sender_wallet_id, data.buyback_wallet_id,
     data.lana_amount_lanoshis, data.lana_amount_display, data.currency, data.exchange_rate,
     data.split, data.gross_fiat, data.commission_percent, data.commission_fiat, data.net_fiat,
-    data.tx_hash || null, data.tx_fee_lanoshis || null, data.status, data.error_message || null
+    data.tx_hash || null, data.tx_fee_lanoshis || null, data.status, data.error_message || null,
+    data.lana_received_lanoshis ?? null
   );
   return Number(result.lastInsertRowid);
 }

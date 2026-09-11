@@ -1049,8 +1049,20 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       }
       refusedTransfers.delete(ref);
 
+      // WHAT ARRIVED, BESIDE WHAT WAS AGREED. A sweep delivers the balance less
+      // the fee — never more than the agreed amount and sometimes a fee's worth
+      // under it — and every row recorded the agreed figure regardless, so the
+      // difference was a fact about the chain that existed in no book of ours.
+      const receivedLanoshis = typeof txResult.amount === 'number' ? txResult.amount : null;
+      if (receivedLanoshis !== null && receivedLanoshis !== offer.lana_amount_lanoshis) {
+        console.log(
+          `[lana-discount] ${ref}: agreed ${offer.lana_amount_lanoshis} lanoshis, received ${receivedLanoshis} ` +
+          `(${offer.lana_amount_lanoshis - receivedLanoshis} to the network fee)`,
+        );
+      }
       const txId = insertBuybackTransaction({
         ...commonRow,
+        lana_received_lanoshis: receivedLanoshis,
         tx_hash: txResult.txHash,
         tx_fee_lanoshis: txResult.fee,
         status: 'broadcast',
