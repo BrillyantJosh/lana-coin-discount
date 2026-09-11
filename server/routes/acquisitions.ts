@@ -69,7 +69,7 @@ import {
   mandateInWindow, EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS,
   type MandateCandidate, type RoundTerms,
 } from '../lib/roundMandate.js';
-import { listMandatesForHex, rowToCandidate, loadRoundTerms, loadReleases } from '../lib/roundMandateSync.js';
+import { listMandatesForHex, rowToCandidate, loadRoundTerms, loadReleases, syncRoundOpenings } from '../lib/roundMandateSync.js';
 import { resolveReferenceBasis } from '../lib/referenceBasis.js';
 import { BUYBACK_SPLIT_OFFSET } from '../lib/buybackSplit.js';
 
@@ -493,6 +493,11 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       const currentSplit = currentSplitNumber();
       const candidates = listMandatesForHex(handle, hexId);
       const windowSplit = currentSplit === null ? null : currentSplit - BUYBACK_SPLIT_OFFSET;
+      // BEFORE the terms are read, not after: the proposal that spends the last
+      // of a round is the one that earns the next round its turn, and the
+      // seller standing behind it should not have to come back tomorrow to
+      // find that out. Idempotent — it writes at most one row per round, ever.
+      if (windowSplit !== null) syncRoundOpenings(handle, windowSplit);
       const terms = windowSplit === null ? [] : loadRoundTerms(handle, windowSplit);
       const dTags = candidates.map(c => c.dTag);
       const restriction = activeRestriction(handle, hexId);
@@ -643,6 +648,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
 
     const handle = db();
     const currentSplit = currentSplitNumber();
+    if (currentSplit !== null) syncRoundOpenings(handle, currentSplit - BUYBACK_SPLIT_OFFSET);
     const candidates = listMandatesForHex(handle, hexId)
       .filter(c => c.wallets.some(w => sameAddress(w.address, wallet)))
       .sort((a, b) => (a.split - b.split) || (a.round - b.round));

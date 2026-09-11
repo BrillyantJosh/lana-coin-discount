@@ -24,6 +24,10 @@ export const ROUND_MANDATE_SCHEMA_SQL = `
     round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 3),
     opens_at TEXT,
     discount_percent REAL,
+    -- 'date' | 'sequence' | NULL. Here as well as in ROUND_OPENS_MODE_COLUMN
+    -- because a fresh database is built from this DDL alone: the ALTER exists
+    -- only to carry databases that predate the column.
+    opens_mode TEXT,
     updated_by TEXT,
     updated_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (split, round)
@@ -49,6 +53,34 @@ export const ROUND_MANDATE_SCHEMA_SQL = `
     fetched_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_acq_mandates_hex_split ON acquisition_mandates(financer_hex, split);
+
+  -- WHEN A ROUND OPENED BECAUSE ITS TURN CAME, NOT BECAUSE A DATE ARRIVED.
+  --
+  -- Owner, 11 Sept 2026: "Krog 2 se odpre ko se krog 1 zapre.. avtomatsko...
+  -- nemogoče je zares povedati v naprej kdaj bo.. ko zmanjka denarja" — round
+  -- 2 opens when round 1 closes, and nobody can say in advance when that is.
+  --
+  -- The opening is WRITTEN DOWN, once, rather than recomputed on every read,
+  -- and three things depend on that:
+  --
+  --  * It cannot go backwards. "Round 1 is spent" is derived from live offers,
+  --    and a live offer can expire — which would hand round 1 its money back
+  --    and un-open round 2 under everyone who had just been told it was open.
+  --    A recorded open is monotone: once a round's turn has come, it has come.
+  --  * Every reader can ask the same question. Deciding "is it spent" needs a
+  --    live rate and a currency (a crumb is only a crumb against min_sell_EUR),
+  --    and the public rounds page has neither. One stored boolean, no currency.
+  --  * It reads back. This is a treasury cap opening with no human act behind
+  --    it, so P08 §12 wants a record of why — the same reason the release table
+  --    below insists on one. That is what evidence carries: how many mandates
+  --    the round held and what was left in them at the moment it turned.
+  CREATE TABLE IF NOT EXISTS acquisition_round_opens (
+    split INTEGER NOT NULL,
+    round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 3),
+    opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+    evidence TEXT NOT NULL,
+    PRIMARY KEY (split, round)
+  );
 
   -- An admin opening one mandate before its round date. The reason is
   -- mandatory because this is a discretionary treasury decision (P08 §4) and
@@ -116,6 +148,23 @@ export const ROUND_MANDATE_OFFER_COLUMNS = [
  */
 export const OFFER_DECISION_REASON_STATUS_COLUMN =
   'ALTER TABLE acquisition_offers ADD COLUMN decision_reason_status TEXT';
+
+/**
+ * HOW THIS ROUND DECIDES IT IS OPEN — chosen, never inferred from a blank.
+ *
+ *   'date'     — opens_at, the original rule, unchanged.
+ *   'sequence' — opens when the round before it has nothing left to acquire.
+ *   NULL       — nothing chosen, so the round stays SHUT.
+ *
+ * The third line is the point. A blank opens_at already exists in production
+ * on rows nobody ever filled in: the admin page saves all three rounds
+ * whether or not they were touched, so setting round 1 writes (NULL, NULL)
+ * rows for rounds 2 and 3 with an admin's hex stamped on them. Reading "no
+ * date" as "opens by sequence" would turn that accident into a priced treasury
+ * cap opening itself, and the audit trail would name a person who decided
+ * nothing. So sequence is a value somebody stored on purpose.
+ */
+export const ROUND_OPENS_MODE_COLUMN = 'ALTER TABLE acquisition_rounds ADD COLUMN opens_mode TEXT';
 
 /** kind_38888 v3 carries the Split's end; we keep it beside split_started_at. */
 export const KIND_38888_SPLIT_ENDS_AT_COLUMN = 'ALTER TABLE kind_38888 ADD COLUMN split_ends_at INTEGER';

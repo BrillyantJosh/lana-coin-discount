@@ -35,6 +35,7 @@
  * A date OPENS a mandate; it creates no right to sell (P08 §8, P14 §8).
  */
 import { BUYBACK_SPLIT_OFFSET } from './buybackSplit.js';
+import { roundIsOpen, roundCanEverOpen, type OpensMode } from './roundSequence.js';
 import { proposalTooSmall } from './acquisitionMinimum.js';
 import { restrictionReason } from './acquisitionRestriction.js';
 
@@ -60,14 +61,27 @@ export interface MandateCandidate {
 /** The admin's terms for one round of one split (acquisition_rounds). */
 export interface RoundTerms {
   round: number;
-  /** Unix seconds; null = no date set = closed. */
+  /** Unix seconds; null = no date set. */
   opensAt: number | null;
   /** Percent under the reference; null = not set = cannot price. */
   discountPercent: number | null;
+  /**
+   * HOW this round opens — 'date', 'sequence', or nothing chosen.
+   *
+   * Optional, and absent means nothing chosen, so a round that carries neither
+   * a date nor a mode stays shut exactly as it always did. Every fixture and
+   * every caller written before rounds could follow one another keeps its
+   * behaviour unchanged by saying nothing.
+   */
+  opensMode?: OpensMode;
+  /** acquisition_round_opens.opened_at — the turn, once it has been recorded. */
+  openedAt?: number | null;
 }
 
 export type RoundDeclineCode =
   | 'SPLIT_WINDOW' | 'TERMS_MISSING' | 'MANDATE_NOT_OPEN' | 'FULLY_ACQUIRED'
+  /** Opens when the round before it runs out, and that has not happened yet. */
+  | 'AWAITING_TURN'
   /** Something is left, but less than the smallest purchase we make. */
   | 'REMAINDER_TOO_SMALL';
 
@@ -206,7 +220,7 @@ function decideByMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict 
   const byRound = [...inWindow].sort((a, b) => a.round - b.round);
   const termsOf = (round: number) => input.terms.find(t => t.round === round);
 
-  let firstBlocked: { code: 'TERMS_MISSING' | 'MANDATE_NOT_OPEN'; opensAt?: number; c: MandateCandidate } | null = null;
+  let firstBlocked: { code: 'TERMS_MISSING' | 'MANDATE_NOT_OPEN' | 'AWAITING_TURN'; opensAt?: number; c: MandateCandidate } | null = null;
   /** What was stepped over for being smaller than we may buy — kept, to say so. */
   let tooSmall = 0;
 
@@ -241,12 +255,29 @@ function decideByMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict 
       if (!firstBlocked) firstBlocked = { code: 'TERMS_MISSING', c };
       continue;
     }
-    const open = released || (terms.opensAt !== null && input.now >= terms.opensAt);
+    // A DATE, OR ITS TURN, WHICHEVER COMES FIRST. See lib/roundSequence.ts:
+    // the owner's rule of 11 Sept 2026 is that round 2 opens when round 1 runs
+    // out, because there is no honest date for that. A round already carrying
+    // a date keeps it as the day it opens AT THE LATEST — the two never push
+    // each other back, so no financer waits longer than the date they were
+    // already shown.
+    const openingOf = (t: RoundTerms) => ({
+      round: t.round, opensAt: t.opensAt,
+      opensMode: t.opensMode ?? null, openedAt: t.openedAt ?? null,
+    });
+    const open = released || roundIsOpen(openingOf(terms), input.now);
     if (!open) {
       if (!firstBlocked) {
-        firstBlocked = terms.opensAt === null
+        // Three different shuts, and the seller is owed the difference: a date
+        // that has not arrived, a turn that has not come, and a round that was
+        // never given any way to open at all. The last one is the one that
+        // cost a financer his round-1 payout in September, because on screen
+        // it looked exactly like the first.
+        firstBlocked = !roundCanEverOpen(openingOf(terms))
           ? { code: 'TERMS_MISSING', c }
-          : { code: 'MANDATE_NOT_OPEN', opensAt: terms.opensAt, c };
+          : terms.opensAt !== null
+            ? { code: 'MANDATE_NOT_OPEN', opensAt: terms.opensAt, c }
+            : { code: 'AWAITING_TURN', c };
       }
       continue;
     }
@@ -264,6 +295,12 @@ function decideByMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict 
 
   if (firstBlocked) {
     const { c } = firstBlocked;
+    if (firstBlocked.code === 'AWAITING_TURN') {
+      return {
+        outcome: 'decline', code: 'AWAITING_TURN', mandateRef: c.dTag, round: c.round,
+        reason: `The treasury is still acquiring from financing round ${c.round - 1}. Round ${c.round} follows it, and there is no date we could give you for that — it opens once round ${c.round - 1} runs out.`,
+      };
+    }
     if (firstBlocked.code === 'MANDATE_NOT_OPEN') {
       return {
         outcome: 'decline', code: 'MANDATE_NOT_OPEN', opensAt: firstBlocked.opensAt,
@@ -296,6 +333,7 @@ function decideByMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict 
 // ─── display state ────────────────────────────────────────────────────────
 
 export type RoundState =
+  | 'awaiting_turn'   // opens when the round before it runs out
   | 'closed'          // tombstoned by the publisher
   | 'split_unknown'   // we have no KIND 38888
   | 'upcoming_split'  // mandate split still running — opens after the Split
@@ -336,8 +374,17 @@ export function roundState(input: {
   if (remainingLanoshis <= 0) return view('fully_acquired');
   if (discountPercent === null) return view('terms_missing');
   if (input.released) return view('released');
-  if (opensAt === null) return view('terms_missing');
-  return view(input.now >= opensAt ? 'open' : 'not_open');
+  // ONE definition of open, shared with the gate. These two came apart once
+  // before, and the seller pays for it both ways: a dead Propose button in
+  // front of a gate that would have said yes, or an invitation the gate then
+  // refuses. Whatever roundIsOpen says here is what the route will do.
+  const o = {
+    round: input.round, opensAt,
+    opensMode: input.terms?.opensMode ?? null, openedAt: input.terms?.openedAt ?? null,
+  };
+  if (roundIsOpen(o, input.now)) return view('open');
+  if (!roundCanEverOpen(o)) return view('terms_missing');
+  return view(opensAt !== null ? 'not_open' : 'awaiting_turn');
 }
 
 // ─── admin terms validation ───────────────────────────────────────────────
@@ -350,6 +397,8 @@ export interface RoundTermsInput {
   /** ISO-8601 or null. */
   opensAt: string | null;
   discountPercent: number | null;
+  /** 'date' | 'sequence' | null. Absent leaves whatever is stored alone. */
+  opensMode?: OpensMode;
 }
 
 export interface RoundTermsValidation {
@@ -358,7 +407,7 @@ export interface RoundTermsValidation {
   /** Non-blocking; shown to the admin, saved anyway. */
   warnings: string[];
   /** Normalised rows, ISO UTC dates. */
-  rows: Array<{ round: number; opensAt: string | null; discountPercent: number | null }>;
+  rows: Array<{ round: number; opensAt: string | null; discountPercent: number | null; opensMode: OpensMode }>;
 }
 
 // Round dates are checked against each other and nothing else. KIND 38888's
@@ -400,12 +449,42 @@ export function validateRoundTerms(rounds: RoundTermsInput[]): RoundTermsValidat
         warnings.push(`Round ${round} discount ${d}% is outside the ${DISCOUNT_BAND.min}–${DISCOUNT_BAND.max}% orientation band (BEF P08 §4).`);
       }
     }
-    rows.push({ round, opensAt, discountPercent });
+    let opensMode: OpensMode = null;
+    if (r.opensMode === 'date' || r.opensMode === 'sequence') opensMode = r.opensMode;
+    else if (r.opensMode !== null && r.opensMode !== undefined && String(r.opensMode).trim() !== '') {
+      return { ok: false, error: `round ${round}: opensMode must be 'date' or 'sequence'`, warnings, rows };
+    }
+    if (opensMode === 'sequence' && discountPercent === null) {
+      // A round that opens by itself and cannot price is the worst of both:
+      // it arrives unannounced and then refuses everyone who answers it.
+      return {
+        ok: false, warnings, rows,
+        error: `round ${round}: a round that opens when the round before it runs out still needs a discount, or it will open and then refuse every proposal`,
+      };
+    }
+    rows.push({ round, opensAt, discountPercent, opensMode });
+  }
+
+  const sorted = [...rows].sort((a, b) => a.round - b.round);
+
+  // SEQUENCE IS A SUFFIX. Once a round waits for the one before it, no later
+  // round may carry a date of its own — a date would let round 3 open while
+  // round 2 is still waiting on round 1, which is the published order run
+  // backwards, and the date check below cannot see it because that check only
+  // runs when every round has a date.
+  const firstSequence = sorted.find(r => r.opensMode === 'sequence');
+  if (firstSequence) {
+    const jumper = sorted.find(r => r.round > firstSequence.round && r.opensMode !== 'sequence' && r.opensAt !== null);
+    if (jumper) {
+      return {
+        ok: false, warnings, rows,
+        error: `round ${jumper.round} has its own date while round ${firstSequence.round} waits for the round before it; once a round follows the one before it, every round after it must too`,
+      };
+    }
   }
 
   // FIFO by round means the dates must not run backwards. Checked only when
   // every date is set, so an admin can fill the form one round at a time.
-  const sorted = [...rows].sort((a, b) => a.round - b.round);
   if (sorted.every(r => r.opensAt !== null)) {
     for (let i = 1; i < sorted.length; i++) {
       if (Date.parse(sorted[i].opensAt!) < Date.parse(sorted[i - 1].opensAt!)) {

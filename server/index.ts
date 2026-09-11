@@ -8,9 +8,10 @@ import { fileURLToPath } from 'url';
 import apiRouter from './routes/api.js';
 import { createAcquisitionsRouter } from './routes/acquisitions.js';
 import { createTreasuryRouter } from './routes/treasury.js';
-import { pullRoundMandates } from './lib/roundMandateSync.js';
+import { pullRoundMandates, syncRoundOpenings } from './lib/roundMandateSync.js';
 import { fetchKind38888, fetchKind0, Kind38888Data } from './lib/nostr.js';
-import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb } from './db/index.js';
+import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb, getSplitFromDb } from './db/index.js';
+import { BUYBACK_SPLIT_OFFSET } from './lib/buybackSplit.js';
 import { selectWholeGroups } from './lib/autoSendSelection.js';
 import { settleBatchesWithSentLana } from './lib/batchSettlement.js';
 import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from './lib/sendLock.js';
@@ -752,6 +753,15 @@ async function heartbeatLoop() {
       // own so a slow relay never delays the auto-send.
       if (heartbeatCount % 5 === 1) {
         await withTimeout(() => pullRoundMandates(db, getRelaysFromDb()), 'Round mandates sync', 30000);
+        // Straight after the pull, while what we hold is at its freshest: a
+        // round whose turn has come opens on a quiet day too, not only when
+        // somebody happens to propose.
+        try {
+          const split = parseInt(getSplitFromDb() || '') || null;
+          if (split !== null) syncRoundOpenings(db, split - BUYBACK_SPLIT_OFFSET);
+        } catch (err: any) {
+          console.error('[lana-discount] Round opening sweep failed:', err.message);
+        }
       }
     } catch (err: any) {
       console.error(`[lana-discount] Heartbeat #${heartbeatCount} error:`, err.message);
