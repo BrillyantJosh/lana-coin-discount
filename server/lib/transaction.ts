@@ -546,13 +546,22 @@ export type TransferPlan =
   | {
       ok: false;
       code: 'INSUFFICIENT_FUNDS';
-      /** Amount + fee. */
+      /** Amount + fee — or, when `emptying`, the amount alone. */
       requiredLanoshis: number;
       /** What the selectable UTXOs actually hold. */
       availableLanoshis: number;
       shortfallLanoshis: number;
       feeLanoshis: number;
       totalBalance: number;
+      /**
+       * How many pieces this plan would have spent. A top-up is a NEW piece,
+       * so the sentence that asks for one has to price the extra input — see
+       * describePlanFailure, and the 0.001737 that was quoted to a seller whose
+       * wallet then needed 0.002007.
+       */
+      inputCount?: number;
+      /** True when the refusal came from a sweep, where the fee is inside the amount. */
+      emptying?: true;
     }
   | { ok: false; code: 'EMPTY_WALLET_EXCEEDS_CEILING'; totalBalance: number; ceilingLanoshis: number };
 
@@ -663,9 +672,10 @@ export function planTransfer(params: {
     if (floorLanoshis !== undefined && totalBalance < floorLanoshis) {
       const feeLanoshis = estimateFeeLanoshis(Math.min(utxos.length, MAX_TRANSACTION_INPUTS), 1);
       return {
-        ok: false, code: 'INSUFFICIENT_FUNDS',
+        ok: false, code: 'INSUFFICIENT_FUNDS', emptying: true,
         requiredLanoshis: params.amountLanoshis!, availableLanoshis: totalBalance,
         shortfallLanoshis: params.amountLanoshis! - totalBalance, feeLanoshis, totalBalance,
+        inputCount: Math.min(utxos.length, MAX_TRANSACTION_INPUTS),
       };
     }
     // A genuine sweep DOES have to carry every piece, so here the count is the
@@ -678,9 +688,10 @@ export function planTransfer(params: {
     const amountLanoshis = totalBalance - feeLanoshis;
     if (amountLanoshis <= 0) {
       return {
-        ok: false, code: 'INSUFFICIENT_FUNDS',
+        ok: false, code: 'INSUFFICIENT_FUNDS', emptying: true,
         requiredLanoshis: feeLanoshis + 1, availableLanoshis: totalBalance,
         shortfallLanoshis: feeLanoshis + 1 - totalBalance, feeLanoshis, totalBalance,
+        inputCount: utxos.length,
       };
     }
     return { ok: true, emptyWallet: true, amountLanoshis, feeLanoshis, selected: [...utxos], totalSelected: totalBalance, totalBalance };
@@ -691,10 +702,10 @@ export function planTransfer(params: {
 
   // Two outputs: the recipient and the change the fee is taken from.
   const OUTPUTS = 2;
-  const short = (required: number, available: number, feeLanoshis: number): TransferPlan => ({
+  const short = (required: number, available: number, feeLanoshis: number, inputCount: number): TransferPlan => ({
     ok: false, code: 'INSUFFICIENT_FUNDS',
     requiredLanoshis: required, availableLanoshis: available,
-    shortfallLanoshis: required - available, feeLanoshis, totalBalance,
+    shortfallLanoshis: required - available, feeLanoshis, totalBalance, inputCount,
   });
 
   let selected: UTXO[];
@@ -705,8 +716,9 @@ export function planTransfer(params: {
     totalSelected = first.totalValue;
   } catch {
     // Not even the amount can be reached: the wallet is short, full stop.
-    const feeLanoshis = estimateFeeLanoshis(Math.min(utxos.length, MAX_TRANSACTION_INPUTS), OUTPUTS);
-    return short(wanted + feeLanoshis, totalBalance, feeLanoshis);
+    const inputs = Math.min(utxos.length, MAX_TRANSACTION_INPUTS);
+    const feeLanoshis = estimateFeeLanoshis(inputs, OUTPUTS);
+    return short(wanted + feeLanoshis, totalBalance, feeLanoshis, inputs);
   }
 
   let feeLanoshis = estimateFeeLanoshis(selected.length, OUTPUTS);
@@ -723,7 +735,7 @@ export function planTransfer(params: {
 
   if (totalSelected < wanted + feeLanoshis) {
     if (totalBalance >= wanted + feeLanoshis && utxos.length > MAX_TRANSACTION_INPUTS) return tooMany();
-    return short(wanted + feeLanoshis, totalSelected, feeLanoshis);
+    return short(wanted + feeLanoshis, totalSelected, feeLanoshis, selected.length);
   }
 
   return { ok: true, emptyWallet: false, amountLanoshis: wanted, feeLanoshis, selected, totalSelected, totalBalance };
@@ -768,6 +780,9 @@ export function planFailurePermanent(plan: TransferPlanFailure): boolean {
   }
 }
 
+/** An ordinary transfer's two outputs: the recipient, and the change. */
+const OUTPUT_PAIR = 2;
+
 /** Lanoshis as a person reads them: LANA, trailing zeros trimmed. */
 function lanaText(lanoshis: number): string {
   const s = (lanoshis / 100_000_000).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
@@ -795,10 +810,31 @@ export function describePlanFailure(plan: TransferPlanFailure): { error: string;
         error: `This wallet holds ${lanaText(plan.totalBalance)} LANA, more than the ${lanaText(plan.ceilingLanoshis)} LANA this transfer may empty into. Nothing has moved.`,
       };
     default: {
+      // A SWEEP IS SHORT IN A DIFFERENT WAY, so it is said differently: the fee
+      // comes out of the amount there, and a sentence that adds one to the
+      // other would name a figure the seller could not check against anything.
+      if (plan.emptying) {
+        return {
+          code: 'INSUFFICIENT_FUNDS',
+          error: `This wallet holds ${lanaText(plan.availableLanoshis)} LANA, less than the ${lanaText(plan.requiredLanoshis)} LANA this transfer is for — ${lanaText(plan.shortfallLanoshis)} LANA short. If LANA is on its way in, it has to be confirmed on the chain before it can be sent on. Nothing has moved.`,
+        };
+      }
       const amount = plan.requiredLanoshis - plan.feeLanoshis;
+      // THE NUMBER WE ASK FOR HAS TO BE A NUMBER THAT WORKS.
+      //
+      // The shortfall is priced on the pieces this plan would have spent. A
+      // top-up is a piece MORE, and every piece costs 0.00027 LANA of network
+      // fee, so a seller who sent himself exactly the shortfall was refused a
+      // second time — by the price of the payment he had just been asked to
+      // make. 0.001737 was quoted where 0.002007 was needed.
+      const perInput = estimateFeeLanoshis(1, OUTPUT_PAIR) - estimateFeeLanoshis(0, OUTPUT_PAIR);
+      const topUp = plan.inputCount === undefined ? plan.shortfallLanoshis : plan.shortfallLanoshis + perInput;
+      const ask = plan.inputCount === undefined
+        ? ''
+        : ` To send it, this wallet needs ${lanaText(topUp)} LANA more, in one payment — each payment in is another piece to spend, and costs a little network fee of its own.`;
       return {
         code: 'INSUFFICIENT_FUNDS',
-        error: `There is not enough LANA in this wallet: sending ${lanaText(amount)} LANA and the ${lanaText(plan.feeLanoshis)} LANA network fee needs ${lanaText(plan.requiredLanoshis)} LANA, and the wallet holds ${lanaText(plan.availableLanoshis)} LANA — ${lanaText(plan.shortfallLanoshis)} LANA short. Nothing has moved.`,
+        error: `There is not enough LANA in this wallet: sending ${lanaText(amount)} LANA and the ${lanaText(plan.feeLanoshis)} LANA network fee needs ${lanaText(plan.requiredLanoshis)} LANA, and the wallet holds ${lanaText(plan.availableLanoshis)} LANA — ${lanaText(plan.shortfallLanoshis)} LANA short.${ask} Nothing has moved.`,
       };
     }
   }

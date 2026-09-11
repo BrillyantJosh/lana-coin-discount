@@ -67,16 +67,23 @@ const DAY = 24 * HOUR;
 let mine: unknown[] = [];
 /** What POST /transfer answers, so a test can hand back a refusal. */
 let transferReply: Record<string, unknown> = { success: true };
+/** What the page actually sent to POST /transfer. */
+let transferSent: any = null;
+/** What /wallets/balances reports for the seller's wallet. */
+let walletBalance = 22775;
 
 beforeEach(() => {
   mine = [];
   transferReply = { success: true };
-  vi.stubGlobal('fetch', vi.fn((url: string) => {
+  transferSent = null;
+  walletBalance = 22775;
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: any) => {
     const u = String(url);
+    if (u.includes('/transfer') && init?.body) transferSent = JSON.parse(init.body);
     const body =
       u.includes('/transfer') ? transferReply
       : u.includes('/payment-score') ? { score: 10 }
-      : u.includes('/wallets/balances') ? { balances: [{ wallet_id: WALLET, balance: 22775, status: 'active' }] }
+      : u.includes('/wallets/balances') ? { balances: [{ wallet_id: WALLET, balance: walletBalance, status: 'active' }] }
       : u.includes('/wallets/utxo-info') ? { success: true, utxoCount: 1 }
       : u.includes('/sell/split-check') ? { allowed: true, code: 'OK', reason: '', walletSplit: 8, currentSplit: 8, allowedSplits: [8] }
       : u.includes('/system-params') ? { split: '8', activeCurrencies: ['EUR'], treasuryWalletId: 'LTreasuryWalletAddress' }
@@ -278,5 +285,43 @@ describe('a refusal that pressing again cannot cure', () => {
     // Heading and body say the same thing here, so both come back.
     expect((await screen.findAllByText(/The transfer did not go through/i)).length).toBeGreaterThan(0);
     expect(confirm).toBeEnabled();
+  });
+});
+
+/**
+ * THE FLAG THAT ONLY EVER WENT ONE WAY.
+ *
+ * "Max" means the transfer has to empty the wallet, and that flag lives in the
+ * page — lost with the tab — so the page re-derives it from the balance when an
+ * offer is resumed. It re-derived it in one direction only: once true, nothing
+ * could make it false again. A wallet that GREW while the offer waited kept
+ * telling the server "empty me" about a wallet the treasury may no longer
+ * empty, which the server answers with EMPTY_WALLET_EXCEEDS_MANDATE — and no
+ * amount of pressing, or of putting the wallet right, could clear it. Only a
+ * reload could.
+ */
+describe('whether this transfer empties the wallet follows the wallet', () => {
+  const pressTransfer = async () => {
+    show();
+    await screen.findByText(UI.transfer);
+    fireEvent.change(screen.getByPlaceholderText(/private key/i), { target: { value: 'T'.repeat(52) } });
+    const confirm = await screen.findByRole('button', { name: new RegExp(OFFER.transferConfirm, 'i') });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    fireEvent.click(confirm);
+    await waitFor(() => expect(transferSent).not.toBeNull());
+  };
+
+  it('says so when the offer covers essentially the whole wallet', async () => {
+    mine = [offer({ status: 'accepted', lanaAmount: 20070, offerExpiresAt: sqliteUtc(7 * DAY), actionDueAt: sqliteUtc(19 * HOUR) })];
+    walletBalance = 20070;
+    await pressTransfer();
+    expect(transferSent.emptyWallet).toBe(true);
+  });
+
+  it('and stops saying so when the wallet turns out to hold more', async () => {
+    mine = [offer({ status: 'accepted', lanaAmount: 20070, offerExpiresAt: sqliteUtc(7 * DAY), actionDueAt: sqliteUtc(19 * HOUR) })];
+    walletBalance = 25000;   // a payment arrived while the offer waited
+    await pressTransfer();
+    expect(transferSent.emptyWallet).toBe(false);
   });
 });

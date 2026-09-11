@@ -119,6 +119,40 @@ describe('planTransfer, on the exact figures of 10 September 2026', () => {
    * window. One small payment arriving after acceptance was enough.
    */
   /**
+   * THE ASSERTION NOBODY MADE: that the number we ask for is a number that
+   * works. The refusal quoted the shortfall priced on the pieces the plan
+   * would have spent — but a top-up is a piece MORE, and every piece costs
+   * 0.00027 LANA of network fee. A seller who sent himself exactly what the
+   * sentence asked for was refused a second time, by the price of the payment
+   * he had just been told to make.
+   */
+  it('the top-up the refusal asks for is one that then goes through', () => {
+    const refused = planTransfer({ utxos: PROD_UTXOS, amountLanoshis: AGREED_LANOSHIS, emptyWallet: false });
+    expect(planFailed(refused)).toBe(true);
+    if (!planFailed(refused)) return;
+    const said = describePlanFailure(refused).error;
+    expect(said).toContain('0.002007 LANA more');   // not the 0.001737 shortfall
+
+    // He sends himself exactly that, in one payment: a seventh piece.
+    const topUp = 200_700;
+    const afterwards = planTransfer({
+      utxos: [...PROD_UTXOS, { tx_hash: 'd'.repeat(64), tx_pos: 0, value: topUp, height: 300 }],
+      amountLanoshis: AGREED_LANOSHIS, emptyWallet: false,
+    });
+    expect(planFailed(afterwards)).toBe(false);
+    if (planFailed(afterwards)) return;
+    expect(afterwards.amountLanoshis).toBe(AGREED_LANOSHIS);
+    expect(afterwards.feeLanoshis).toBe(estimateFeeLanoshis(7, 2));
+
+    // And one lanoshi less does NOT, which is what makes the figure exact.
+    const oneShort = planTransfer({
+      utxos: [...PROD_UTXOS, { tx_hash: 'd'.repeat(64), tx_pos: 0, value: topUp - 1, height: 300 }],
+      amountLanoshis: AGREED_LANOSHIS, emptyWallet: false,
+    });
+    expect(planFailed(oneShort)).toBe(true);
+  });
+
+  /**
    * THE OTHER END OF THE SAME RULE — A SWEEP HAD A CEILING AND NO FLOOR.
    *
    * Emptying sent whatever was in the wallet, less the fee, and said ok. It

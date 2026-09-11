@@ -514,12 +514,20 @@ const SubmitOffer = () => {
   // the tab is closed, so an offer resumed later would fail for want of a fee.
   // Recover it from the balance: the offer covering essentially the whole
   // wallet IS the emptying case.
+  //
+  // BOTH WAYS ROUND, since 11 Sept 2026. It only ever set the flag, never
+  // cleared it, so a wallet that GREW after the page had decided — one payment
+  // arriving while the offer sat waiting — kept saying "empty me" about a
+  // wallet the treasury may no longer empty, and the server answers that with
+  // EMPTY_WALLET_EXCEEDS_MANDATE. The seller could not clear it from the page
+  // at all; only a reload would. The flag is a reading of the balance, so it
+  // follows the balance.
   useEffect(() => {
-    if (!offer || isEmptyWallet) return;
+    if (!offer) return;
     const balance = balances[offer.senderWallet];
     if (!balance) return;
-    if (offer.lanaAmount >= balance - ESTIMATED_TRANSFER_FEE_LANA * 3) setIsEmptyWallet(true);
-  }, [offer?.offerRef, offer?.lanaAmount, balances, isEmptyWallet]);
+    setIsEmptyWallet(offer.lanaAmount >= balance - ESTIMATED_TRANSFER_FEE_LANA * 3);
+  }, [offer?.offerRef, offer?.lanaAmount, balances]);
 
   /**
    * Where a purchase price could be settled, in the counterparty's currency.
