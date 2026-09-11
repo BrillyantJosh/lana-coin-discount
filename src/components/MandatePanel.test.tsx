@@ -202,6 +202,43 @@ describe('what the holder may propose now', () => {
    * the two numbers differ, so it is the only case that can prove this.
    */
   /**
+   * A CRUMB IS NOT AN OFFER — 11 September 2026.
+   *
+   * A completed sale left 0.73 LANA in round 2, worth about twenty cents, and
+   * the page said "You can still propose — 0.73 LANA" under a button offering
+   * to do exactly that. `min_sell_<currency>` has always refused it. The
+   * invitation and the refusal now ask the SAME question, and the server
+   * answers it: the page does not re-derive the rule, because a second
+   * definition of one rule is how the two came apart in the first place.
+   */
+  it('does not offer a round whose whole remainder is below the minimum', () => {
+    const crumb = r2({ state: 'open', remainingLana: 0.73, belowMinimum: true, minimumLana: 97.66 });
+    const a = availabilityOf(info([r1({ remainingLana: 0 }), crumb]))!;
+    expect(a.perProposalLana).toBe(0);      // nothing to propose…
+    expect(a.nowLana).toBe(0);
+    expect(a.tooSmallLana).toBe(0.73);      // …and we know exactly why
+    expect(proposableCapLana(info([r1({ remainingLana: 0 }), crumb]))).toBe(0);
+  });
+
+  it('and says where it went, in LANA, rather than going quiet', () => {
+    const crumb = r2({ state: 'open', remainingLana: 0.73, belowMinimum: true, minimumLana: 97.66 });
+    render(<MandatePanel info={info([r1({ remainingLana: 0 }), crumb])} loading={false} error={null} lanaAmount={null} currency="EUR" showIndicative={false} />);
+    const said = screen.getByTestId('too-small').textContent || '';
+    expect(said).toContain('0.73');
+    expect(said).toContain('97.66');
+    expect(said).toMatch(/stays in your wallet/i);
+  });
+
+  it('but a round that is merely SMALL is still offered', () => {
+    // The flag comes from the server, and only the server. Without it, a small
+    // round is an ordinary round — the page must never invent the refusal.
+    const small = r2({ state: 'open', remainingLana: 0.73 });
+    const a = availabilityOf(info([r1({ remainingLana: 0 }), small]))!;
+    expect(a.perProposalLana).toBe(0.73);
+    expect(a.tooSmallLana).toBe(0);
+  });
+
+  /**
    * THE HEADLINE AND THE "MAX" BUTTON MUST BE THE SAME NUMBER.
    *
    * They are computed by two different functions — availabilityOf for the

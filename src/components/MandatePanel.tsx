@@ -33,6 +33,16 @@ export interface MandateView {
   walletShareLana: number | null;
   expectedLana: number;
   remainingLana: number;
+  /**
+   * Everything left in this round is worth less than `min_sell_<currency>`, so
+   * a proposal for it can only be refused. Told to us by the server, which is
+   * the side that refuses — the page does not re-derive it, because a second
+   * definition of one rule is how the page ends up inviting what the server
+   * turns away (11 Sept 2026: a sale left 0.73 LANA and the page offered it).
+   */
+  belowMinimum?: boolean;
+  minimumFiat?: number | null;
+  minimumLana?: number | null;
   proposedLana: number;
   acceptedLana: number;
   settledLana: number;
@@ -119,10 +129,23 @@ export interface ProposalGate {
  * review); otherwise the lowest round that is open or
  * released with something left; else the first blocked round says why.
  */
+/**
+ * Can a proposal draw on this round TODAY? One test, and everything that
+ * offers a number uses it: the gate the Max button reads, and the panel's
+ * headline. When those two disagreed the page said one figure in large type
+ * and filled in another; when this test was missing altogether the page
+ * offered 0.73 LANA that the server could only refuse.
+ */
+export function roundIsProposable(m: MandateView): boolean {
+  if (m.state !== 'open' && m.state !== 'released') return false;
+  if (!(m.remainingLana > 0)) return false;
+  return m.belowMinimum !== true;
+}
+
 export function proposalGate(info: MandateInfo | null): ProposalGate {
   if (!info || info.mandates.length === 0) return { allowed: true };
   const sorted = [...info.mandates].sort((a, b) => (a.split - b.split) || (a.round - b.round));
-  const open = sorted.find(m => (m.state === 'open' || m.state === 'released') && m.remainingLana > 0);
+  const open = sorted.find(roundIsProposable);
   if (open) return { allowed: true, openRound: open };
   const blocked = sorted.find(m => m.state === 'not_open' || m.state === 'upcoming_split' || m.state === 'terms_missing')
     || sorted[0];
@@ -170,6 +193,9 @@ export function proposableCapLana(info: MandateInfo | null): number | null {
  */
 export interface Availability {
   nowLana: number;
+  /** Open rounds whose whole remainder is below the minimum we may acquire. */
+  tooSmallLana: number;
+  tooSmallRounds: MandateView[];
   laterLana: number;
   perProposalLana: number;
   perProposalRound: number | null;
@@ -182,7 +208,12 @@ export interface Availability {
 export function availabilityOf(info: MandateInfo | null): Availability | null {
   if (!info || info.mandates.length === 0) return null;
   const sorted = [...info.mandates].sort((a, b) => (a.split - b.split) || (a.round - b.round));
-  const openRounds = sorted.filter(m => (m.state === 'open' || m.state === 'released') && m.remainingLana > 0);
+  const openRounds = sorted.filter(roundIsProposable);
+  // Open, not spent — and too small to be worth acquiring. Not "available",
+  // and not "waiting on a date" either: it simply stays with the holder.
+  const tooSmallRounds = sorted.filter(
+    m => (m.state === 'open' || m.state === 'released') && m.remainingLana > 0 && m.belowMinimum === true,
+  );
   // Waiting on a date, not spent and not gone: 'fully_acquired', 'window_passed'
   // and 'closed' are none of the holder's remaining business.
   const laterRounds = sorted.filter(
@@ -193,6 +224,8 @@ export function availabilityOf(info: MandateInfo | null): Availability | null {
   return {
     nowLana: sum(openRounds),
     laterLana: sum(laterRounds),
+    tooSmallLana: sum(tooSmallRounds),
+    tooSmallRounds,
     perProposalLana: first ? first.remainingLana : 0,
     perProposalRound: first ? first.round : null,
     openRounds,
@@ -337,6 +370,19 @@ export function MandatePanel({ info, loading, error, lanaAmount, currency, showI
                 rounds: availability.openRounds
                   .filter(m => m.round !== availability.perProposalRound)
                   .map(m => m.round).join(', '),
+              })}
+            </p>
+          )}
+
+          {availability.tooSmallRounds.length > 0 && (
+            <p className="text-xs text-muted-foreground" data-testid="too-small">
+              {fill(MANDATE.availableTooSmall, {
+                amount: fmtLana(availability.tooSmallLana),
+                rounds: availability.tooSmallRounds.map(m => m.round).join(', '),
+                minimum: (() => {
+                  const m = availability.tooSmallRounds.find(r => r.minimumLana != null);
+                  return m?.minimumLana != null ? `${fmtLana(m.minimumLana)} LANA` : 'minimum';
+                })(),
               })}
             </p>
           )}

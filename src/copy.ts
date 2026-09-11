@@ -622,6 +622,11 @@ export const MANDATE = {
   availableRest:
     'A further {amount} LANA of your mandate is open in round {rounds} — but one proposal draws on ONE round, ' +
     'so it cannot go into this one. Propose again for that part.',
+  // What is left when a sale has taken all but a crumb. The page used to offer
+  // it and the server could only refuse it, which is worse than saying nothing.
+  availableTooSmall:
+    '{amount} LANA is left in round {rounds}, which is below the {minimum} we can acquire in one purchase. ' +
+    'It stays in your wallet.',
   availableLater: '{amount} LANA is not on the table yet:',
   availableLaterRound: '{amount} LANA from round {round} — {when}',
   availableAfterSplit: 'after the Split, on the round date',

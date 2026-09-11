@@ -1900,12 +1900,33 @@ const SubmitOffer = () => {
                     it the page ends here and the rest looks refused. */}
                 {(() => {
                   const left = availabilityOf(mandateInfo);
-                  if (!left || left.perProposalLana <= 0) return null;
+                  if (!left) return null;
+                  // NOTHING WORTH PROPOSING IS NOT AN INVITATION. A sale that
+                  // takes all but a crumb leaves a round with less in it than
+                  // we may acquire in one purchase, and this block used to
+                  // offer that crumb under a button — 0.73 LANA, about twenty
+                  // cents, which the server could only ever refuse. Say where
+                  // it went instead, and say it once.
+                  if (left.perProposalLana <= 0) {
+                    if (left.tooSmallRounds.length === 0) return null;
+                    const bar = left.tooSmallRounds.find(r => r.minimumLana != null);
+                    return (
+                      <p className="text-xs text-center text-muted-foreground max-w-md mx-auto" data-testid="remaining-too-small">
+                        {fill(MANDATE.availableTooSmall, {
+                          amount: formatLana(left.tooSmallLana),
+                          rounds: left.tooSmallRounds.map(r => r.round).join(', '),
+                          minimum: bar?.minimumLana != null ? `${formatLana(bar.minimumLana)} LANA` : 'minimum',
+                        })}
+                      </p>
+                    );
+                  }
                   return (
                     <div className="rounded-2xl border-2 border-primary/40 bg-primary/5 p-5 space-y-3 text-center" data-testid="propose-remaining">
                       <p className="text-sm font-bold text-foreground">{OFFER.remainingTitle}</p>
+                      {/* What THIS proposal can carry — not the sum of the open
+                          rounds, for the same reason the panel leads with it. */}
                       <p className="text-2xl font-bold font-mono text-foreground">
-                        {formatLana(left.nowLana)}{' '}
+                        {formatLana(left.perProposalLana)}{' '}
                         <span className="text-sm font-sans">LANA</span>
                       </p>
                       <p className="text-xs text-muted-foreground leading-relaxed max-w-md mx-auto">

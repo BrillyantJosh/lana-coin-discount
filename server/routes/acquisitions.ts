@@ -35,6 +35,9 @@
  * the UI that exists today keeps working until the round-aware one ships.
  */
 import { Router, type Request, type Response } from 'express';
+import {
+  minimumFiatFor, belowMinimum, proposalTooSmall, smallestProposableLana,
+} from '../lib/acquisitionMinimum.js';
 import { decideTransferShape } from '../lib/transferShape.js';
 import {
   getAppSetting, getAllAppSettings, getRelaysFromDb, getTrustedSignersFromDb,
@@ -361,8 +364,8 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       const priced = price(lanaAmount, currency, walletClass);
       if (!priced) return res.status(400).json({ error: `No reference price for ${currency}` });
 
-      const minSell = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
-      if (minSell > 0 && priced.grossFiat < minSell) {
+      const minSell = minimumFiatFor(getAllAppSettings(), currency);
+      if (belowMinimum(priced.grossFiat, minSell)) {
         return res.status(400).json({ error: `Minimum acquisition value is ${minSell} ${currency}` });
       }
 
@@ -551,8 +554,8 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
       const priced = price(allowedLana, currency, 'lanapays', verdict.discountPercent);
       if (!priced) return { kind: 'error', status: 400, body: { error: `No reference price for ${currency}` } };
 
-      const minSell = parseFloat(getAppSetting(`min_sell_${currency.toLowerCase()}`) || '0');
-      if (minSell > 0 && priced.grossFiat < minSell) {
+      const minSell = minimumFiatFor(getAllAppSettings(), currency);
+      if (belowMinimum(priced.grossFiat, minSell)) {
         return { kind: 'error', status: 400, body: { error: `Minimum acquisition value is ${minSell} ${currency}`, code: 'BELOW_MINIMUM' } };
       }
 
@@ -646,6 +649,11 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
     const rates = getExchangeRatesFromDb();
     const fx = currency ? rates[currency] : null;
     const t = now();
+    // WHAT THE PAGE MAY INVITE. The same number the two refusals above compare
+    // against, asked here so the invitation and the refusal cannot disagree:
+    // a completed sale left 0.73 LANA in a round and the page offered to
+    // propose it, which could only ever have been refused (11 Sept 2026).
+    const minimumFiat = currency ? minimumFiatFor(getAllAppSettings(), currency) : 0;
 
     const mandates = candidates.map(c => {
       if (!termsBySplit.has(c.split)) termsBySplit.set(c.split, loadRoundTerms(handle, c.split));
@@ -688,6 +696,11 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         basis: ref?.basis ?? null,
         referenceRate: ref?.rate ?? null,
         indicativeFor,
+        minimumFiat: minimumFiat > 0 ? minimumFiat : null,
+        /** True when everything left in this round is too small to be acquired. */
+        belowMinimum: proposalTooSmall(remaining / 100_000_000, ref?.rate ?? null, minimumFiat),
+        /** Where the bar is, in LANA, for saying so. Null when it cannot be priced. */
+        minimumLana: smallestProposableLana(ref?.rate ?? null, minimumFiat),
       };
     });
 

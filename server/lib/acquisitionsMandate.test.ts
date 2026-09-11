@@ -465,6 +465,65 @@ describe("GET /mandate — the financer's own view", () => {
   });
 });
 
+/**
+ * THE INVITATION AND THE REFUSAL ASK THE SAME QUESTION — 11 September 2026.
+ *
+ * `min_sell_<currency>` has always refused a proposal worth less than it. What
+ * the page never knew was that the figure it was INVITING somebody to propose
+ * was under the bar: a completed sale left 0.73 LANA in a round and the page
+ * offered to propose it, under a button.
+ *
+ * A flag alone would just be a second definition of the same rule, which is
+ * exactly how these two came apart. So this asserts the only thing that keeps
+ * them together: for the same amount, the endpoint's answer and the proposal
+ * route's answer must agree, on both sides of the bar.
+ */
+describe('what the page may invite is what the route will accept', () => {
+  const path = () => `/api/acquisitions/mandate`;
+  const q = (lana: number) => `?hexId=${seller.pub}&wallet=${W1}&currency=EUR&lanaAmount=${lana}`;
+  const readMandate = async () => {
+    const r = await get(path() + q(1), signedHeaders(seller, 'GET', path(), nowSec()));
+    expect(r.status).toBe(200);
+    return r.body.mandates[0];
+  };
+
+  it('flags a round nothing can be proposed from, and the route then refuses it', async () => {
+    setSetting(db, 'min_sell_eur', '25');
+    // Everything but a crumb has already been sold out of this round.
+    const consumed = (await propose(999.27)).body.offer;
+    expect(consumed.status).not.toBe('declined');
+    await acceptOffer(consumed.offerRef);
+
+    const m = await readMandate();
+    expect(m.remainingLana).toBeCloseTo(0.73, 8);
+    expect(m.belowMinimum).toBe(true);           // the page is told not to invite it
+    expect(m.minimumFiat).toBe(25);
+    expect(m.minimumLana).toBeGreaterThan(0.73); // and where the bar actually is
+
+    // …and the route agrees, which is the point: one rule, two surfaces.
+    const r = await propose(0.73);
+    expect(r.status).toBe(400);
+    expect(r.body.code).toBe('BELOW_MINIMUM');
+  });
+
+  it('and does NOT flag a round the route would accept from', async () => {
+    setSetting(db, 'min_sell_eur', '25');
+    const m = await readMandate();
+    expect(m.remainingLana).toBeGreaterThan(0);
+    expect(m.belowMinimum).toBe(false);
+    const r = await propose(m.minimumLana);
+    expect(r.status).toBe(200);                  // the figure it names is proposable
+  });
+
+  it('says nothing when there is no minimum set — silence, not a refusal', async () => {
+    setSetting(db, 'min_sell_eur', '0');
+    const m = await readMandate();
+    expect(m.belowMinimum).toBe(false);
+    expect(m.minimumFiat).toBeNull();
+    expect(m.minimumLana).toBeNull();
+  });
+});
+
 describe('transfer', () => {
   const accepted = async (lana: number) => {
     const o = (await propose(lana)).body.offer;
