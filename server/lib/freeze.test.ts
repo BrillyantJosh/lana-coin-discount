@@ -133,11 +133,12 @@ describe('walletListSignal', () => {
     expect(s.detail).toContain('frozen_max_cap');
   });
 
-  it("another wallet's freeze DOES block this one", () => {
-    // Reversed deliberately on 2026-08-28 at the owner's instruction. The
-    // registrar freezes a wallet when it finds unregistered LANA on it — that
-    // is a finding about the holder, not about one address, so selling from a
-    // clean sibling wallet would walk straight past it.
+  it("another wallet's freeze does NOT block this one", () => {
+    // Set on 2026-08-28 at the owner's instruction and reversed by him on
+    // 2026-11 Sept: "ta denarnica ne more biti blokirana tudi če so druge".
+    // A freeze on wallet A is a finding about wallet A's coins; it is not a
+    // fact about wallet B's. What the seller is refused for has to be
+    // something the seller can see on the wallet he is selling from.
     const s = walletListSignal(
       [
         { walletId: W, status: 'active' },
@@ -145,20 +146,33 @@ describe('walletListSignal', () => {
       ],
       W,
     );
-    expect(s.frozen).toBe(true);
-    expect(s.detail).toContain('another wallet');
-    expect(s.detail).toContain('frozen_too_wild');
+    expect(s.frozen).toBe(false);
   });
 
-  it('names which sibling is frozen, so the seller can act on it', () => {
+  it('…for any reason, including the one that stopped a real sale', () => {
+    // OFF-2026-048, 11 Sept 2026: a financing-round sale from a clean wallet,
+    // refused because a DIFFERENT wallet on the account was over its cap.
     const s = walletListSignal(
       [
         { walletId: W, status: 'active' },
-        { walletId: 'LSiblingWallet123', status: 'active', freezeStatus: 'frozen_unreg_Lanas' },
+        { walletId: 'LdBc9FD6nVsomethingelse', status: 'active', freezeStatus: 'frozen_max_cap' },
       ],
       W,
     );
-    expect(s.detail).toContain('LSiblingW');
+    expect(s.frozen).toBe(false);
+    expect(evaluateFreeze([s], LANAPAYS).blocked).toBe(false);
+  });
+
+  it('but the account frozen AS A WHOLE still does, sibling or not', () => {
+    const s = walletListSignal(
+      [
+        { walletId: W, status: 'frozen' },
+        { walletId: 'LOther', status: 'frozen', freezeStatus: 'frozen_max_cap' },
+      ],
+      W,
+    );
+    expect(s.frozen).toBe(true);
+    expect(s.detail).toContain('account status: frozen');
   });
 
   it('a clean account with several wallets still sells', () => {
@@ -269,10 +283,19 @@ describe('the sibling rule, under the waiver', () => {
     expect(sig.frozen).toBe(false);
   });
 
-  it('a sibling frozen for any other reason still does', () => {
+  it('and so does a sibling frozen for any other reason, since 11 Sept 2026', () => {
     const sig = walletListSignal([w('LSelling'), w('LOther', 'frozen_max_cap')], 'LSelling');
+    expect(sig.frozen).toBe(false);
+    // The waiver is no longer doing the work here — nothing is being waived.
+    // The sibling simply is not evidence about the wallet being sold from, so
+    // this holds for a Main Wallet too, where the OWN waiver never applied.
+    expect(evaluateFreeze([sig], 'Main Wallet').blocked).toBe(false);
+  });
+
+  it('…while the SELLING wallet frozen for that same reason still stops', () => {
+    const sig = walletListSignal([w('LSelling', 'frozen_max_cap'), w('LOther')], 'LSelling');
     expect(sig.frozen).toBe(true);
-    expect(sig.detail).toContain('frozen_max_cap');
+    expect(evaluateFreeze([sig], LANAPAYS).blocked).toBe(true);
   });
 
   it('the SELLING wallet frozen by the OWN process carries the reason forward', () => {

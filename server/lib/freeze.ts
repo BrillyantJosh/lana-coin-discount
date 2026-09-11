@@ -247,25 +247,27 @@ export function walletListSignal(
     return { source: 'wallet-list', reachable: true, frozen: true, detail: `wallet: ${mine.freezeStatus}`, freezeReason: mine.freezeStatus };
   }
 
-  // A freeze on ANY wallet of the account stops the sale, not only one on the
-  // wallet being sold from. The registrar freezes a wallet when it finds
-  // unregistered LANA on it, and that is a statement about the holder, not
-  // about one address: selling from a clean sibling wallet would walk straight
-  // past the finding. The owner asked for this explicitly on 2026-08-28.
+  // ANOTHER WALLET'S FREEZE NO LONGER STOPS THIS ONE — owner, 11 Sept 2026:
+  // "rekli smo da ta denarnica ne more biti blokirana tudi če so druge".
   //
-  // A sibling frozen by the OWN PROCESS is not such a finding — it says
-  // something about the person, not about any coins — so it is skipped here and
-  // the sale is judged on the wallet actually being sold from.
-  const frozenSibling = wallets.find(w => w.freezeStatus && w.freezeStatus !== OWN_PROCESS_FREEZE);
-  if (frozenSibling) {
-    return {
-      source: 'wallet-list',
-      reachable: true,
-      frozen: true,
-      detail: `another wallet on this account is frozen (${String(frozenSibling.walletId || '').slice(0, 10)}…: ${frozenSibling.freezeStatus})`,
-      freezeReason: frozenSibling.freezeStatus,
-    };
-  }
+  // From 2026-08-28 until today a freeze on ANY wallet of the account stopped
+  // the sale, on the reasoning that the registrar freezes a wallet when it
+  // finds unregistered LANA on it, and that is a statement about the HOLDER
+  // rather than about one address — so a clean sibling would walk past the
+  // finding. Nine days of live data say otherwise about the reason that
+  // actually bites: `frozen_max_cap` is a finding about the BALANCE ON THAT
+  // ONE WALLET against the published cap, and a cap breach on wallet A is not
+  // a fact about wallet B's coins at all. It stopped a financing-round sale
+  // from a clean wallet whose owner could do nothing about the other one.
+  //
+  // What still stops a sale, and it is the whole list:
+  //   • a freeze on the wallet being SOLD FROM — above, and from the registrar
+  //     signal, which asks about that wallet by name;
+  //   • an account frozen as a WHOLE (`status: frozen`) — above;
+  //   • nothing reachable at all — evaluateFreeze, which fails closed.
+  // A sibling is none of those. The wallet being sold from is judged on
+  // itself, which is the same precision the public board already keeps
+  // (wallet-level ≠ account-level).
 
   // The account is demonstrably not frozen. If the wallet itself isn't on the
   // list we say so, but that is still a valid account-level clearance.
