@@ -500,10 +500,43 @@ describe('what the page may invite is what the route will accept', () => {
     expect(m.minimumFiat).toBe(25);
     expect(m.minimumLana).toBeGreaterThan(0.73); // and where the bar actually is
 
-    // …and the route agrees, which is the point: one rule, two surfaces.
+    // …and the route agrees, which is the point: one rule, two surfaces. It
+    // does not counter down to the crumb and then refuse it — it steps over
+    // the round entirely, and says which of the two things happened. "Fully
+    // acquired" would be a lie where 0.73 LANA is still sitting there.
     const r = await propose(0.73);
-    expect(r.status).toBe(400);
-    expect(r.body.code).toBe('BELOW_MINIMUM');
+    const declined = r.body.offer;
+    expect(declined.status).toBe('declined');
+    expect(declined.decisionReason).toContain('0.73 LANA');
+    expect(declined.decisionReason).toMatch(/stays in your wallet/i);
+    expect(declined.decisionReason).not.toMatch(/already acquired/i);
+  });
+
+  /**
+   * AND THE CRUMB DOES NOT BLOCK WHAT IS BEHIND IT — the owner's decision,
+   * 11 Sept 2026: "z drobtinami se ne ukvarjaj, torej preskoči."
+   *
+   * A proposal takes the first open round with anything left in it and returns,
+   * so a round holding less than we may buy would be chosen, countered down to
+   * the crumb, and refused — leaving every round after it unreachable for as
+   * long as the crumb sat there, which is for ever, because it is by
+   * definition too small to sell.
+   */
+  it('steps over a crumb and sells from the round behind it', async () => {
+    setSetting(db, 'min_sell_eur', '25');
+    // A second round for the same wallet, open, with real LANA behind it.
+    announce(2, [{ address: W1, currency: 'EUR', lana: '800', fundSettingId: '53' }], 1_757_000_100);
+    setRoundTerms(db, 8, 2, nowSec() - 3600, 25);
+    // Empty round 1 down to a crumb.
+    const first = (await propose(999.27)).body.offer;
+    await acceptOffer(first.offerRef);
+
+    const r = await propose(500);
+    expect(r.status).toBe(200);
+    const offer = r.body.offer;
+    expect(offer.status).not.toBe('declined');
+    expect(offer.round).toBe(2);                 // round 1's crumb was stepped over
+    expect(offer.lanaAmount).toBe(500);
   });
 
   it('and does NOT flag a round the route would accept from', async () => {

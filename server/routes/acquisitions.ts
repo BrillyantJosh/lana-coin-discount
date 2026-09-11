@@ -504,6 +504,11 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         consumed: consumedByMandate(handle, dTags),
         now: now(),
         restricted: restriction ? { reason: restriction.reason } : null,
+        // So a round holding less than we may acquire is stepped over rather
+        // than chosen and then refused — which left every round behind it
+        // unreachable. Same two numbers the BELOW_MINIMUM refusal is made of.
+        liveRate: getExchangeRatesFromDb()[currency] ?? null,
+        minimumFiat: minimumFiatFor(getAllAppSettings(), currency),
       });
       const offerRef = generateOfferRef(handle);
       const legacyPriced = price(lanaAmount, currency, 'lanapays');
@@ -697,10 +702,18 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         referenceRate: ref?.rate ?? null,
         indicativeFor,
         minimumFiat: minimumFiat > 0 ? minimumFiat : null,
-        /** True when everything left in this round is too small to be acquired. */
-        belowMinimum: proposalTooSmall(remaining / 100_000_000, ref?.rate ?? null, minimumFiat),
+        /**
+         * True when everything left in this round is too small to be acquired.
+         *
+         * Priced on `fx` — the LIVE rate — and NOT on `ref.rate`, which can be
+         * the projected next-Split reference, i.e. twice it. The refusal always
+         * prices on the live rate, so the invitation must too; using the
+         * reference here would put the bar in a different place from the
+         * refusal, which is the one thing this must never do.
+         */
+        belowMinimum: proposalTooSmall(remaining / 100_000_000, fx ?? null, minimumFiat),
         /** Where the bar is, in LANA, for saying so. Null when it cannot be priced. */
-        minimumLana: smallestProposableLana(ref?.rate ?? null, minimumFiat),
+        minimumLana: smallestProposableLana(fx ?? null, minimumFiat),
       };
     });
 

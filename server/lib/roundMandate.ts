@@ -28,11 +28,14 @@
  *                                           (= remaining, P08 §2 counteroffer)
  *   none open                             → decline TERMS_MISSING or
  *                                           MANDATE_NOT_OPEN (with the date)
+ *     all crumb (< min_sell)              → skip, so it cannot block the rest
  *   every round exhausted                 → decline FULLY_ACQUIRED
+ *   only crumbs left                      → decline REMAINDER_TOO_SMALL
  *
  * A date OPENS a mandate; it creates no right to sell (P08 §8, P14 §8).
  */
 import { BUYBACK_SPLIT_OFFSET } from './buybackSplit.js';
+import { proposalTooSmall } from './acquisitionMinimum.js';
 import { restrictionReason } from './acquisitionRestriction.js';
 
 export interface MandateWallet {
@@ -63,7 +66,10 @@ export interface RoundTerms {
   discountPercent: number | null;
 }
 
-export type RoundDeclineCode = 'SPLIT_WINDOW' | 'TERMS_MISSING' | 'MANDATE_NOT_OPEN' | 'FULLY_ACQUIRED';
+export type RoundDeclineCode =
+  | 'SPLIT_WINDOW' | 'TERMS_MISSING' | 'MANDATE_NOT_OPEN' | 'FULLY_ACQUIRED'
+  /** Something is left, but less than the smallest purchase we make. */
+  | 'REMAINDER_TOO_SMALL';
 
 /** Why a proposal is parked for a person instead of answered by the machine. */
 export type RoundReviewCode = 'NO_MANDATE' | 'RESTRICTED';
@@ -116,6 +122,14 @@ export interface EvaluateRoundMandateInput {
   released: Set<string>;
   /** d tag → lanoshis already consumed by live offers (consumedByMandate). */
   consumed: Map<string, number>;
+  /**
+   * The LIVE rate for the currency, and the `min_sell_<currency>` setting —
+   * the two numbers the BELOW_MINIMUM refusal is made of. Optional so every
+   * existing caller and test keeps its behaviour exactly; absent means no
+   * round is ever skipped for being too small.
+   */
+  liveRate?: number | null;
+  minimumFiat?: number;
   /** Unix seconds. */
   now: number;
   /**
@@ -193,10 +207,31 @@ function decideByMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict 
   const termsOf = (round: number) => input.terms.find(t => t.round === round);
 
   let firstBlocked: { code: 'TERMS_MISSING' | 'MANDATE_NOT_OPEN'; opensAt?: number; c: MandateCandidate } | null = null;
+  /** What was stepped over for being smaller than we may buy — kept, to say so. */
+  let tooSmall = 0;
 
   for (const c of byRound) {
     const remaining = remainingOf(c, input.consumed);
     if (remaining <= 0) continue;
+
+    // A CRUMB DOES NOT BLOCK THE ROUNDS BEHIND IT. Owner, 11 Sept 2026: "z
+    // drobtinami se ne ukvarjaj, torej preskoči."
+    //
+    // A proposal draws on the first open round with anything left in it, and
+    // returns. So a round holding less than `min_sell_<currency>` — 0.73 LANA,
+    // after a sale took the rest — would be chosen, countered down to that
+    // crumb, and then refused as too small: the rounds after it unreachable
+    // for as long as it sat there, with nothing anyone could do about it,
+    // because it is by definition too small to sell.
+    //
+    // Priced on the LIVE rate and compared the way BELOW_MINIMUM compares, so
+    // a round is skipped here exactly when a proposal for the whole of it
+    // would have been refused there. Anything else and this skips rounds that
+    // were sellable, or leaves a blocking crumb it thought was sellable.
+    if (proposalTooSmall(remaining / 100_000_000, input.liveRate ?? null, input.minimumFiat ?? 0)) {
+      tooSmall += remaining;
+      continue;
+    }
 
     const terms = termsOf(c.round);
     const released = input.released.has(c.dTag);
@@ -239,6 +274,16 @@ function decideByMandate(input: EvaluateRoundMandateInput): RoundMandateVerdict 
     return {
       outcome: 'decline', code: 'TERMS_MISSING', mandateRef: c.dTag, round: c.round,
       reason: `The treasury has not yet published its terms for financing round ${c.round} of Split ${c.split}.`,
+    };
+  }
+
+  // "Fully acquired" would be a lie where something is still there. It is
+  // under the smallest purchase we make, so it cannot be sold — but the
+  // holder keeps it, and the sentence has to say which of the two happened.
+  if (tooSmall > 0) {
+    return {
+      outcome: 'decline', code: 'REMAINDER_TOO_SMALL',
+      reason: `What is left under this mandate — ${(tooSmall / 100_000_000).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 8 })} LANA — is below the smallest amount the treasury acquires in one purchase, so it stays in your wallet.`,
     };
   }
 
