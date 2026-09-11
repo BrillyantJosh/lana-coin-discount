@@ -35,6 +35,7 @@
  * the UI that exists today keeps working until the round-aware one ships.
  */
 import { Router, type Request, type Response } from 'express';
+import { decideTransferShape } from '../lib/transferShape.js';
 import {
   getAppSetting, getAllAppSettings, getRelaysFromDb, getTrustedSignersFromDb,
   getSplitFromDb, getElectrumServersFromDb, getExchangeRatesFromDb,
@@ -950,91 +951,18 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
 
       // WHO DECIDES THE EMPTYING — the server, from this balance and the fee.
       //
-      // Until 10 Sept 2026 it was `req.body.emptyWallet`, a flag SubmitOffer
-      // keeps in the page and loses with the tab. A seller who had offered
-      // their WHOLE wallet and came back to a fresh tab got an ordinary
-      // transfer: one output to us and one for the change, with the fee taken
-      // out of a change that does not exist. Eight attempts, eight refusals,
-      // every one of them 0.001737 LANA short — the fee exactly.
-      //
-      // A wallet holding no more than the agreed amount (plus dust: three
-      // network fees, and the balance rounding when the reading needed it) IS
-      // the emptying case, whatever the browser thinks. A wallet holding more
-      // is NOT, and must not be emptied — that is LANA the treasury did not
-      // agree to buy. The flag is still read for one thing: so a seller who
-      // explicitly asked to empty a wallet we may not empty is told, rather
-      // than quietly sent the long way.
-      //
-      // THIS ROUTE PROPOSES; planTransfer DISPOSES. Everything decided here is
-      // decided on a balance read a moment ago, over the network. The layer
-      // below reads the UTXOs themselves and so knows the exact figure at the
-      // moment of signing: it is handed both the sweep ceiling and the agreed
-      // amount, so a wallet that turns out to sit above the ceiling is sent
-      // the agreed amount the ordinary way instead of being refused.
-      //
-      // AND NOT FROM THE OFFER'S HISTORY. Until 11 Sept 2026 this chain began
-      // `if (isCounteroffer) emptyWallet = false`, on the premise that "a
-      // counteroffer was made for the remaining mandate precisely because the
-      // wallet holds more". It was not. A counter is made when the REQUESTED
-      // amount exceeds the REMAINING MANDATE — a fact about the mandate ledger,
-      // which says nothing whatever about the chain. The two are routinely the
-      // same number: the mandate IS the LANA that wallet received.
-      //
-      // OFF-2026-056 sat in that gap. The mandate trimmed the ask to
-      // 3,261.796875 LANA and the wallet held 3,261.796875 LANA exactly, so the
-      // ordinary shape needed 3,261.798612 and was refused by 0.001737 — the
-      // fee — on every press, with nothing the seller could do about it. The
-      // branch was written when `emptyWallet` came from the browser and it was
-      // a VETO on the seller's flag; once the server took the decision over it
-      // became the FIRST arm of this chain and pre-empted the measurement.
-      //
-      // It is also redundant. The balance arm below already refuses to sweep a
-      // wallet holding more than the mandate — by measuring it, which is the
-      // only honest way to know.
-      let emptyWallet = false;
-      if (balanceLanoshis === null) {
-        // AN ELECTRUM OUTAGE USED TO RESTORE THE 10 SEPT BUG IN FULL: with no
-        // balance and no browser flag, a whole-wallet offer fell through to an
-        // ordinary transfer and failed by the fee, every press. The question
-        // "is this wallet being emptied?" does not need electrum's balance
-        // call — it needs the UTXOs, which the next layer is about to read
-        // anyway. So it is handed down with the ceiling rather than guessed
-        // here, and comes back either swept or sent the ordinary way.
-        //
-        // An explicit ask still fails closed: a seller who chose to empty a
-        // wallet deserves to hear that we could not check it, not to have it
-        // decided for him.
-        if (askedToEmpty) {
-          return res.status(503).json({
-            error: 'The wallet balance could not be read right now. Please try again shortly.',
-            code: 'BALANCE_UNVERIFIABLE',
-          });
-        }
-        emptyWallet = true;
-      } else if (balanceLanoshis - agreedLanoshis > EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS + roundingSlack) {
-        // A WALLET HOLDING MORE IS NOT SWEPT — and that is the whole of it.
-        //
-        // Until 11 Sept 2026 a browser that had also concluded "empty" was
-        // answered 409 EMPTY_WALLET_EXCEEDS_MANDATE here, on the theory that a
-        // seller who ASKED to empty deserves to be told rather than quietly
-        // sent the long way. But nobody asks: there is no such control on the
-        // page. The flag is DERIVED, from `balances[wallet]` — which
-        // /wallets/balances rounds to 0.01 LANA — while this rule turns on
-        // 100,800 lanoshis, which is 0.001008. The browser's number is ten
-        // times too coarse to ever agree, so any surplus between those two
-        // figures made the page say "empty" and this line say "no", and the
-        // seller was refused for something he never asked for and could not
-        // change. OFF-2026-062: wallet 3,237.03125, offer 3,237.03, page saw
-        // 3,237.03, refused on every press.
-        //
-        // Nothing was protected by refusing. The alternative is to send the
-        // agreed amount the ordinary way, which is safe, is what the seller
-        // wants, and is what happens now. The one refusal that stays is the
-        // 503 above, where the balance could not be read at all — that one is
-        // about evidence, not about a flag.
-      } else {
-        emptyWallet = true;
+      // The rule itself lives in lib/transferShape.ts, as a function rather
+      // than as a paragraph inside a route handler. Three separate incidents
+      // in two days came from two numbers that had to agree, in two places,
+      // with no way to ask "is there a wallet for which NEITHER shape works?"
+      // Out there it can be swept as a space — see transferInvariants.test.ts.
+      const shape = decideTransferShape({
+        balanceLanoshis, agreedLanoshis, askedToEmpty, roundingSlack,
+      });
+      if (shape.kind === 'refuse') {
+        return res.status(shape.status).json({ error: shape.error, code: shape.code });
       }
+      const emptyWallet = shape.emptyWallet;
 
       const buybackWalletId = getAppSetting('buyback_wallet_id') || '';
       if (!buybackWalletId) return res.status(400).json({ error: 'Treasury wallet not configured' });
@@ -1055,16 +983,13 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
         // The mandate, in exact lanoshis, for the one layer that knows the
         // exact balance. `roundingSlack` is 0 whenever the chain's own integer
         // came through, so this is normally the mandate itself.
-        // ALWAYS, not only when this layer already thinks it is a sweep.
-        //
-        // Its presence is what tells the chain layer that emptying this wallet
-        // is within the mandate at all; the layer then decides the shape from
-        // the UTXOs, which is the only place the real fee is known. Passing it
-        // only on the sweep road left the ordinary road unable to fall back,
-        // and that is the band OFF-2026-062 fell into: 0.00125 LANA too much
-        // to sweep under the constant below, 0.000487 LANA too little to pay
-        // for a change output at its wallet's real six-piece fee.
-        sweepCeilingLanoshis: agreedLanoshis + EMPTY_WALLET_DUST_ALLOWANCE_LANOSHIS + roundingSlack,
+        // ALWAYS, not only when this layer already thinks it is a sweep. Its
+        // PRESENCE is what tells the chain layer that emptying this wallet is
+        // within the mandate at all; that layer then decides the shape from the
+        // UTXOs, which is the only place the real fee is known. Passing it only
+        // on the sweep road left the ordinary road unable to fall back, and
+        // that is the band OFF-2026-062 fell into.
+        sweepCeilingLanoshis: shape.sweepCeilingLanoshis,
         electrumServers: getElectrumServersFromDb(),
       });
       // What the chain layer actually did, which is not always what was asked.

@@ -536,12 +536,14 @@ describe('POST /:ref/transfer — the server decides the emptying', () => {
     expect(plan.amountLanoshis).toBeLessThanOrEqual(AGREED_L);
   });
 
-  it('but one lanoshi more in the wallet, and it is the honest shortfall again', () => {
-    // The bound is on what ARRIVES. One lanoshi past it, a sweep would hand the
-    // treasury more than it bought, so it does not happen — the seller is told
-    // he is short instead, which he can act on.
+  it('and one lanoshi more in the wallet is CAPPED, never handed over', () => {
+    // The bound is on what ARRIVES. A sweep that would deliver one lanoshi more
+    // than was bought does not refuse and does not overshoot: the agreed amount
+    // moves exactly and the remainder becomes fee. Refusing here was the last
+    // 5,099 lanoshis of the dead band, and it was a refusal of a wallet that
+    // holds MORE than it needs — which is no kind of answer.
     const AGREED_L = 323_703_000_000;
-    const over = 323_703_000_000 + estimateFeeLanoshis(6, 1) + 1;
+    const over = AGREED_L + estimateFeeLanoshis(6, 1) + 1;
     const utxos: UTXO[] = Array.from({ length: 6 }, (_, i) => ({
       tx_hash: String(i + 60).repeat(64).slice(0, 64), tx_pos: 0,
       value: Math.floor(over / 6) + (i === 5 ? over % 6 : 0), height: 1_055_567,
@@ -550,7 +552,11 @@ describe('POST /:ref/transfer — the server decides the emptying', () => {
       utxos, amountLanoshis: AGREED_L, emptyWallet: false,
       sweepCeilingLanoshis: AGREED_L + 100_800,
     });
-    expect(planFailed(plan)).toBe(true);
+    expect(planFailed(plan)).toBe(false);
+    if (planFailed(plan)) return;
+    expect(plan.amountLanoshis).toBe(AGREED_L);            // exactly, not a lanoshi over
+    expect(plan.feeLanoshis).toBe(over - AGREED_L);        // the remainder, which is the fee
+    expect(plan.feeLanoshis).toBeLessThan(estimateFeeLanoshis(6, 2)); // still a plausible fee
   });
 
   it('and a caller that never mentioned emptying still gets the shortfall', () => {

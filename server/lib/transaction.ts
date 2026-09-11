@@ -684,7 +684,43 @@ export function planTransfer(params: {
     // Emptying takes every UTXO and leaves no change, so the fee is known
     // exactly here — no selection loop can revise it, and nothing is left
     // behind by a subset that happened to reach the target on its own.
-    const feeLanoshis = estimateFeeLanoshis(utxos.length, 1);
+    const sweepFee = estimateFeeLanoshis(utxos.length, 1);
+
+    // A SWEEP MAY NOT DELIVER MORE THAN WAS AGREED. This is the cap, and until
+    // 11 Sept 2026 there was none: emptying sent `balance - fee` whatever that
+    // came to, so any wallet whose surplus was bigger than its own fee handed
+    // the treasury LANA nobody had bought — up to 0.00067 LANA on an exact
+    // reading and 0.0057 on a rounded one, on every such sale, recorded
+    // nowhere because the row books the agreed figure. Found by sweeping the
+    // space rather than by anyone complaining (transferInvariants.test.ts).
+    //
+    // Two ways out, and which one is right depends on the wallet, not on a
+    // constant:
+    const named = params.amountLanoshis !== undefined && params.amountLanoshis > 0
+      ? Math.floor(params.amountLanoshis) : undefined;
+    if (named !== undefined && totalBalance - sweepFee > named) {
+      // 1. THE WALLET CAN PAY FOR ITS OWN CHANGE. Then it should: the seller
+      //    keeps the surplus and the treasury gets exactly what it bought.
+      const ordinaryFee = estimateFeeLanoshis(utxos.length, OUTPUT_PAIR);
+      if (totalBalance >= named + ordinaryFee) {
+        return planTransfer({ utxos, amountLanoshis: named, emptyWallet: false });
+      }
+      // 2. IT CANNOT — it is in the gap one output's fee wide between "enough
+      //    surplus to sweep without overshooting" and "enough to pay for a
+      //    change output". Nothing can be given back there: an output for it
+      //    costs more than it is worth. So the agreed amount moves exactly and
+      //    the remainder becomes fee — at most 5,099 lanoshis of it, which is
+      //    what one output would have cost anyway. The alternative was the
+      //    refusal this band used to be, for a wallet that holds MORE than it
+      //    needs.
+      return {
+        ok: true, emptyWallet: true, amountLanoshis: named,
+        feeLanoshis: totalBalance - named,
+        selected: [...utxos], totalSelected: totalBalance, totalBalance,
+      };
+    }
+
+    const feeLanoshis = sweepFee;
     const amountLanoshis = totalBalance - feeLanoshis;
     if (amountLanoshis <= 0) {
       return {
@@ -787,12 +823,10 @@ export function planTransfer(params: {
     //                          not used here — the delivery bound above is
     //                          stricter in what arrives — but its presence is
     //                          the permission.
-    const sweepFeeLanoshis = estimateFeeLanoshis(utxos.length, 1);
     if (
       sweepCeilingLanoshis !== undefined &&
       utxos.length <= MAX_TRANSACTION_INPUTS &&
-      totalBalance >= wanted &&
-      totalBalance - sweepFeeLanoshis <= wanted
+      totalBalance >= wanted
     ) {
       // The ceiling is NOT forwarded: the guard above already binds what
       // arrives, and forwarding it would bounce the plan back to this branch.
