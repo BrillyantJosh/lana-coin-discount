@@ -304,7 +304,7 @@ export function MandatePanel({ info, loading, error, lanaAmount, currency, showI
       {availability && (
         <div
           className={`rounded-xl border-2 p-3 sm:p-4 space-y-2 ${
-            availability.nowLana > 0
+            availability.perProposalLana > 0
               ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-950/30'
               : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30'
           }`}
@@ -312,28 +312,31 @@ export function MandatePanel({ info, loading, error, lanaAmount, currency, showI
         >
           <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{MANDATE.availabilityTitle}</p>
 
+          {/* THE NUMBER THIS PROPOSAL CAN CARRY — not the sum of every open
+              round. The sum was here in large figures, and someone reading it
+              believed he was selling all of it; what he could actually put in
+              one proposal was a smaller number in grey underneath. */}
           <p className="text-2xl font-bold font-mono text-foreground" data-testid="available-now">
-            {fmtLana(availability.nowLana)} <span className="text-sm font-sans font-semibold">LANA</span>
+            {fmtLana(availability.perProposalLana)} <span className="text-sm font-sans font-semibold">LANA</span>
           </p>
           <p className="text-xs text-foreground">
-            {availability.nowLana > 0
-              ? fill(MANDATE.availableNow, {
-                  rounds: availability.openRounds.map(m => m.round).join(', '),
-                  count: availability.openRounds.length,
-                })
+            {availability.perProposalLana > 0
+              ? fill(MANDATE.availableFromRound, { round: availability.perProposalRound })
               : MANDATE.availableNone}
           </p>
 
-          {availability.anyReleased && availability.nowLana > 0 && (
+          {availability.anyReleased && availability.perProposalLana > 0 && (
             <p className="text-xs font-medium text-green-800 dark:text-green-300">{MANDATE.availableReleased}</p>
           )}
 
-          {/* Two rounds open at once still means one round per proposal. */}
+          {/* The rest, named as the rest — one proposal draws on one round. */}
           {availability.perProposalLana > 0 && availability.perProposalLana < availability.nowLana && (
             <p className="text-xs text-muted-foreground" data-testid="per-proposal">
-              {fill(MANDATE.availablePerProposal, {
-                amount: fmtLana(availability.perProposalLana),
-                round: availability.perProposalRound,
+              {fill(MANDATE.availableRest, {
+                amount: fmtLana(availability.nowLana - availability.perProposalLana),
+                rounds: availability.openRounds
+                  .filter(m => m.round !== availability.perProposalRound)
+                  .map(m => m.round).join(', '),
               })}
             </p>
           )}

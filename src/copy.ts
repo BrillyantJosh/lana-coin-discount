@@ -605,16 +605,23 @@ export const MANDATE = {
     split_unknown: 'Unknown',
   } as Record<string, string>,
 
-  // How much can actually go into a sale today. A holder cannot work this out
-  // from the round rows: rounds open one date at a time and a proposal draws on
-  // ONE round, so LANA from a later round is simply not on the table yet.
-  availabilityTitle: 'How much you can propose now',
-  availableNow: 'Open for proposals today, from round {rounds}.',
+  // How much can actually go into THIS sale. A holder cannot work it out from
+  // the round rows: rounds open one date at a time and a proposal draws on ONE
+  // round, so LANA from another round is not on the table for this proposal.
+  //
+  // THE BIG NUMBER IS THE ONE THIS PROPOSAL CAN CARRY, and it was not always.
+  // It used to be the sum of every open round, with the real per-proposal
+  // limit in small grey type underneath — so someone with 32,527.97 open in
+  // round 1 and 19,916.48 in round 2 read 52,444.45 in large figures and
+  // believed that was what he was selling. The headline now answers the
+  // question the person is actually asking, and the rest is named as the rest.
+  availabilityTitle: 'How much this one proposal can carry',
+  availableFromRound: 'All of it from round {round}, which is open for proposals today.',
   availableNone: 'None of your LANA is open for proposals yet.',
   availableReleased: 'The treasury opened a round ahead of its date, so that part is available now.',
-  availablePerProposal:
-    'One proposal draws on one round, so a single proposal can carry up to {amount} LANA (round {round}). ' +
-    'Propose again for the rest.',
+  availableRest:
+    'A further {amount} LANA of your mandate is open in round {rounds} — but one proposal draws on ONE round, ' +
+    'so it cannot go into this one. Propose again for that part.',
   availableLater: '{amount} LANA is not on the table yet:',
   availableLaterRound: '{amount} LANA from round {round} — {when}',
   availableAfterSplit: 'after the Split, on the round date',

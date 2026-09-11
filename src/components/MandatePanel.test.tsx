@@ -191,13 +191,47 @@ describe('what the holder may propose now', () => {
     expect(later).toContain(fmtUtc('2026-10-26T22:00:00.000Z'));
   });
 
-  it('spells out the one-round-per-proposal limit only when it bites', () => {
+  /**
+   * THE BIG NUMBER IS WHAT THIS PROPOSAL CAN CARRY.
+   *
+   * It used to be the sum of every open round, with the real per-proposal
+   * limit in small grey type underneath. Someone with 32,527.97 open in round 1
+   * and 19,916.48 in round 2 read 52,444.45 in large figures and took that for
+   * what he was selling (11 Sept 2026: "rabiš takoj pokazati, da se prodaja
+   * samo toliko in ne celotni znesek"). Two open rounds is the only case where
+   * the two numbers differ, so it is the only case that can prove this.
+   */
+  /**
+   * THE HEADLINE AND THE "MAX" BUTTON MUST BE THE SAME NUMBER.
+   *
+   * They are computed by two different functions — availabilityOf for the
+   * panel, proposableCapLana for the amount field — and if they ever drift the
+   * page says one thing in large figures and fills in another. That is the
+   * confusion this whole block exists to end, so it is asserted rather than
+   * assumed.
+   */
+  it('is the same number the Max button fills in', () => {
+    const two = info([r1(), r2({ state: 'open' })]);
+    expect(availabilityOf(two)!.perProposalLana).toBe(proposableCapLana(two));
+    const one = info([r1(), r2()]);
+    expect(availabilityOf(one)!.perProposalLana).toBe(proposableCapLana(one));
+  });
+
+  it('leads with what ONE proposal can carry, never the sum of the open rounds', () => {
     const { unmount } = render(<MandatePanel info={info([r1(), r2({ state: 'open' })])} loading={false} error={null} lanaAmount={null} currency="EUR" showIndicative={false} />);
-    expect(screen.getByTestId('per-proposal').textContent).toContain('1,000');
+    const headline = screen.getByTestId('available-now').textContent || '';
+    expect(headline).toContain('1,000');   // round 1, and this proposal's limit
+    expect(headline).not.toContain('1,800'); // the sum — the number that misled
+    // The rest is still named, as the rest, and it is the OTHER round's amount.
+    const rest = screen.getByTestId('per-proposal').textContent || '';
+    expect(rest).toContain('800');
+    expect(rest).toContain('round 2');
+    expect(rest).not.toContain('1,800');
     unmount();
     // One open round: what is open and what one proposal carries are the same
     // number, and saying it twice would only muddy it.
     render(<MandatePanel info={info([r1(), r2()])} loading={false} error={null} lanaAmount={null} currency="EUR" showIndicative={false} />);
+    expect(screen.getByTestId('available-now').textContent).toContain('1,000');
     expect(screen.queryByTestId('per-proposal')).toBeNull();
   });
 });
