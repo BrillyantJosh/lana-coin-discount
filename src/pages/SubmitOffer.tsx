@@ -783,9 +783,19 @@ const SubmitOffer = () => {
    * first sale completed nothing pointed at the rest. It just looked like the
    * treasury had refused to take it.
    */
-  const proposeRemaining = (amountLana: number) => {
+  const proposeRemaining = () => {
     resetToAmount();
-    setLanaAmount(String(Math.max(0, Math.round(amountLana * 1e8) / 1e8)));
+    // THE FIELD IS LEFT EMPTY ON PURPOSE. Owner, 12 Sept 2026: "pusti raje
+    // polje prazno da pritisne MAX in na ta način bo pravilno odšteto."
+    //
+    // It used to be filled with what the MANDATE still has open, and that is
+    // not what the wallet can send. The first sale took its LANA out and the
+    // network fee with it, so on a second proposal the two figures have come
+    // apart — Jasna met a number that had had a fee taken out of it once
+    // already. Max is the only thing that knows: it reads the live balance,
+    // leaves the fee behind, and stops at the round's cap. Two ways to arrive
+    // at an amount is one way too many when only one of them is right.
+    setLanaAmount('');
     refreshBalances();
   };
 
@@ -1936,12 +1946,10 @@ const SubmitOffer = () => {
                         })}
                       </p>
                       <button
-                        onClick={() => proposeRemaining(left.perProposalLana)}
+                        onClick={() => proposeRemaining()}
                         className="rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
                       >
-                        {fill(OFFER.remainingCta, {
-                          amount: formatLana(left.perProposalLana),
-                        })}
+                        {OFFER.remainingCta}
                       </button>
                     </div>
                   );

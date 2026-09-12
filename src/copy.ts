@@ -543,8 +543,9 @@ export const OFFER = {
   remainingTitle: 'You can still propose',
   remainingBody:
     'A proposal draws on one financing round, and round {round} still has {amount} LANA open under your mandate. ' +
-    'Propose it now, at that round\'s own discount.',
-  remainingCta: 'Propose {amount} LANA',
+    'How much of it your wallet can actually send is a little less — the first transfer took its network fee with ' +
+    'it — so leave the amount empty and press Max, which works that out from what is in the wallet now.',
+  remainingCta: 'Propose the rest',
   indicativeLabel: 'Indicative figure — not a price, not a rate, not a guarantee.',
   indicativeBasisProjected: 'Basis: projected next-Split reference',
   indicativeBasisCurrent: 'Basis: live Split reference',

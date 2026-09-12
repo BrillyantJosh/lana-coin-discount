@@ -21,6 +21,7 @@
  * and none of them would have been caught by a test that only read copy.ts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import SubmitOffer from './SubmitOffer';
@@ -350,5 +351,53 @@ describe('withdrawing is no longer what a hopeful thumb lands on', () => {
     fireEvent.click(screen.getByRole('button', { name: OFFER.reviewWithdrawYes }));
 
     await waitFor(() => expect(hoisted.signed.some(c => c.path.includes('/withdraw'))).toBe(true));
+  });
+});
+
+/**
+ * ONE WAY TO ARRIVE AT AN AMOUNT, AND ONLY ONE.
+ *
+ * Owner, 12 Sept 2026: Jasna's SECOND proposal opened with the field already
+ * filled in, and the figure in it was wrong — it was what the MANDATE still
+ * had open, while her wallet held less, because the first transfer had taken
+ * its network fee out. "Pusti raje polje prazno da pritisne MAX in na ta način
+ * bo pravilno odšteto."
+ *
+ * Max is the only thing that knows: `maxProposable` reads the live balance,
+ * leaves the fee behind and stops at the round's cap (src/lib/maxOffer.ts).
+ * A second filler that reasons from anything else will disagree with it the
+ * moment a wallet has already sold once — which is exactly when a seller is
+ * least able to tell that the number is wrong.
+ *
+ * Read from the source rather than driven through the page: reaching the block
+ * takes a completed transfer, and what has to hold is not one screen's
+ * behaviour but that no SECOND filler is ever added back.
+ */
+describe('the amount field is filled in one way', () => {
+  const source = readFileSync('src/pages/SubmitOffer.tsx', 'utf8');
+
+  it('offering the rest leaves the field empty rather than guessing at it', () => {
+    const fn = source.slice(source.indexOf('const proposeRemaining'));
+    const body = fn.slice(0, fn.indexOf('\n  };'));
+    expect(body).toContain("setLanaAmount('')");
+    // Nothing computed, nothing carried in: an empty field and a live Max.
+    expect(body).not.toMatch(/setLanaAmount\(String/);
+    expect(body).not.toMatch(/perProposalLana|remainingLana/);
+  });
+
+  it('exactly one place computes an amount, and it is Max', () => {
+    const computed = [...source.matchAll(/setLanaAmount\(String\(([^)]*)/g)].map(m => m[1]);
+    // The other setter restores an offer the seller already has — a stored
+    // fact, not a figure worked out here — and that one is allowed.
+    const fromOffer = computed.filter(c => c.includes('open.lanaAmount'));
+    const worked = computed.filter(c => !c.includes('open.lanaAmount'));
+    expect(fromOffer).toHaveLength(1);
+    expect(worked).toHaveLength(1);
+    expect(worked[0]).toContain('maxOffer.amountLana');
+  });
+
+  it('and the button no longer promises a figure the field will not hold', () => {
+    expect(OFFER.remainingCta).not.toMatch(/\{amount\}/);
+    expect(OFFER.remainingBody).toMatch(/Max/);
   });
 });
