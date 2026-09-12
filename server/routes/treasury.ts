@@ -27,6 +27,9 @@ import {
   getElectrumServersFromDb, getRelaysFromDb, getExchangeRatesFromDb,
 } from '../db/index.js';
 import { minimumFiatFor, proposalTooSmall } from '../lib/acquisitionMinimum.js';
+import {
+  categorise, parseSettlementParam, settlementCounts as countSettlement,
+} from '../lib/mandateSettlement.js';
 import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
 import { requireAdmin } from '../lib/adminAuth.js';
 import { requireApiKey } from '../lib/apiKeyAuth.js';
@@ -319,31 +322,36 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
      * counting the whole round, which is what the operator saw and reported.
      */
     const totalsAll = offerTotalsByMandate(db(), allForSplit.map(m => m.dTag));
-    const unsoldOf = (m: typeof allForSplit[number]) =>
-      toLana(Math.max(0, m.lanaReceivedLanoshis - (totalsAll.get(m.dTag)?.settled || 0)));
-    const isPaid = (m: typeof allForSplit[number]) =>
-      !unsoldIsSellable(unsoldOf(m), [...new Set(m.wallets.map(w => w.currency))]);
+    /**
+     * PER MANDATE, never per person — the grain the table is at. Someone who
+     * sold the whole of round 1 while round 2 has not opened is finished with
+     * one and has not started the other; adding the two together says "part
+     * sold" about a person who has done everything open to them, and it made
+     * nine rows read that way when only one of them was true.
+     */
+    const stateOf = (m: typeof allForSplit[number]) => {
+      const settledLana = toLana(totalsAll.get(m.dTag)?.settled || 0);
+      const expectedLana = toLana(m.lanaReceivedLanoshis);
+      return {
+        expectedLana, settledLana,
+        unsoldSellable: unsoldIsSellable(
+          Math.max(0, expectedLana - settledLana),
+          [...new Set(m.wallets.map(w => w.currency))],
+        ),
+      };
+    };
 
     // Counted over the WHOLE split, never the filtered view: these numbers sit
     // in the filter's own labels, and a count that moved when you chose it
     // would be telling you about the answer instead of the question.
     const announcedAll = allForSplit.filter(m => m.status === 'announced');
-    const paidAll = announcedAll.filter(isPaid);
-    const settlementCounts = {
-      all: announcedAll.length,
-      paid: paidAll.length,
-      unpaid: announcedAll.length - paidAll.length,
-      owedLana: Math.round(
-        announcedAll.filter(m => !isPaid(m)).reduce((t, m) => t + unsoldOf(m), 0) * 100_000_000,
-      ) / 100_000_000,
-    };
+    const settlementCounts = countSettlement(announcedAll.map(stateOf));
 
-    const settlementFilter = String(req.query.settlement || 'all');
+    const wanted = parseSettlementParam(req.query.settlement);
     let mandates = allForSplit;
     if (roundFilter) mandates = mandates.filter(m => m.round === roundFilter);
     if (currencyFilter) mandates = mandates.filter(m => m.wallets.some(w => w.currency === currencyFilter));
-    if (settlementFilter === 'paid') mandates = mandates.filter(isPaid);
-    else if (settlementFilter === 'unpaid') mandates = mandates.filter(m => !isPaid(m));
+    if (wanted.size < 3) mandates = mandates.filter(m => wanted.has(categorise(stateOf(m))));
     const dTags = mandates.map(m => m.dTag);
     const consumed = consumedByMandate(db(), dTags);
     const totals = offerTotalsByMandate(db(), dTags);
@@ -499,6 +507,8 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
           toLana(Math.max(0, m.lanaReceivedLanoshis - tot.settled)),
           [...new Set(m.wallets.map(w => w.currency))],
         ),
+        /** Which of the three boxes this row is in — 'none' | 'partly' | 'paid'. */
+        settlement: categorise(stateOf(m)),
         proposedLana: toLana(tot.proposed), proposedLanoshis: tot.proposed,
         acceptedLana: toLana(tot.accepted), acceptedLanoshis: tot.accepted,
         settledLana: toLana(tot.settled), settledLanoshis: tot.settled,

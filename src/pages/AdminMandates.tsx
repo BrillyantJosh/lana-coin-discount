@@ -4,7 +4,6 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { ADMIN_MANDATES, MANDATE, OFFER_STATUS_LABELS } from '@/copy';
-import type { SettlementFilter } from '@/lib/mandateSettlement';
 import { toSpreadsheetXml, downloadSpreadsheet, type SheetColumn } from '@/lib/spreadsheet';
 import { fill } from '@/components/MandatePanel';
 import { knownNames, resolveNames } from '@/lib/counterpartyNames';
@@ -117,7 +116,15 @@ interface MandateRow {
   offers: MandateOffer[];
 }
 
-interface SettlementCounts { all: number; unpaid: number; paid: number; owedLana: number }
+/**
+ * Where a mandate stands. The classifying is done on the server
+ * (server/lib/mandateSettlement.ts) with the live rate and the per-currency
+ * sale minimum, which a browser does not have; this side only renders it.
+ */
+type SettlementCategory = 'none' | 'partly' | 'paid';
+const CATEGORIES: SettlementCategory[] = ['none', 'partly', 'paid'];
+
+interface SettlementCounts { all: number; none: number; partly: number; paid: number; owedLana: number }
 
 interface MandatesResponse {
   split: number;
@@ -191,11 +198,18 @@ export default function AdminMandates() {
   const [currency, setCurrency] = useState('');
   const [round, setRound] = useState('');
   /**
-   * Whether the treasury has finished acquiring from a financer. Client-side:
-   * the rows are already here, and a round-trip per click would make the
-   * counts beside the choices impossible to show honestly.
+   * Which boxes are ticked. More than one at a time, because the owner asked
+   * for it and because "who has had nothing and who is half way" is one
+   * question, not two.
    */
-  const [settlement, setSettlement] = useState<SettlementFilter>('all');
+  const [picked, setPicked] = useState<SettlementCategory[]>([...CATEGORIES]);
+  const allPicked = picked.length === CATEGORIES.length;
+  const togglePicked = (c: SettlementCategory) => setPicked(prev => {
+    const next = prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c];
+    // Un-ticking the last box would leave a table nobody chose to empty, and
+    // an empty table reads as "there are none of these". Everything, instead.
+    return next.length ? next : [...CATEGORIES];
+  });
   const [names, setNames] = useState<Record<string, string>>(() => knownNames());
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -224,7 +238,7 @@ export default function AdminMandates() {
   useEffect(() => {
     if (!session || !isAdmin) return;
     load();
-  }, [session, isAdmin, split, currency, round, settlement]);
+  }, [session, isAdmin, split, currency, round, picked.join(',')]);
 
   const load = async () => {
     if (!session) return;
@@ -237,7 +251,7 @@ export default function AdminMandates() {
       // The filter goes to the server, so the rows and the money under them
       // are always the same set. It was decided in the browser for a few
       // hours, and the totals went on describing the whole round.
-      if (settlement !== 'all') q.set('settlement', settlement);
+      if (!allPicked) q.set('settlement', picked.join(','));
       const res = await fetch(`/api/treasury/admin/mandates?${q.toString()}`, { headers: { 'x-admin-hex-id': session.nostrHexId } });
       const json: MandatesResponse & { error?: string } = await res.json();
       if (!res.ok || json.error) throw new Error(json.error || 'Failed to load mandates');
@@ -514,10 +528,10 @@ export default function AdminMandates() {
 
   const mandatesOfRound = (r: number) => (data?.mandates || []).filter(m => m.round === r);
   /** Counted over the WHOLE split by the server, so a label never moves when it is chosen. */
-  const settled = data?.settlementCounts || { all: 0, unpaid: 0, paid: 0, owedLana: 0 };
+  const settled = data?.settlementCounts || { all: 0, none: 0, partly: 0, paid: 0, owedLana: 0 };
   const fundingOfRound = (r: number) => (data?.funding || []).find(f => f.round === r) || null;
   const roundsShown = [...new Set(
-    settlement === 'all'
+    allPicked
       ? [
           ...(data?.mandates || []).map(m => m.round),
           ...(data?.funding || []).filter(f => f.mandateCount > 0).map(f => f.round),
@@ -580,7 +594,7 @@ export default function AdminMandates() {
     const parts = [`split-${data?.split ?? split ?? '?'}`];
     if (round) parts.push(`round-${round}`);
     if (currency) parts.push(currency.toLowerCase());
-    if (settlement !== 'all') parts.push(settlement);
+    if (!allPicked) parts.push(picked.join('-'));
     parts.push((data?.updated_at || new Date().toISOString()).slice(0, 10));
     downloadSpreadsheet(
       `mandates-${parts.join('-')}.xls`,
@@ -747,18 +761,26 @@ export default function AdminMandates() {
             <option value="">All rounds</option>
             {[1, 2, 3].map(r => <option key={r} value={r}>Round {r}</option>)}
           </select>
-          {/* Finished or not. The counts sit in the labels so each choice says
-              how many rows it holds before it is chosen — a filter you have to
-              try in order to find out it is empty gets tried once. */}
-          <select
-            value={settlement}
-            onChange={e => setSettlement(e.target.value as SettlementFilter)}
-            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
-          >
-            <option value="all">All mandates ({settled.all})</option>
-            <option value="unpaid">Not yet acquired ({settled.unpaid})</option>
-            <option value="paid">Fully acquired ({settled.paid})</option>
-          </select>
+          {/* WHERE EACH MANDATE STANDS — tick any of the three.
+              The counts sit in the labels, so a box says how many rows it
+              holds before it is ticked; a filter you have to try in order to
+              find out it is empty gets tried once. They are counted over the
+              whole Split, so a number never moves because it was chosen. */}
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-2">
+            {CATEGORIES.map(c => (
+              <label key={c} className="flex cursor-pointer select-none items-center gap-1.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={picked.includes(c)}
+                  onChange={() => togglePicked(c)}
+                  className="h-4 w-4 cursor-pointer accent-primary"
+                />
+                <span className={picked.includes(c) ? 'text-foreground' : 'text-muted-foreground'}>
+                  {ADMIN_MANDATES.settlement[c]} ({settled[c]})
+                </span>
+              </label>
+            ))}
+          </div>
           <button
             onClick={exportXls}
             className="rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
@@ -770,28 +792,22 @@ export default function AdminMandates() {
           </span>
         </div>
 
-        {/* WHAT "PAID" MEANS HERE, on screen rather than only in a comment.
-            Settled LANA, and a crumb nobody could sell does not keep a mandate
-            open: a transfer almost never lands on the exact lanoshi, and 14 of
-            the 74 mandates of Split 8 had between 0.0003 and 0.73 LANA left
-            over — under a euro's worth, refused by the offer route as too
-            small, and enough on its own to file a financer who had been paid
-            in full beside people who had sold nothing. */}
-        {settlement !== 'all' && (
+        {/* WHAT THE THREE BOXES MEAN, on screen rather than only in a comment.
+            The line that matters is the middle one: a financer who has had
+            money and one who has had none used to sit in the same box, which
+            is the only thing anybody wanted to tell apart. */}
+        {!allPicked && (
           <p className="mb-4 text-xs text-muted-foreground">
-            {settlement === 'unpaid' ? (
+            {picked.includes('paid') && picked.length === 1 ? (
               <>
-                Showing the {settled.unpaid} mandate{settled.unpaid === 1 ? '' : 's'} the treasury has not finished
-                acquiring — {fmtLana(settled.owedLana)} LANA still to come. An offer that has been made but not
-                completed counts here, not as acquired.
-              </>
-            ) : (
-              <>
-                Showing the {settled.paid} mandate{settled.paid === 1 ? '' : 's'} with nothing sellable left — either
-                fully acquired, or down to a remainder under the smallest purchase we make, which cannot be proposed
-                and is not coming. Whether the price has been sent is on{' '}
+                {ADMIN_MANDATES.settlementNotePaid}{' '}
                 <Link to="/admin/payouts" className="underline underline-offset-2">Payouts</Link>.
               </>
+            ) : (
+              fill(ADMIN_MANDATES.settlementNoteOpen, {
+                count: picked.filter(c => c !== 'paid').reduce((n, c) => n + settled[c], 0),
+                lana: fmtLana(settled.owedLana),
+              })
             )}
           </p>
         )}

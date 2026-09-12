@@ -724,6 +724,18 @@ export const ADMIN_ROUNDS = {
 
 export const ADMIN_MANDATES = {
   /** The list as it stands, handed over as a sheet. */
+  /** The three boxes, in the order they are shown. */
+  settlement: {
+    none: 'Nothing sold yet',
+    partly: 'Part sold',
+    paid: 'Fully acquired',
+  },
+  settlementNoteOpen:
+    '{count} mandates with something still to sell — {lana} LANA. "Part sold" means money has already reached ' +
+    'that financer and there is more to come; an offer made but not completed is not a sale, and counts here.',
+  settlementNotePaid:
+    'Nothing sellable is left on these — either fully acquired, or down to a remainder under the smallest ' +
+    'purchase we make, which cannot be proposed and is not coming. Whether the price has been sent is on',
   exportCta: 'Export to Excel',
   exportEmpty: 'Nothing to export — no mandate matches this selection.',
   exportDone: 'Exported {count} rows.',
