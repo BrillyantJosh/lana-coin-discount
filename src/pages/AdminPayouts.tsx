@@ -499,14 +499,21 @@ const AdminPayouts = () => {
         ...user,
         _remaining: remaining,
         _latestPayout: latestPayout,
-        sales: [...user.sales].sort((a, b) => {
-          if (a.status === 'paid' && b.status !== 'paid') return 1;
-          if (a.status !== 'paid' && b.status === 'paid') return -1;
-          return compareRoundOrder(
-            { round: a.round ?? null, earliestAt: saleOrderedAt(a) },
-            { round: b.round ?? null, earliestAt: saleOrderedAt(b) },
-          ) || (b.remaining - a.remaining);
-        }),
+        // BY DATE, NEWEST FIRST. Owner, 12 Sept 2026: "vrstni red naj bo tako
+        // na strani kot na PDFju po datumu... najvišje je zadnja transakcija
+        // in potem gre v drugo smer."
+        //
+        // It used to be unpaid-first and then round order, which is the order
+        // you PAY in — useful on a worklist, and wrong on a history. A person
+        // reading their own record looks for the most recent thing first, and
+        // an exported statement has to match the screen it came from.
+        //
+        // `createdAt` is the date: it is the only one on every row (completedAt
+        // is null while a transfer is still broadcast, acceptedAt is null on
+        // every sale older than the offer model). Ties break on id, descending,
+        // so two sales in the same second keep a stable order.
+        sales: [...user.sales].sort((a, b) =>
+          (b.createdAt || '').localeCompare(a.createdAt || '') || (b.id - a.id)),
       };
     })
     .sort((a, b) => {
