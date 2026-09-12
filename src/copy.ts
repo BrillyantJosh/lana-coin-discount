@@ -722,6 +722,19 @@ export const ADMIN_ROUNDS = {
   saved: 'Round terms saved',
 } as const;
 
+/** The payouts screen — the one place a document about a person is produced. */
+export const ADMIN_PAYOUTS = {
+  statementCta: 'Statement (PDF)',
+  statementTitle: 'Open this counterparty\'s statement of account, ready to save as PDF',
+  statementNoName:
+    'This counterparty has not published a name, so the statement would read "Anonymous". ' +
+    'A document naming nobody is of no use to a bank — ask them to publish a name first.',
+  statementNoSales: 'There is nothing to put on a statement for this counterparty yet.',
+  statementBlocked:
+    'The browser blocked the statement window. Allow pop-ups for lana.discount and try again.',
+  statementOpened: 'Statement opened — choose "Save as PDF" in the print dialog.',
+} as const;
+
 export const ADMIN_MANDATES = {
   /** The list as it stands, handed over as a sheet. */
   /** The three boxes, in the order they are shown. */

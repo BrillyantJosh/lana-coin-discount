@@ -3,6 +3,8 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
+import { buildStatementHtml } from '@/lib/statement';
+import { ADMIN_PAYOUTS } from '@/copy';
 
 interface PayoutEntry {
   id: number;
@@ -25,6 +27,14 @@ interface SaleEntry {
   commissionFiat: number;
   netFiat: number;
   txHash: string | null;
+  /**
+   * Both ends of the LanaCoin transfer. They have always been in the payload
+   * (server/db/index.ts) and were simply not declared, so nothing could reach
+   * them. The statement prints them because the owner asked for the chain leg
+   * on the document, and because a txid discloses them to any reader anyway.
+   */
+  senderWalletId?: string | null;
+  buybackWalletId?: string | null;
   status: string;
   source: 'internal' | 'external';
   verifiedAt: string | null;
@@ -665,7 +675,81 @@ const AdminPayouts = () => {
               const userTotalOwed = user.sales.reduce((s, sale) => s + sale.netFiat, 0);
               const userTotalPaid = user.sales.reduce((s, sale) => s + sale.totalPaid, 0);
               const userRemaining = Math.round((userTotalOwed - userTotalPaid) * 100) / 100;
-              const mainCurrency = user.sales.length > 0 ? user.sales[0].currency : 'EUR';
+              /**
+   * ONE COUNTERPARTY'S STATEMENT OF ACCOUNT, ready to save as PDF.
+   *
+   * Opened in a window and printed rather than written with a PDF library, and
+   * the reason is in the names: the built-in PDF fonts are WinAnsi, which has
+   * š and ž but NOT č — so Gašper survives and Čarman does not. Embedding a
+   * font to fix that is the heaviest part of making a PDF at all, while the
+   * browser has already solved it and paginates properly besides. "Save as
+   * PDF" is the default destination in the dialog that opens.
+   *
+   * Only the fields the statement needs are handed over, one by one. Passing
+   * `user` would carry the whole KIND 0 profile — email, phone, location — into
+   * a document that leaves the building, and the next person to add a field
+   * would not see it happen.
+   */
+  const openStatement = (user: UserWithSales) => {
+    const name = resolveDisplayName(user);
+    // "Anonymous" is a real output here, not a placeholder: several
+    // counterparties have published no name at all. A bank cannot match a
+    // document to an account holder called Anonymous, so refuse rather than
+    // issue one.
+    if (!name || name === 'Anonymous') { toast.error(ADMIN_PAYOUTS.statementNoName); return; }
+    if (!user.sales.length) { toast.error(ADMIN_PAYOUTS.statementNoSales); return; }
+
+    const html = buildStatementHtml({
+      counterpartyName: name,
+      counterpartyHex: user.hexId,
+      issuedAt: new Date().toISOString(),
+      sales: user.sales.map(s => ({
+        id: s.id,
+        createdAt: s.createdAt,
+        acceptedAt: s.acceptedAt ?? null,
+        completedAt: s.completedAt ?? null,
+        settlementDueAt: s.settlementDueAt ?? null,
+        offerRef: s.offerRef ?? null,
+        round: s.round ?? null,
+        mandateSplit: s.mandateSplit ?? null,
+        lanaAmount: s.lanaAmount,
+        currency: s.currency,
+        exchangeRate: s.exchangeRate,
+        grossFiat: s.grossFiat,
+        commissionPercent: s.commissionPercent,
+        netFiat: s.netFiat,
+        txHash: s.txHash,
+        senderWalletId: s.senderWalletId ?? null,
+        treasuryWalletId: s.buybackWalletId ?? null,
+        buybackWalletId: s.buybackWalletId ?? null,
+        rpcVerified: s.rpcVerified,
+        rpcConfirmations: s.rpcConfirmations,
+        rpcBlockHeight: s.rpcBlockHeight,
+        rpcVerifiedAt: s.rpcVerifiedAt,
+        // The account as RECORDED with the payment, never the one on the
+        // profile today: a profile is cached for up to an hour and falls back
+        // to an arbitrarily old copy when a relay is quiet.
+        payouts: s.payouts.map(p => ({
+          payoutId: p.payoutId,
+          amount: p.amount,
+          currency: p.currency,
+          paidAt: p.paidAt,
+          paidToAccount: p.paidToAccount,
+          reference: p.reference,
+        })),
+      })),
+    });
+
+    const w = window.open('', '_blank');
+    if (!w) { toast.error(ADMIN_PAYOUTS.statementBlocked); return; }
+    w.document.write(html);
+    w.document.close();
+    // After the document has laid out, or the dialog opens over a blank page.
+    w.onload = () => w.print();
+    toast.success(ADMIN_PAYOUTS.statementOpened);
+  };
+
+  const mainCurrency = user.sales.length > 0 ? user.sales[0].currency : 'EUR';
               const sym = CURRENCY_SYMBOLS[mainCurrency] || mainCurrency;
               const displayName = resolveDisplayName(user);
 
@@ -734,6 +818,13 @@ const AdminPayouts = () => {
                         )}
                       </div>
 
+                      <button
+                        onClick={e => { e.stopPropagation(); openStatement(user); }}
+                        className="flex-shrink-0 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
+                        title={ADMIN_PAYOUTS.statementTitle}
+                      >
+                        {ADMIN_PAYOUTS.statementCta}
+                      </button>
                       <div className="text-right flex-shrink-0">
                         <div className="text-xs text-muted-foreground">Remaining</div>
                         <div className={`font-mono font-bold text-xl ${userRemaining > 0 ? 'text-amber-600' : 'text-muted-foreground'}`}>
