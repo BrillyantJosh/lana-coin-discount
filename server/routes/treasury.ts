@@ -282,12 +282,68 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     const currencyFilter = String(req.query.currency || '').toUpperCase() || null;
     const roundFilter = req.query.round ? Number(req.query.round) : null;
 
+    const rates = getExchangeRatesFromDb();
+    const settings = getAllAppSettings();
+
+    /**
+     * IS WHAT IS LEFT UNSOLD STILL SELLABLE BY ANYBODY?
+     *
+     * A mandate almost never settles to the exact lanoshi. Boštjan Zajc's
+     * round-1 mandate was for 32,535.08 LANA and 32,535.06 arrived: the
+     * proposal was for a figure rounded down from the mandate, and 0.02 LANA
+     * stayed behind. He has been bought out and paid — but a screen that
+     * measures "finished" by subtraction alone reads that 0.02 as unfinished
+     * business and files him beside people who have not sold anything.
+     *
+     * A remainder under min_sell_<currency> cannot be proposed at all: the
+     * offer route refuses it as BELOW_MINIMUM and the round steps over it as a
+     * crumb. So it is not owed, it is not coming, and the only honest answer
+     * about it is that this mandate is done. Judged with the SAME test the
+     * refusal uses, against the live rate, so the screen and the gate cannot
+     * disagree about the same LANA. Across the mandate's currencies, because a
+     * remainder one currency is too small for may be sellable in another.
+     */
+    const unsoldIsSellable = (lana: number, currencies: string[]): boolean => {
+      if (!(lana > 0)) return false;
+      return currencies.some(c => !proposalTooSmall(lana, rates[c] ?? null, minimumFiatFor(settings, c)));
+    };
+
     const terms = loadRoundTerms(db(), split);
     const termsByRound = new Map<number, RoundTerms>(terms.map(t => [t.round, t]));
     const allForSplit = listMandatesForSplit(db(), split);
+
+    /**
+     * FINISHED OR NOT — the same question the screen's filter asks, answered
+     * here so the rows and the money under them cannot describe different
+     * sets. It was a client-side filter for a few hours and the totals went on
+     * counting the whole round, which is what the operator saw and reported.
+     */
+    const totalsAll = offerTotalsByMandate(db(), allForSplit.map(m => m.dTag));
+    const unsoldOf = (m: typeof allForSplit[number]) =>
+      toLana(Math.max(0, m.lanaReceivedLanoshis - (totalsAll.get(m.dTag)?.settled || 0)));
+    const isPaid = (m: typeof allForSplit[number]) =>
+      !unsoldIsSellable(unsoldOf(m), [...new Set(m.wallets.map(w => w.currency))]);
+
+    // Counted over the WHOLE split, never the filtered view: these numbers sit
+    // in the filter's own labels, and a count that moved when you chose it
+    // would be telling you about the answer instead of the question.
+    const announcedAll = allForSplit.filter(m => m.status === 'announced');
+    const paidAll = announcedAll.filter(isPaid);
+    const settlementCounts = {
+      all: announcedAll.length,
+      paid: paidAll.length,
+      unpaid: announcedAll.length - paidAll.length,
+      owedLana: Math.round(
+        announcedAll.filter(m => !isPaid(m)).reduce((t, m) => t + unsoldOf(m), 0) * 100_000_000,
+      ) / 100_000_000,
+    };
+
+    const settlementFilter = String(req.query.settlement || 'all');
     let mandates = allForSplit;
     if (roundFilter) mandates = mandates.filter(m => m.round === roundFilter);
     if (currencyFilter) mandates = mandates.filter(m => m.wallets.some(w => w.currency === currencyFilter));
+    if (settlementFilter === 'paid') mandates = mandates.filter(isPaid);
+    else if (settlementFilter === 'unpaid') mandates = mandates.filter(m => !isPaid(m));
     const dTags = mandates.map(m => m.dTag);
     const consumed = consumedByMandate(db(), dTags);
     const totals = offerTotalsByMandate(db(), dTags);
@@ -346,31 +402,6 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     } catch {
       budgetMoney = null;
     }
-    const rates = getExchangeRatesFromDb();
-    const settings = getAllAppSettings();
-
-    /**
-     * IS WHAT IS LEFT UNSOLD STILL SELLABLE BY ANYBODY?
-     *
-     * A mandate almost never settles to the exact lanoshi. Boštjan Zajc's
-     * round-1 mandate was for 32,535.08 LANA and 32,535.06 arrived: the
-     * proposal was for a figure rounded down from the mandate, and 0.02 LANA
-     * stayed behind. He has been bought out and paid — but a screen that
-     * measures "finished" by subtraction alone reads that 0.02 as unfinished
-     * business and files him beside people who have not sold anything.
-     *
-     * A remainder under min_sell_<currency> cannot be proposed at all: the
-     * offer route refuses it as BELOW_MINIMUM and the round steps over it as a
-     * crumb. So it is not owed, it is not coming, and the only honest answer
-     * about it is that this mandate is done. Judged with the SAME test the
-     * refusal uses, against the live rate, so the screen and the gate cannot
-     * disagree about the same LANA. Across the mandate's currencies, because a
-     * remainder one currency is too small for may be sellable in another.
-     */
-    const unsoldIsSellable = (lana: number, currencies: string[]): boolean => {
-      if (!(lana > 0)) return false;
-      return currencies.some(c => !proposalTooSmall(lana, rates[c] ?? null, minimumFiatFor(settings, c)));
-    };
 
     const now = Math.floor(Date.now() / 1000);
     const agg = { expected: 0, remaining: 0, proposed: 0, accepted: 0, settled: 0 };
@@ -482,11 +513,14 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
       };
     });
 
-    const fundingDTags = allForSplit.filter(m => m.status === 'announced').map(m => m.dTag);
+    // The SAME rows the table shows. This read `allForSplit`, so the figures
+    // under a filtered list described the whole round instead — and with one
+    // live offer in GBP the gap was £10,358.24.
+    const fundingDTags = mandates.filter(m => m.status === 'announced').map(m => m.dTag);
     const funding = fundingByRound({
       split,
       currentSplit,
-      mandates: allForSplit.map(m => ({
+      mandates: mandates.map(m => ({
         dTag: m.dTag, round: m.round, split: m.split, status: m.status,
         wallets: m.wallets.map(w => ({ currency: w.currency, lanaLanoshis: w.lanaLanoshis, fundSettingId: w.fundSettingId })),
       })),
@@ -524,6 +558,7 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
       // What each round costs, per currency, over the whole Split — unaffected
       // by the round/currency filters above.
       funding,
+      settlementCounts,
       mandates: rows,
       updated_at: new Date().toISOString(),
     });

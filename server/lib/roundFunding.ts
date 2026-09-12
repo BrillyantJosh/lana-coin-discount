@@ -98,6 +98,8 @@ export interface CurrencyFunding {
   /** Projections: the whole round, and what is still outstanding. */
   fiatExpected: number | null;
   fiatRemaining: number | null;
+  /** What a live, unanswered offer is holding — not owed, but not gone either. */
+  fiatProposed: number | null;
   /** Real money from the offers themselves — agreed, and already paid. */
   fiatAccepted: number;
   fiatSettled: number;
@@ -259,6 +261,19 @@ export function fundingByRound(input: FundingInput): RoundFunding[] {
             : null,
           fiatExpected,
           fiatRemaining: priceFor(remaining),
+          /**
+           * RESERVED BY AN OFFER THE SELLER HAS NOT ANSWERED.
+           *
+           * `fiatRemaining` subtracts everything consumed, and a live offer
+           * counts as consumed — right for the cap, which must not be spent
+           * twice, and wrong for "what is still to pay", which is what the
+           * screen leads with. On 12 Sept 2026 that quietly took £10,358.24
+           * out of a £13,554.22 round and left £3,195.98 on screen, with no
+           * line anywhere saying where the rest had gone. It is not owed, and
+           * it is the largest thing that might become owed, so it gets its own
+           * figure rather than disappearing into a subtraction.
+           */
+          fiatProposed: priceFor(lana(t.proposed)),
           fiatAccepted: cents(t.fiatAccepted),
           fiatSettled: cents(t.fiatSettled),
           gaps,

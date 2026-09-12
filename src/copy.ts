@@ -723,6 +723,10 @@ export const ADMIN_ROUNDS = {
 } as const;
 
 export const ADMIN_MANDATES = {
+  /** The list as it stands, handed over as a sheet. */
+  exportCta: 'Export to Excel',
+  exportEmpty: 'Nothing to export — no mandate matches this selection.',
+  exportDone: 'Exported {count} rows.',
   title: 'Mandates — financer × round',
   intro:
     'Every financing budget the treasury may acquire from this Split, from the signed KIND 30960 events, with ' +
@@ -777,6 +781,12 @@ export const ADMIN_MANDATES = {
     heading: 'What round {round} still has to pay',
     stillToPay: 'still to pay',
     wholeRound: 'Whole round',
+    /**
+     * Priced by us and sent; the seller has not said yes or no. Subtracted from
+     * "still to pay" above and, until 12 Sept 2026, named nowhere — which left
+     * a £13,554.22 round reading as £3,195.98.
+     */
+    withSeller: 'With a seller, unanswered',
     agreed: 'Agreed, not yet paid',
     paid: 'Already paid',
     perLana: 'Per LANA',

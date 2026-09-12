@@ -4,9 +4,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { ADMIN_MANDATES, MANDATE, OFFER_STATUS_LABELS } from '@/copy';
-import {
-  matchesSettlement, settlementCounts, type SettlementFilter,
-} from '@/lib/mandateSettlement';
+import type { SettlementFilter } from '@/lib/mandateSettlement';
+import { toSpreadsheetXml, downloadSpreadsheet, type SheetColumn } from '@/lib/spreadsheet';
 import { fill } from '@/components/MandatePanel';
 import { knownNames, resolveNames } from '@/lib/counterpartyNames';
 import type { RoundState } from '../../server/lib/roundMandate';
@@ -61,6 +60,8 @@ interface CurrencyFunding {
   pricePerLana: number | null;
   fiatExpected: number | null;
   fiatRemaining: number | null;
+  /** Held by an offer the seller has not answered — not owed, not gone. */
+  fiatProposed: number | null;
   fiatAccepted: number;
   fiatSettled: number;
   gaps: Array<'NO_RATE' | 'NO_DISCOUNT' | 'NO_REFERENCE'>;
@@ -116,6 +117,8 @@ interface MandateRow {
   offers: MandateOffer[];
 }
 
+interface SettlementCounts { all: number; unpaid: number; paid: number; owedLana: number }
+
 interface MandatesResponse {
   split: number;
   currentSplit: number | null;
@@ -127,6 +130,8 @@ interface MandatesResponse {
   totals: { expectedLana: number; remainingLana: number; proposedLana: number; acceptedLana: number; settledLana: number };
   rounds: Array<{ round: number; opensAt: string | null; discountPercent: number | null }>;
   funding: RoundFunding[];
+  /** Over the WHOLE split, so the filter's own labels never move when chosen. */
+  settlementCounts: SettlementCounts;
   mandates: MandateRow[];
   updated_at: string;
 }
@@ -219,7 +224,7 @@ export default function AdminMandates() {
   useEffect(() => {
     if (!session || !isAdmin) return;
     load();
-  }, [session, isAdmin, split, currency, round]);
+  }, [session, isAdmin, split, currency, round, settlement]);
 
   const load = async () => {
     if (!session) return;
@@ -229,6 +234,10 @@ export default function AdminMandates() {
       if (split !== null) q.set('split', String(split));
       if (currency) q.set('currency', currency);
       if (round) q.set('round', round);
+      // The filter goes to the server, so the rows and the money under them
+      // are always the same set. It was decided in the browser for a few
+      // hours, and the totals went on describing the whole round.
+      if (settlement !== 'all') q.set('settlement', settlement);
       const res = await fetch(`/api/treasury/admin/mandates?${q.toString()}`, { headers: { 'x-admin-hex-id': session.nostrHexId } });
       const json: MandatesResponse & { error?: string } = await res.json();
       if (!res.ok || json.error) throw new Error(json.error || 'Failed to load mandates');
@@ -503,24 +512,82 @@ export default function AdminMandates() {
     );
   };
 
-  const mandatesOfRound = (r: number) =>
-    (data?.mandates || []).filter(m => m.round === r && matchesSettlement(m, settlement));
-  /** Counted over everything the server sent, so the numbers do not move when a choice is made. */
-  const settled = settlementCounts(data?.mandates || []);
+  const mandatesOfRound = (r: number) => (data?.mandates || []).filter(m => m.round === r);
+  /** Counted over the WHOLE split by the server, so a label never moves when it is chosen. */
+  const settled = data?.settlementCounts || { all: 0, unpaid: 0, paid: 0, owedLana: 0 };
   const fundingOfRound = (r: number) => (data?.funding || []).find(f => f.round === r) || null;
   const roundsShown = [...new Set(
     settlement === 'all'
       ? [
           ...(data?.mandates || []).map(m => m.round),
-          // A round with mandates but none in THIS view still has a header,
-          // because its funding line is about the round, not about the rows.
           ...(data?.funding || []).filter(f => f.mandateCount > 0).map(f => f.round),
         ]
       // Filtered, a round whose every row was filtered out has nothing to say:
       // its header over an empty space reads as "none of these are paid", which
       // is a different claim from "these are the paid ones".
-      : (data?.mandates || []).filter(m => matchesSettlement(m, settlement)).map(m => m.round),
+      : (data?.mandates || []).map(m => m.round),
   )].sort((a, b) => a - b);
+
+  /**
+   * THE LIST AS IT STANDS, AS A SPREADSHEET.
+   *
+   * One line per financer PER CURRENCY, because that is the grain the money is
+   * kept at — a mandate holding EUR and GBP has two prices and no single one,
+   * and flattening it to one line would invent a figure.
+   *
+   * It exports what is on screen and nothing else: the same split, the same
+   * round, the same currency, the same finished-or-not choice. An export that
+   * quietly carried more than the list it came from would be read as the list.
+   */
+  const exportColumns: SheetColumn<{ m: MandateRow; money: MandateMoney | null }>[] = [
+    { header: 'Financer', value: r => names[r.m.financerHex] || '' },
+    { header: 'Nostr hex', value: r => r.m.financerHex },
+    { header: 'Split', value: r => r.m.split },
+    { header: 'Round', value: r => r.m.round },
+    { header: 'Status', value: r => r.m.status },
+    { header: 'State', value: r => r.m.state },
+    { header: 'Currency', value: r => r.money?.currency ?? '' },
+    { header: 'Wallets', value: r => r.m.wallets.map(w => w.address).join(' ') },
+    { header: 'Received (LANA)', value: r => r.m.expectedLana },
+    { header: 'Settled (LANA)', value: r => r.m.settledLana },
+    { header: 'Accepted (LANA)', value: r => r.m.acceptedLana },
+    { header: 'Proposed (LANA)', value: r => r.m.proposedLana },
+    { header: 'Unsold (LANA)', value: r => r.m.unsoldLana },
+    { header: 'Still sellable', value: r => (r.m.unsoldSellable ? 'yes' : 'no') },
+    { header: 'Remaining cap (LANA)', value: r => r.m.remainingLana },
+    { header: 'Paid in', value: r => r.money?.paidIn ?? null },
+    { header: 'Will receive', value: r => r.money?.payout ?? null },
+    { header: 'Return %', value: r => r.money?.returnPercent ?? null },
+    { header: 'Discount %', value: r => r.m.discountPercent },
+    { header: 'Opens at', value: r => r.m.opensAt ?? '' },
+    { header: 'Offers', value: r => r.m.offers.length },
+    { header: 'Restricted', value: r => (r.m.restricted ? r.m.restricted.reason : '') },
+    { header: 'Warnings', value: r => r.m.warnings.join(' ') },
+    { header: 'Mandate ref', value: r => r.m.mandateRef },
+    { header: 'Event id', value: r => r.m.eventId },
+  ];
+
+  const exportRows = () => {
+    const shown = roundsShown.flatMap(mandatesOfRound);
+    return shown.flatMap(m => (m.money.length ? m.money.map(money => ({ m, money })) : [{ m, money: null }]));
+  };
+
+  const exportXls = () => {
+    const rows = exportRows();
+    if (rows.length === 0) { toast.error(ADMIN_MANDATES.exportEmpty); return; }
+    // The name carries the selection, so two exports taken minutes apart are
+    // never mistaken for one another once they are sitting in a folder.
+    const parts = [`split-${data?.split ?? split ?? '?'}`];
+    if (round) parts.push(`round-${round}`);
+    if (currency) parts.push(currency.toLowerCase());
+    if (settlement !== 'all') parts.push(settlement);
+    parts.push((data?.updated_at || new Date().toISOString()).slice(0, 10));
+    downloadSpreadsheet(
+      `mandates-${parts.join('-')}.xls`,
+      toSpreadsheetXml(`Split ${data?.split ?? ''} mandates`, exportColumns, rows),
+    );
+    toast.success(fill(ADMIN_MANDATES.exportDone, { count: rows.length }));
+  };
 
   /** What one round still has to pay, per currency, under the list of its mandates. */
   const renderFunding = (f: RoundFunding | null) => {
@@ -552,6 +619,17 @@ export default function AdminMandates() {
                   <dt>{ADMIN_MANDATES.funding.wholeRound}</dt>
                   <dd className="font-mono">{fmtFiat(c.fiatExpected, c.currency)} · {fmtLana(c.lanaExpected)} LANA</dd>
                 </div>
+                {/* WHERE THE REST OF THE ROUND WENT. The figure above is what
+                    nobody has claimed; this is what a seller has been offered
+                    and has not answered. It is subtracted from that figure and
+                    used to be named nowhere, so a £13,554.22 round read as
+                    £3,195.98 with £10,358.24 unaccounted for. */}
+                {c.lanaProposed > 0 && (
+                  <div className="flex justify-between gap-3 text-amber-700 dark:text-amber-400">
+                    <dt>{ADMIN_MANDATES.funding.withSeller}</dt>
+                    <dd className="font-mono">{fmtFiat(c.fiatProposed, c.currency)} · {fmtLana(c.lanaProposed)} LANA</dd>
+                  </div>
+                )}
                 {c.lanaAccepted > 0 && (
                   <div className="flex justify-between gap-3">
                     <dt>{ADMIN_MANDATES.funding.agreed}</dt>
@@ -681,6 +759,12 @@ export default function AdminMandates() {
             <option value="unpaid">Not yet acquired ({settled.unpaid})</option>
             <option value="paid">Fully acquired ({settled.paid})</option>
           </select>
+          <button
+            onClick={exportXls}
+            className="rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
+          >
+            {ADMIN_MANDATES.exportCta}
+          </button>
           <span className="text-xs text-muted-foreground">
             {(data?.rounds || []).map(r => `R${r.round}: ${r.opensAt ? fmtUtc(r.opensAt) : 'no date'} / ${r.discountPercent ?? '—'}%`).join(' · ')}
           </span>
