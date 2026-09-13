@@ -704,38 +704,35 @@ export const ADMIN_ROUNDS = {
     'While this is on, offers are accepted only from LanaPays.Us wallets. A Main Wallet or a Wallet cannot be chosen on the offer page, and an offer made from one is refused.',
   lanapaysOnlyOn:
     'This applies to every Split and outranks the round dates below: with it on, a wallet outside LanaPays.Us is refused even when its round is open.',
-  title: 'Round dates & discounts',
+  title: 'Round payout dates',
   intro:
-    'One date and one discount per financing round, per Split. From its date the treasury accepts proposals ' +
+    'When each financing round of a Split is paid out. From its date the treasury accepts proposals ' +
     'from that round, up to the LANA each budget received.',
   banner: 'A date OPENS a mandate; it grants no right to sell (BEF P08 §8).',
   splitLabel: 'Split',
   liveSplit: 'Split {split} — live window',
   upcomingSplit: 'Split {split} — upcoming (opens after the Split)',
-  opensLabel: 'Opens (UTC)',
-  discountLabel: 'Acquisition discount %',
-  prefill: 'Prefill from Direct Fund',
-  prefillNone: 'Direct Fund suggests nothing for the empty fields.',
-  prefillUnreachable: 'Direct Fund could not be reached; no suggestions.',
-  bandWarning: 'Outside the BEF P08 §4 orientation band of {min}–{max} %.',
-  save: 'Save round terms',
-  saved: 'Round terms saved',
-  // Since 13 Sept 2026 the owner publishes these in KIND 38888 (split_payout).
+  opensLabel: 'Payouts open (UTC)',
+  notDated: 'No date — closed',
+  // 13 Sept 2026: dates AND sell fees are published in KIND 38888 only; the
+  // fees are not shown here at all (owner: "da ne bo zmede").
   publishedUrl: 'https://lananostr.site/update-lana-system-parameters',
   publishedTitle: 'Published in KIND 38888',
   publishedBody:
-    'The dates and discounts for Split {split} come from the Lana System Parameters (KIND 38888). ' +
+    'The payout dates and the sell fee of every round of Split {split} are published in the Lana System Parameters (KIND 38888). ' +
     'They are changed only there — open the form on lananostr.site, section "Payouts", publish, ' +
-    'and lana.discount takes the new terms over within a minute.',
+    'and lana.discount takes them over within a minute.',
   publishedCta: 'Open the form on lananostr.site',
   publishedEvent: 'Event {event}, published {when}',
+  notPublishedTitle: 'Not published in KIND 38888 yet',
   notPublished:
-    'Split {split} is not published in KIND 38888 yet, so the terms below are the ones saved on this page. ' +
-    'Once its payouts are published on lananostr.site, they replace these and this form becomes read-only.',
+    'No payout dates or sell fees have been published for Split {split}, so none of its rounds can be paid out. ' +
+    'Publish them on lananostr.site, section "Payouts".',
   refusedTitle: 'KIND 38888 carries terms for this Split that lana.discount refused',
-  refusedBody: 'Nothing was changed; the terms below are the last good ones. Fix it on lananostr.site: {reason}',
+  refusedBody: 'Nothing was changed; the dates below are the last good ones. Fix it on lananostr.site: {reason}',
   lastChangeEvent: 'KIND 38888',
   saveScope: 'Save',
+  savedScope: 'Saved',
 } as const;
 
 /** The payouts screen — the one place a document about a person is produced. */

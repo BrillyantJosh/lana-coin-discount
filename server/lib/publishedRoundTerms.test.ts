@@ -3,8 +3,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import type Database from 'better-sqlite3';
 import {
   parseSplitPayouts, applyPublishedRoundTerms, isSplitPublishedIn38888, publishedTermsStatus,
-  SYSTEM_PARAMETERS_PUBKEY,
+  SYSTEM_PARAMETERS_PUBKEY, parseGeneralFee,
 } from './publishedRoundTerms';
+import { setSetting } from './roundMandateTestKit';
 import { createMandateTestDb, makeKey, signEvent, setRoundTerms } from './roundMandateTestKit';
 import { loadRoundTerms } from './roundMandateSync';
 
@@ -208,5 +209,66 @@ describe('copying the published terms into the database', () => {
       // Signed by our test key, so under the real pin it must not count.
       expect(applyPublishedRoundTerms(db, event38888(SPLIT_8))).toMatchObject({ outcome: 'ignored', reason: 'unverified' });
     });
+  });
+});
+
+/**
+ * The Lana.discount general fee, 13 Sept 2026: one published number instead of
+ * the two commission fields on /admin/settings.
+ */
+describe('the general fee', () => {
+  let db: Database.Database;
+  const authority = makeKey();
+  const apply = (event: any) => applyPublishedRoundTerms(db, event, { author: authority.pub });
+  const event38888 = (tags: string[][], createdAt = 1_789_300_000) =>
+    signEvent(authority, { kind: 38888, tags: [['d', 'main'], ['split', '9'], ...tags], content: '{}', created_at: createdAt });
+  const setting = (key: string) => db.prepare('SELECT value, updated_by FROM app_settings WHERE key = ?').get(key) as any;
+
+  beforeEach(() => {
+    db = createMandateTestDb();
+    setSetting(db, 'commission_other', '30');
+    setSetting(db, 'commission_lanapays', '22');
+  });
+
+  it('reads a plain percent, and says why anything else is not one', () => {
+    expect(parseGeneralFee([['lana_discount_general_fee_percent', '30']])).toEqual({ value: 30, rejected: null });
+    expect(parseGeneralFee([['lana_discount_general_fee_percent', '27.5']]).value).toBe(27.5);
+    expect(parseGeneralFee([])).toEqual({ value: null, rejected: null });
+    expect(parseGeneralFee([['lana_discount_general_fee_percent', '30,5']]).rejected).toMatch(/not a percent/);
+    expect(parseGeneralFee([['lana_discount_general_fee_percent', '130']]).rejected).toMatch(/not a percent/);
+  });
+
+  it('becomes the fee for other wallets AND for a LanaPays.Us proposal without a mandate', () => {
+    const e = event38888([['lana_discount_general_fee_percent', '30']]);
+    const r = apply(e);
+    expect(r.generalFee).toEqual({ published: 30, changed: true, rejected: null, rejectedChanged: false });
+    expect(setting('commission_other')).toEqual({ value: '30', updated_by: `kind38888:${e.id}` });
+    expect(setting('commission_lanapays')).toEqual({ value: '30', updated_by: `kind38888:${e.id}` });
+    // The same event a minute later writes nothing.
+    expect(apply(event38888([['lana_discount_general_fee_percent', '30']], 1_789_300_060)).generalFee.changed).toBe(false);
+  });
+
+  it('an event without the tag leaves the fee as it was', () => {
+    apply(event38888([]));
+    expect(setting('commission_lanapays').value).toBe('22');
+    expect(setting('commission_other').value).toBe('30');
+  });
+
+  it('a malformed fee changes nothing, and is reported once', () => {
+    apply(event38888([['lana_discount_general_fee_percent', '25']], 1_789_300_000));
+    const r = apply(event38888([['lana_discount_general_fee_percent', '25,5']], 1_789_300_100));
+    expect(r.generalFee).toMatchObject({ published: null, changed: false, rejectedChanged: true });
+    expect(setting('commission_other').value).toBe('25');
+    expect(apply(event38888([['lana_discount_general_fee_percent', '25,5']], 1_789_300_200)).generalFee.rejectedChanged).toBe(false);
+  });
+
+  it('an older event does not bring an old fee back, and a stranger sets nothing', () => {
+    apply(event38888([['lana_discount_general_fee_percent', '30']], 1_789_300_100));
+    apply(event38888([['lana_discount_general_fee_percent', '10']], 1_789_300_000));
+    expect(setting('commission_other').value).toBe('30');
+    const stranger = makeKey();
+    const forged = signEvent(stranger, { kind: 38888, tags: [['lana_discount_general_fee_percent', '5']], content: '{}', created_at: 1_789_400_000 });
+    apply(forged);
+    expect(setting('commission_other').value).toBe('30');
   });
 });

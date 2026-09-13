@@ -11,9 +11,9 @@
  *                                          KIND 30960 (informational there;
  *                                          authoritative here).
  *            POST /mandates/ingest        Bearer ldk_ — the push road.
- *   admin    GET/PUT /admin/rounds        one date + one discount per round;
- *                                          read-only for a split whose terms
- *                                          came from KIND 38888 split_payout
+ *   admin    GET /admin/rounds            round payout dates, read-only (KIND 38888
+ *                                          split_payout); PUT saves only the
+ *                                          LanaPays.Us-only switch
  *            GET /admin/mandates          the worklist that replaces
  *                                          the old expecting-cash-out report
  *            POST /admin/mandates/:d/release
@@ -36,10 +36,9 @@ import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
 import { requireAdmin } from '../lib/adminAuth.js';
 import { isSplitPublishedIn38888, publishedTermsStatus } from '../lib/publishedRoundTerms.js';
 import { requireApiKey } from '../lib/apiKeyAuth.js';
-import { DIRECT_FUND_URL } from '../lib/directFund.js';
 import { fetchBatchBalances as realFetchBatchBalances } from '../lib/electrum.js';
 import {
-  roundState, validateRoundTerms, remainingOf, type RoundTerms,
+  roundState, remainingOf, type RoundTerms,
 } from '../lib/roundMandate.js';
 import { ingestMandateEvent, pullRoundMandates, listMandatesForSplit, loadRoundTerms, loadReleases } from '../lib/roundMandateSync.js';
 import { consumedByMandate, offerRowsForFunding, offerTotalsByMandate } from '../lib/acquisitionOffer.js';
@@ -170,56 +169,26 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
   // ── admin: round terms ──────────────────────────────────────────────
 
   /**
-   * Prefill from direct.lana.fund's public rounds (fee_percent) — a
-   * suggestion into EMPTY fields only. A stored discount is the admin's
-   * decision and is never overwritten by a fetch.
+   * Round payout dates, read-only. Since 13 Sept 2026 the dates and the sell
+   * fee of every round are published in KIND 38888 (split_payout) and taken
+   * over by publishedRoundTerms.ts; the owner asked for the fees to leave this
+   * page altogether, so nobody wonders which of two numbers counts. What stays
+   * editable here is the one switch the event does not carry.
    */
-  async function directFundFees(): Promise<{ fees: Map<number, number>; reachable: boolean }> {
-    const fees = new Map<number, number>();
-    try {
-      const resp = await fetch(`${DIRECT_FUND_URL}/api/public/rounds`, { signal: AbortSignal.timeout(5000) });
-      if (!resp.ok) return { fees, reachable: false };
-      const data: any = await resp.json();
-      const byCur: Record<string, any[]> = data?.by_currency || {};
-      // One discount per round for all currencies (owner's decision 2); EUR
-      // is the reference listing, any other currency only fills a gap.
-      const order = ['EUR', ...Object.keys(byCur).filter(c => c !== 'EUR')];
-      for (const cur of order) {
-        for (const r of byCur[cur] || []) {
-          const round = Number(r?.round);
-          const fee = Number(r?.fee_percent);
-          if (Number.isInteger(round) && round >= 1 && round <= 3 && Number.isFinite(fee) && fee > 0 && !fees.has(round)) {
-            fees.set(round, fee);
-          }
-        }
-      }
-      return { fees, reachable: true };
-    } catch {
-      return { fees, reachable: false };
-    }
-  }
-
-  router.get('/admin/rounds', async (req: Request, res: Response) => {
+  router.get('/admin/rounds', (req: Request, res: Response) => {
     if (!requireAdmin(req, res)) return;
     const currentSplit = currentSplitNumber();
-    // Opens on the split being paid out, not the one still running: terms for
-    // Split S are entered once the chain is in S+1 (owner, 11 Sept 2026).
+    // Opens on the split being paid out, not the one still running (owner, 11 Sept 2026).
     const split = parseSplitParam(req.query.split, currentSplit === null ? null : currentSplit - BUYBACK_SPLIT_OFFSET);
     if (split === null) return res.status(400).json({ error: 'split must be a positive integer' });
 
     const stored = termsRows(split);
     const published = publishedTermsStatus(db());
-    const df = await directFundFees();
     const rounds = [1, 2, 3].map(round => {
       const row = stored.find(r => Number(r.round) === round);
-      const storedDiscount = row?.discount_percent ?? null;
-      const suggested = df.fees.get(round) ?? null;
       return {
         round,
         opensAt: row?.opens_at ?? null,
-        discountPercent: storedDiscount,
-        // Filled ONLY where the stored field is empty.
-        prefillDiscountPercent: storedDiscount === null ? suggested : null,
         updatedBy: row?.updated_by ?? null,
         updatedAt: row?.updated_at ?? null,
       };
@@ -227,11 +196,8 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     return res.json({
       split,
       currentSplit,
-      directFundReachable: df.reachable,
       rounds,
       lanapaysOnly: lanapaysOnlyEnabled(getAppSetting(LANAPAYS_ONLY_KEY)),
-      // Where these terms are set. Once KIND 38888 carries a split, it is the
-      // only place they change; this page shows them and says where to go.
       publishedIn38888: isSplitPublishedIn38888(db(), split),
       kind38888: {
         eventId: published.eventId,
@@ -244,51 +210,24 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
   router.put('/admin/rounds', (req: Request, res: Response) => {
     const adminHex = requireAdmin(req, res);
     if (!adminHex) return;
-    const split = parseSplitParam(req.body?.split, null);
-    if (split === null) return res.status(400).json({ error: 'split must be a positive integer' });
 
-    // Only written when the field is actually present. A caller that sends just
-    // the rounds — an older page, a script — must not silently switch the
-    // treasury's scope back on or off as a side effect of saving dates.
-    const scopeSent = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'lanapaysOnly');
-    const lanapaysOnly = scopeSent ? req.body.lanapaysOnly === true : null;
-    const roundsSent = req.body?.rounds !== undefined;
-    const writeScope = () => {
-      if (lanapaysOnly === null) return;
-      setAppSetting(LANAPAYS_ONLY_KEY, lanapaysOnly ? '1' : '0', adminHex);
-      console.log(`[lana-discount] Acquiring ${lanapaysOnly ? 'ONLY from LanaPays.Us wallets' : 'from every sellable wallet class'} — set by ${adminHex.slice(0, 12)}…`);
-    };
-
-    // The scope switch lives on this page too, and must stay usable for a split
-    // whose terms are published elsewhere: a request with no rounds saves it alone.
-    if (!roundsSent && lanapaysOnly !== null) {
-      writeScope();
-      return res.json({ ok: true, split, rounds: termsRows(split), warnings: [], lanapaysOnly: lanapaysOnlyEnabled(getAppSetting(LANAPAYS_ONLY_KEY)) });
-    }
-
-    if (isSplitPublishedIn38888(db(), split)) {
+    // Round terms are published in KIND 38888 only. A request that still
+    // carries them — an old page left open, a script — is refused whole.
+    if (req.body?.rounds !== undefined) {
       return res.status(409).json({
-        code: 'PUBLISHED_IN_KIND_38888',
-        error: `Round terms for Split ${split} are published in KIND 38888. Change them on lananostr.site (Update Lana System Parameters → Payouts); lana.discount takes them over within a minute.`,
+        code: 'ROUND_TERMS_FROM_KIND_38888',
+        error: 'Round dates and sell fees are published in KIND 38888. Change them on lananostr.site (Update Lana System Parameters → Payouts); lana.discount takes them over within a minute.',
       });
     }
 
-    const v = validateRoundTerms(req.body?.rounds);
-    if (!v.ok) return res.status(400).json({ error: v.error, warnings: v.warnings });
-
-    const upsert = db().prepare(`
-      INSERT INTO acquisition_rounds (split, round, opens_at, discount_percent, updated_by, updated_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(split, round) DO UPDATE SET
-        opens_at = excluded.opens_at, discount_percent = excluded.discount_percent,
-        updated_by = excluded.updated_by, updated_at = datetime('now')
-    `);
-    db().transaction(() => {
-      for (const r of v.rows) upsert.run(split, r.round, r.opensAt, r.discountPercent, adminHex);
-      writeScope();
-    })();
-    console.log(`[lana-discount] Round terms for Split ${split} set by ${adminHex.slice(0, 12)}… (${v.rows.map(r => `R${r.round}:${r.opensAt ?? '-'}/${r.discountPercent ?? '-'}%`).join(' ')})`);
-    return res.json({ ok: true, split, rounds: termsRows(split), warnings: v.warnings, lanapaysOnly: lanapaysOnlyEnabled(getAppSetting(LANAPAYS_ONLY_KEY)) });
+    // Only written when the field is actually present, so a request without it
+    // can never switch the treasury's scope as a side effect.
+    const scopeSent = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'lanapaysOnly');
+    if (!scopeSent) return res.status(400).json({ error: 'nothing to save' });
+    const lanapaysOnly = req.body.lanapaysOnly === true;
+    setAppSetting(LANAPAYS_ONLY_KEY, lanapaysOnly ? '1' : '0', adminHex);
+    console.log(`[lana-discount] Acquiring ${lanapaysOnly ? 'ONLY from LanaPays.Us wallets' : 'from every sellable wallet class'} — set by ${adminHex.slice(0, 12)}…`);
+    return res.json({ ok: true, lanapaysOnly: lanapaysOnlyEnabled(getAppSetting(LANAPAYS_ONLY_KEY)) });
   });
 
   // ── admin: worklist ─────────────────────────────────────────────────

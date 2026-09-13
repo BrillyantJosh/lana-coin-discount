@@ -824,16 +824,16 @@ describe('/api/treasury', () => {
     expect(m.unsoldSellable).toBe(true);
   });
 
-  it('PUT /admin/rounds validates and warns', async () => {
-    const bad = await fetch(base + '/api/treasury/admin/rounds', { method: 'PUT', headers: { 'content-type': 'application/json', 'x-admin-hex-id': ADMIN },
-      body: JSON.stringify({ split: 8, rounds: [{ round: 1, opensAt: '2026-09-21T00:00:00Z', discountPercent: 22 }, { round: 2, opensAt: '2026-09-14T00:00:00Z', discountPercent: 25 }] }) });
-    expect(bad.status).toBe(400);
-    const ok = await fetch(base + '/api/treasury/admin/rounds', { method: 'PUT', headers: { 'content-type': 'application/json', 'x-admin-hex-id': ADMIN },
-      body: JSON.stringify({ split: 8, rounds: [{ round: 1, opensAt: '2026-09-14T22:00:00Z', discountPercent: 21 }, { round: 2, opensAt: null, discountPercent: 25 }] }) });
-    const body: any = await ok.json();
-    expect(ok.status).toBe(200);
-    expect(body.warnings).toHaveLength(1);
-    expect(body.rounds.find((x: any) => x.round === 1).discount_percent).toBe(21);
+  /**
+   * 13 Sept 2026: dates and sell fees are published in KIND 38888 only, and
+   * the owner asked for the fees to leave the admin page "da ne bo zmede".
+   */
+  it('PUT /admin/rounds no longer takes round terms, for any split', async () => {
+    const r = await fetch(base + '/api/treasury/admin/rounds', { method: 'PUT', headers: { 'content-type': 'application/json', 'x-admin-hex-id': ADMIN },
+      body: JSON.stringify({ split: 9, rounds: [{ round: 1, opensAt: '2026-09-14T22:00:00Z', discountPercent: 21 }] }) });
+    expect(r.status).toBe(409);
+    expect(((await r.json()) as any).code).toBe('ROUND_TERMS_FROM_KIND_38888');
+    expect(db.prepare('SELECT COUNT(*) c FROM acquisition_rounds WHERE split = 9').get()).toEqual({ c: 0 });
   });
 
   /**
@@ -866,14 +866,16 @@ describe('/api/treasury', () => {
       const r = await get('/api/treasury/admin/rounds?split=8', { 'x-admin-hex-id': ADMIN });
       expect(r.body.publishedIn38888).toBe(true);
       expect(r.body.kind38888).toMatchObject({ eventId: e.id, createdAt: 1_789_300_000, rejected: [] });
-      expect(r.body.rounds[0]).toMatchObject({ round: 1, opensAt: '2026-09-09T05:33:20.000Z', discountPercent: 22 });
+      expect(r.body.rounds[0]).toMatchObject({ round: 1, opensAt: '2026-09-09T05:33:20.000Z' });
+      // The fee is not on this page at all.
+      expect(JSON.stringify(r.body)).not.toMatch(/discount/i);
     });
 
     it('refuses to overwrite them from the form', async () => {
       publishSplit8();
       const r = await put({ split: 8, rounds: [{ round: 1, opensAt: '2026-09-14T22:00:00Z', discountPercent: 30 }] });
       expect(r.status).toBe(409);
-      expect(r.body.code).toBe('PUBLISHED_IN_KIND_38888');
+      expect(r.body.code).toBe('ROUND_TERMS_FROM_KIND_38888');
       expect((db.prepare('SELECT discount_percent FROM acquisition_rounds WHERE split = 8 AND round = 1').get() as any).discount_percent).toBe(22);
     });
 
@@ -885,10 +887,10 @@ describe('/api/treasury', () => {
       expect((db.prepare('SELECT discount_percent FROM acquisition_rounds WHERE split = 8 AND round = 1').get() as any).discount_percent).toBe(22);
     });
 
-    it('a split the event does not carry is still typed here', async () => {
+    it('a split the event does not carry is not typed here either', async () => {
       publishSplit8();
       const r = await put({ split: 9, rounds: [{ round: 1, opensAt: null, discountPercent: 21 }] });
-      expect(r.status).toBe(200);
+      expect(r.status).toBe(409);
     });
 
     it('a request with neither rounds nor the switch is still refused', async () => {

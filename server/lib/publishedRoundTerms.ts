@@ -42,6 +42,17 @@
  *    rows carry `kind38888:<event id>` in updated_by, and the admin form refuses
  *    to overwrite them — two places to change one number means the one you
  *    changed is silently put back a minute later.
+ *
+ * ── The general fee (owner, 13 Sept 2026) ────────────────────────────────
+ *
+ *   ["lana_discount_general_fee_percent", "30"]
+ *
+ * The discount for every acquisition outside a round mandate. It used to be
+ * two fields on /admin/settings (other wallets 30, LanaPays.Us without a
+ * mandate 22); now it is one published number, written into both settings
+ * the pricing already reads. Same rules: only the verified event, never an
+ * older one, a malformed value changes nothing, and an event without the tag
+ * leaves the fee as it was.
  */
 import type Database from 'better-sqlite3';
 import { verifyEventSignature, type NostrEvent } from './nostr.js';
@@ -53,7 +64,12 @@ export const SPLIT_PAYOUT_TAG = 'split_payout';
 /** updated_by on acquisition_rounds rows written from the event. */
 export const PUBLISHED_SOURCE_PREFIX = 'kind38888:';
 
+export const GENERAL_FEE_TAG = 'lana_discount_general_fee_percent';
+/** The settings priceAcquisition and the external sale API read — both follow the one published fee. */
+export const GENERAL_FEE_SETTINGS = ['commission_other', 'commission_lanapays'] as const;
+
 const SETTING_EVENT_ID = 'acq_terms_38888_event_id';
+const SETTING_GENERAL_FEE_REJECTED = 'acq_general_fee_38888_rejected';
 const SETTING_CREATED_AT = 'acq_terms_38888_created_at';
 const SETTING_REJECTED = 'acq_terms_38888_rejected';
 
@@ -172,6 +188,26 @@ export interface ApplyPublishedTermsResult {
   rejected: RejectedSplit[];
   /** True when the rejection list differs from the last one — log it once, not every minute. */
   rejectedChanged: boolean;
+  generalFee: {
+    /** The fee the event publishes, or null when it carries none (or a broken one). */
+    published: number | null;
+    /** The settings were written this time. */
+    changed: boolean;
+    /** Why a published value was not used; null when there is nothing wrong. */
+    rejected: string | null;
+    rejectedChanged: boolean;
+  };
+}
+
+/** The general fee as the event carries it: a number, nothing, or why not. */
+export function parseGeneralFee(tags: unknown): { value: number | null; rejected: string | null } {
+  const tag = (Array.isArray(tags) ? tags : []).find((t: any) => Array.isArray(t) && t[0] === GENERAL_FEE_TAG);
+  if (!tag) return { value: null, rejected: null };
+  const raw = String(tag[1] ?? '').trim();
+  if (!PLAIN_NUMBER.test(raw) || Number(raw) > 100) {
+    return { value: null, rejected: `general fee "${raw}" is not a percent between 0 and 100` };
+  }
+  return { value: Number(raw), rejected: null };
 }
 
 const getSetting = (db: Database.Database, key: string): string | null =>
@@ -202,7 +238,10 @@ export function applyPublishedRoundTerms(
 ): ApplyPublishedTermsResult {
   const author = opts.author ?? SYSTEM_PARAMETERS_PUBKEY;
   const nothing = (reason: ApplyPublishedTermsResult['reason']): ApplyPublishedTermsResult =>
-    ({ outcome: 'ignored', reason, changed: [], unchanged: [], rejected: [], rejectedChanged: false });
+    ({
+      outcome: 'ignored', reason, changed: [], unchanged: [], rejected: [], rejectedChanged: false,
+      generalFee: { published: null, changed: false, rejected: null, rejectedChanged: false },
+    });
 
   if (!event || event.kind !== 38888 || event.pubkey !== author || !verifyEventSignature(event)) {
     return nothing('unverified');
@@ -227,6 +266,10 @@ export function applyPublishedRoundTerms(
   const previousRejected = getSetting(db, SETTING_REJECTED) || '[]';
   const rejectedJson = JSON.stringify(rejected);
 
+  const fee = parseGeneralFee(event.tags);
+  const previousFeeRejected = getSetting(db, SETTING_GENERAL_FEE_REJECTED) || '';
+  let feeChanged = false;
+
   db.transaction(() => {
     for (const s of splits) {
       const stored = readRows.all(s.split) as any[];
@@ -241,12 +284,32 @@ export function applyPublishedRoundTerms(
       for (const r of s.rounds) upsert.run(s.split, r.round, r.opensAt, r.discountPercent, source);
       changed.push(s.split);
     }
+    if (fee.value !== null) {
+      const text = String(fee.value);
+      for (const key of GENERAL_FEE_SETTINGS) {
+        const row = db.prepare('SELECT value, updated_by FROM app_settings WHERE key = ?').get(key) as any;
+        if (row && row.value === text && String(row.updated_by || '').startsWith(PUBLISHED_SOURCE_PREFIX)) continue;
+        db.prepare(`INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES (?, ?, datetime('now'), ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now'), updated_by = excluded.updated_by`)
+          .run(key, text, source);
+        feeChanged = true;
+      }
+    }
+    putSetting(db, SETTING_GENERAL_FEE_REJECTED, fee.rejected ?? '');
     putSetting(db, SETTING_EVENT_ID, event.id);
     putSetting(db, SETTING_CREATED_AT, String(event.created_at));
     putSetting(db, SETTING_REJECTED, rejectedJson);
   })();
 
-  return { outcome: 'applied', changed, unchanged, rejected, rejectedChanged: previousRejected !== rejectedJson };
+  return {
+    outcome: 'applied', changed, unchanged, rejected, rejectedChanged: previousRejected !== rejectedJson,
+    generalFee: {
+      published: fee.value,
+      changed: feeChanged,
+      rejected: fee.rejected,
+      rejectedChanged: (fee.rejected ?? '') !== previousFeeRejected,
+    },
+  };
 }
 
 /** Did this split's terms come from KIND 38888? Then only KIND 38888 changes them. */

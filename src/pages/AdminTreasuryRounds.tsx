@@ -5,29 +5,23 @@ import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { ADMIN_ROUNDS } from '@/copy';
 import { fill } from '@/components/MandatePanel';
-import { DISCOUNT_BAND } from '../../server/lib/roundMandate';
 
 /**
- * ROUND DATES & DISCOUNTS — the terms of the financing-round mandate.
+ * ROUND PAYOUT DATES — read-only.
  *
- * One date and one discount per round, per Split (owner's decisions 1 and 2,
- * 4 Sep 2026). Since 13 Sept 2026 the owner publishes them in KIND 38888
- * (split_payout) and the server copies them in; for such a split this page is
- * read-only and says where to change them. A split never published there is
- * still typed here. The KIND 30960 event only echoes them. A date OPENS a
- * mandate and grants no right to sell (BEF P08 §8); the discount is
- * orientation within the P08 §4 band and is flagged, not refused, outside it.
+ * One date per financing round, per Split (owner's decision 2, 4 Sep 2026).
+ * Since 13 Sept 2026 the dates and each round's sell fee are published in
+ * KIND 38888 (split_payout) and taken over by the server; the owner asked for
+ * the fees to leave this page entirely, "da ne bo zmede". The page shows the
+ * dates and where they come from, and keeps the one switch the event does not
+ * carry: whether the treasury acquires only from LanaPays.Us wallets.
  *
- * Dates are entered as UTC. A datetime-local input has no zone of its own,
- * so the value is read and written as if it were UTC — the field label says
- * so, and the ISO the server stores is what it shows back.
+ * Dates are shown in UTC, as they are published.
  */
 
 interface RoundRow {
   round: number;
   opensAt: string | null;
-  discountPercent: number | null;
-  prefillDiscountPercent: number | null;
   updatedBy: string | null;
   updatedAt: string | null;
 }
@@ -35,7 +29,6 @@ interface RoundRow {
 interface RoundsResponse {
   split: number;
   currentSplit: number | null;
-  directFundReachable: boolean;
   rounds: RoundRow[];
   /**
    * Not a round term — a treasury-wide switch that happens to belong on this
@@ -43,7 +36,7 @@ interface RoundsResponse {
    * app_settings, not in acquisition_rounds, and it applies to every split.
    */
   lanapaysOnly?: boolean;
-  /** The terms of this split came from KIND 38888 — change them there, not here. */
+  /** The terms of this split came from KIND 38888. */
   publishedIn38888?: boolean;
   kind38888?: {
     eventId: string | null;
@@ -53,23 +46,8 @@ interface RoundsResponse {
   };
 }
 
-/** ISO → "YYYY-MM-DDTHH:mm" in UTC, for a datetime-local input. */
-function isoToLocalUtc(iso: string | null): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '';
-  return d.toISOString().slice(0, 16);
-}
-
-/** "YYYY-MM-DDTHH:mm" read as UTC → ISO Z. */
-function localUtcToIso(v: string): string | null {
-  if (!v) return null;
-  const d = new Date(`${v}:00Z`);
-  return isNaN(d.getTime()) ? null : d.toISOString();
-}
-
 const fmtUtcLong = (iso: string | null) => {
-  if (!iso) return '—';
+  if (!iso) return null;
   const d = new Date(iso);
   return isNaN(d.getTime()) ? iso : `${d.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
 };
@@ -82,11 +60,6 @@ const AdminTreasuryRounds = () => {
   const [split, setSplit] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-
-  // The three rows as edited.
-  const [opens, setOpens] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
-  const [discount, setDiscount] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
-  const [serverWarnings, setServerWarnings] = useState<string[]>([]);
   const [lanapaysOnly, setLanapaysOnly] = useState(false);
 
   useEffect(() => {
@@ -106,75 +79,31 @@ const AdminTreasuryRounds = () => {
       const q = s === null ? '' : `?split=${s}`;
       const res = await fetch(`/api/treasury/admin/rounds${q}`, { headers: { 'x-admin-hex-id': session.nostrHexId } });
       const json: RoundsResponse & { error?: string } = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Failed to load round terms');
+      if (!res.ok || json.error) throw new Error(json.error || 'Failed to load round dates');
       setData(json);
       if (s === null) setSplit(json.split);
-      const o: Record<number, string> = {}; const d: Record<number, string> = {};
-      for (const r of json.rounds) {
-        o[r.round] = isoToLocalUtc(r.opensAt);
-        d[r.round] = r.discountPercent === null ? '' : String(r.discountPercent);
-      }
-      setOpens(o); setDiscount(d);
       setLanapaysOnly(json.lanapaysOnly === true);
-      setServerWarnings([]);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to load round terms');
+      toast.error(err.message || 'Failed to load round dates');
     } finally {
       setLoading(false);
     }
   };
 
-  const prefill = () => {
-    if (!data) return;
-    let filled = 0;
-    const next = { ...discount };
-    for (const r of data.rounds) {
-      if ((next[r.round] || '').trim() === '' && r.prefillDiscountPercent !== null) {
-        next[r.round] = String(r.prefillDiscountPercent);
-        filled++;
-      }
-    }
-    setDiscount(next);
-    if (filled === 0) toast.info(data.directFundReachable ? ADMIN_ROUNDS.prefillNone : ADMIN_ROUNDS.prefillUnreachable);
-  };
-
-  /** Client-side echoes of the server's warnings, so they are seen before saving. */
-  const localWarnings = (round: number): string[] => {
-    const out: string[] = [];
-    const d = Number(discount[round]);
-    if ((discount[round] || '').trim() !== '' && Number.isFinite(d) && (d < DISCOUNT_BAND.min || d > DISCOUNT_BAND.max)) {
-      out.push(fill(ADMIN_ROUNDS.bandWarning, { min: DISCOUNT_BAND.min, max: DISCOUNT_BAND.max }));
-    }
-    return out;
-  };
-
-  const locked = data?.publishedIn38888 === true;
-
-  const save = async () => {
-    if (!session || split === null) return;
+  const saveScope = async () => {
+    if (!session) return;
     setSaving(true);
     try {
-      const rounds = [1, 2, 3].map(round => ({
-        round,
-        opensAt: localUtcToIso(opens[round]),
-        discountPercent: (discount[round] || '').trim() === '' ? null : Number(discount[round]),
-      }));
-      // A published split's terms are not ours to send; the switch still is.
-      const body = locked ? { split, lanapaysOnly } : { split, rounds, lanapaysOnly };
       const res = await fetch('/api/treasury/admin/rounds', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ lanapaysOnly }),
       });
       const json = await res.json();
-      if (!res.ok || json.error) {
-        setServerWarnings(json.warnings || []);
-        throw new Error(json.error || 'Save failed');
-      }
-      setServerWarnings(json.warnings || []);
-      toast.success(ADMIN_ROUNDS.saved);
-      await load(split);
-      if (json.warnings?.length) setServerWarnings(json.warnings);
+      if (!res.ok || json.error) throw new Error(json.error || 'Save failed');
+      setLanapaysOnly(json.lanapaysOnly === true);
+      setData(d => (d ? { ...d, lanapaysOnly: json.lanapaysOnly === true } : d));
+      toast.success(ADMIN_ROUNDS.savedScope);
     } catch (err: any) {
       toast.error(err.message || 'Save failed');
     } finally {
@@ -189,6 +118,8 @@ const AdminTreasuryRounds = () => {
     { value: current - 1, label: fill(ADMIN_ROUNDS.liveSplit, { split: current - 1 }) },
     { value: current, label: fill(ADMIN_ROUNDS.upcomingSplit, { split: current }) },
   ];
+  const published = data?.publishedIn38888 === true;
+  const scopeChanged = data !== null && (data.lanapaysOnly === true) !== lanapaysOnly;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -209,8 +140,44 @@ const AdminTreasuryRounds = () => {
           </div>
         ) : (
           <div className="space-y-6">
-            {/* Split */}
-            <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6 space-y-3">
+            {/* What the treasury is acquiring from at all — not a round term.
+                It sits above the rounds because it outranks them: with this on,
+                a Main Wallet is refused no matter which round is open. */}
+            <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6 space-y-4">
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={lanapaysOnly}
+                  onChange={e => setLanapaysOnly(e.target.checked)}
+                  className="mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-border accent-primary"
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-foreground">{ADMIN_ROUNDS.lanapaysOnlyLabel}</span>
+                  <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                    {ADMIN_ROUNDS.lanapaysOnlyHelp}
+                  </span>
+                  {lanapaysOnly && (
+                    <span className="mt-2 block rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                      {ADMIN_ROUNDS.lanapaysOnlyOn}
+                    </span>
+                  )}
+                </span>
+              </label>
+              <div className="flex justify-end">
+                <button
+                  onClick={saveScope}
+                  disabled={saving || !scopeChanged}
+                  className={`rounded-xl px-6 py-2.5 font-semibold text-white transition-all ${
+                    saving || !scopeChanged ? 'bg-muted-foreground/30 cursor-not-allowed' : 'bg-primary hover:bg-primary/90'
+                  }`}
+                >
+                  {saving ? 'Saving…' : ADMIN_ROUNDS.saveScope}
+                </button>
+              </div>
+            </div>
+
+            {/* Rounds — shown, never edited here */}
+            <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6 space-y-4">
               <div className="flex flex-wrap items-center gap-3">
                 <label className="text-sm font-medium text-foreground">{ADMIN_ROUNDS.splitLabel}</label>
                 {splitOptions.length > 0 ? (
@@ -235,50 +202,8 @@ const AdminTreasuryRounds = () => {
                   Current Split: <strong className="text-foreground">{current ?? 'unknown'}</strong>
                 </span>
               </div>
-            </div>
 
-            {/* What the treasury is acquiring from at all — not a round term.
-                It sits above the rounds because it outranks them: with this on,
-                a Main Wallet is refused no matter which round is open. */}
-            <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6">
-              <label className="flex cursor-pointer items-start gap-3">
-                <input
-                  type="checkbox"
-                  checked={lanapaysOnly}
-                  onChange={e => setLanapaysOnly(e.target.checked)}
-                  className="mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-border accent-primary"
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold text-foreground">{ADMIN_ROUNDS.lanapaysOnlyLabel}</span>
-                  <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                    {ADMIN_ROUNDS.lanapaysOnlyHelp}
-                  </span>
-                  {lanapaysOnly && (
-                    <span className="mt-2 block rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-                      {ADMIN_ROUNDS.lanapaysOnlyOn}
-                    </span>
-                  )}
-                </span>
-              </label>
-            </div>
-
-            {/* Rounds */}
-            <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-lg font-semibold text-foreground">Split {split ?? '—'}</h2>
-                {!locked && (
-                  <button
-                    onClick={prefill}
-                    disabled={!data}
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs font-bold text-foreground hover:bg-accent transition-colors disabled:opacity-50"
-                    title={data?.directFundReachable === false ? ADMIN_ROUNDS.prefillUnreachable : undefined}
-                  >
-                    {ADMIN_ROUNDS.prefill}
-                  </button>
-                )}
-              </div>
-
-              {locked ? (
+              {published ? (
                 <div className="rounded-lg border border-sky-200 bg-sky-50 dark:bg-sky-950/30 dark:border-sky-800 px-4 py-3 space-y-2">
                   <p className="text-sm font-semibold text-sky-900 dark:text-sky-200">{ADMIN_ROUNDS.publishedTitle}</p>
                   <p className="text-xs leading-relaxed text-sky-900 dark:text-sky-200">{fill(ADMIN_ROUNDS.publishedBody, { split: split ?? '' })}</p>
@@ -286,21 +211,16 @@ const AdminTreasuryRounds = () => {
                     <p className="text-[11px] text-sky-800/80 dark:text-sky-300/80 font-mono">
                       {fill(ADMIN_ROUNDS.publishedEvent, {
                         event: `${data.kind38888.eventId.slice(0, 12)}…`,
-                        when: data.kind38888.createdAt ? fmtUtcLong(new Date(data.kind38888.createdAt * 1000).toISOString()) : '—',
+                        when: data.kind38888.createdAt ? fmtUtcLong(new Date(data.kind38888.createdAt * 1000).toISOString()) ?? '—' : '—',
                       })}
                     </p>
                   )}
-                  <a
-                    href={ADMIN_ROUNDS.publishedUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-block rounded-lg border border-sky-300 dark:border-sky-700 px-3 py-1.5 text-xs font-bold text-sky-900 dark:text-sky-100 hover:bg-sky-100 dark:hover:bg-sky-900/40"
-                  >
-                    {ADMIN_ROUNDS.publishedCta}
-                  </a>
                 </div>
               ) : (
-                <p className="text-xs leading-relaxed text-muted-foreground">{fill(ADMIN_ROUNDS.notPublished, { split: split ?? '' })}</p>
+                <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 space-y-1">
+                  <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">{ADMIN_ROUNDS.notPublishedTitle}</p>
+                  <p className="text-xs leading-relaxed text-amber-800 dark:text-amber-300">{fill(ADMIN_ROUNDS.notPublished, { split: split ?? '' })}</p>
+                </div>
               )}
 
               {(data?.kind38888?.rejected || []).map((r, i) => (
@@ -316,44 +236,18 @@ const AdminTreasuryRounds = () => {
                     <tr className="text-left text-xs text-muted-foreground border-b border-border">
                       <th className="py-2 pr-3">Round</th>
                       <th className="py-2 pr-3">{ADMIN_ROUNDS.opensLabel}</th>
-                      <th className="py-2 pr-3">{ADMIN_ROUNDS.discountLabel}</th>
                       <th className="py-2">Last change</th>
                     </tr>
                   </thead>
                   <tbody>
                     {[1, 2, 3].map(round => {
                       const row = data?.rounds.find(r => r.round === round);
-                      const warns = localWarnings(round);
+                      const opens = fmtUtcLong(row?.opensAt ?? null);
                       return (
                         <tr key={round} className="border-b border-border/50 align-top">
                           <td className="py-3 pr-3 font-bold">Round {round}</td>
-                          <td className="py-3 pr-3">
-                            <input
-                              type="datetime-local"
-                              disabled={locked}
-                              value={opens[round] || ''}
-                              onChange={e => setOpens(prev => ({ ...prev, [round]: e.target.value }))}
-                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-70 disabled:cursor-not-allowed"
-                            />
-                            {opens[round] && (
-                              <p className="mt-1 text-[11px] text-muted-foreground">= {fmtUtcLong(localUtcToIso(opens[round]))}</p>
-                            )}
-                          </td>
-                          <td className="py-3 pr-3">
-                            <div className="relative w-28">
-                              <input
-                                type="number" min="0" max="100" step="0.5"
-                                disabled={locked}
-                                value={discount[round] || ''}
-                                onChange={e => setDiscount(prev => ({ ...prev, [round]: e.target.value }))}
-                                placeholder={row?.prefillDiscountPercent !== null && row?.prefillDiscountPercent !== undefined ? `DF: ${row.prefillDiscountPercent}` : ''}
-                                className="w-full rounded-lg border border-border bg-background px-3 py-2 pr-8 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-70 disabled:cursor-not-allowed"
-                              />
-                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-bold">%</span>
-                            </div>
-                            {warns.map((w, i) => (
-                              <p key={i} className="mt-1 text-[11px] text-amber-700 dark:text-amber-400 max-w-xs">{w}</p>
-                            ))}
+                          <td className="py-3 pr-3 font-mono">
+                            {opens ?? <span className="text-muted-foreground font-sans">{ADMIN_ROUNDS.notDated}</span>}
                           </td>
                           <td className="py-3 text-[11px] text-muted-foreground">
                             {row?.updatedAt ? (
@@ -376,25 +270,15 @@ const AdminTreasuryRounds = () => {
                 </table>
               </div>
 
-              {serverWarnings.length > 0 && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 space-y-1">
-                  {serverWarnings.map((w, i) => <p key={i} className="text-xs text-amber-800 dark:text-amber-300">{w}</p>)}
-                </div>
-              )}
-
-              <div className="flex justify-end">
-                <button
-                  onClick={save}
-                  disabled={saving || split === null}
-                  className={`rounded-xl px-6 py-2.5 font-semibold text-white transition-all ${
-                    saving || split === null ? 'bg-muted-foreground/30 cursor-not-allowed' : 'bg-primary hover:bg-primary/90'
-                  }`}
-                >
-                  {saving ? 'Saving…' : locked ? ADMIN_ROUNDS.saveScope : ADMIN_ROUNDS.save}
-                </button>
-              </div>
+              <a
+                href={ADMIN_ROUNDS.publishedUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-block rounded-lg border border-border px-3 py-1.5 text-xs font-bold text-foreground hover:bg-accent"
+              >
+                {ADMIN_ROUNDS.publishedCta}
+              </a>
             </div>
-
           </div>
         )}
       </div>

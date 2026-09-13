@@ -1089,6 +1089,16 @@ router.put('/admin/settings', (req: Request, res: Response) => {
   if (!adminHex) return;
 
   try {
+    // Commission rates are no longer set here (owner, 13 Sept 2026): the
+    // Lana.discount general fee is published in KIND 38888 and taken over by
+    // publishedRoundTerms.ts. A request that still carries them — an old page
+    // left open — is refused rather than quietly overwritten a minute later.
+    if (req.body?.commission_lanapays !== undefined || req.body?.commission_other !== undefined) {
+      return res.status(400).json({
+        error: 'The Lana.discount general fee is published in KIND 38888. Set it on lananostr.site (Update Lana System Parameters).',
+      });
+    }
+
     const { buyback_wallet_id, active_currencies } = req.body;
 
     if (buyback_wallet_id !== undefined) {
@@ -1171,22 +1181,6 @@ router.put('/admin/settings', (req: Request, res: Response) => {
       }
     }
 
-    // Commission rates
-    const { commission_lanapays, commission_other } = req.body;
-    if (commission_lanapays !== undefined) {
-      const val = parseFloat(commission_lanapays);
-      if (isNaN(val) || val < 0 || val > 100) {
-        return res.status(400).json({ error: 'LanaPays commission must be between 0 and 100' });
-      }
-      setAppSetting('commission_lanapays', String(val), adminHex);
-    }
-    if (commission_other !== undefined) {
-      const val = parseFloat(commission_other);
-      if (isNaN(val) || val < 0 || val > 100) {
-        return res.status(400).json({ error: 'Other commission must be between 0 and 100' });
-      }
-      setAppSetting('commission_other', String(val), adminHex);
-    }
 
     // Minimum sell amounts per currency
     const { min_sell_amounts } = req.body;

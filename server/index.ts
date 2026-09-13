@@ -188,6 +188,12 @@ async function syncKind38888ToDb(): Promise<boolean> {
           .map(r => `R${r.round}:${r.opens_at ?? '-'}/${r.discount_percent ?? '-'}%`).join(' ');
         console.log(`[lana-discount] Round terms for Split ${split} taken from KIND 38888 ${data.event_id.slice(0, 12)}… (${rows})`);
       }
+      if (terms.generalFee.changed) {
+        console.log(`[lana-discount] General fee ${terms.generalFee.published}% taken from KIND 38888 ${data.event_id.slice(0, 12)}…`);
+      }
+      if (terms.generalFee.rejectedChanged && terms.generalFee.rejected) {
+        console.warn(`[lana-discount] KIND 38888 general fee refused, last good fee kept: ${terms.generalFee.rejected}`);
+      }
       if (terms.rejectedChanged) {
         for (const r of terms.rejected) {
           console.warn(`[lana-discount] KIND 38888 round terms for Split ${r.split} refused, last good terms kept: ${r.reason}`);
