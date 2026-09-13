@@ -79,6 +79,25 @@ export const ROUND_MANDATE_SCHEMA_SQL = `
 `;
 
 /**
+ * KIND 30961 — one row per financing budget a KIND 30960 mandate has ever
+ * named, and what was last published for it. The budget definition is kept
+ * because a mandate's tombstone empties its wallets while payments for its
+ * last sales are still being recorded (budgetSettlementPublisher.ts).
+ */
+export const BUDGET_SETTLEMENT_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS budget_settlement_publications (
+    d_tag TEXT PRIMARY KEY,
+    budget_json TEXT NOT NULL,
+    payload_hash TEXT,
+    event_id TEXT,
+    event_created_at INTEGER,
+    relays_ok INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT,
+    last_error TEXT
+  );
+`;
+
+/**
  * Columns added to acquisition_offers. Nullable on purpose: every offer made
  * before rounds existed has none of them and must keep working.
  *

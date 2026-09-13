@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { defaultMandateRows } from '../lib/treasuryMandate.js';
 import {
-  ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, KIND_38888_SPLIT_ENDS_AT_COLUMN,
+  ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, KIND_38888_SPLIT_ENDS_AT_COLUMN, BUDGET_SETTLEMENT_SCHEMA_SQL,
   OFFER_DECISION_REASON_STATUS_COLUMN, addColumnIfMissing,
   rewriteStoredReviewPhrase,
   stuckTransfers,
@@ -303,6 +303,7 @@ for (const sql of migrationColumns) {
 // Only "duplicate column" is tolerated: any other failure (locked or
 // read-only file, missing table) throws and stops the boot on purpose.
 db.exec(ROUND_MANDATE_SCHEMA_SQL);
+db.exec(BUDGET_SETTLEMENT_SCHEMA_SQL);
 for (const sql of ROUND_MANDATE_OFFER_COLUMNS) addColumnIfMissing(db, sql);
 addColumnIfMissing(db, OFFER_DECISION_REASON_STATUS_COLUMN);
 addColumnIfMissing(db, KIND_38888_SPLIT_ENDS_AT_COLUMN);

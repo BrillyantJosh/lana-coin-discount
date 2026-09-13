@@ -10,6 +10,7 @@ import { createAcquisitionsRouter } from './routes/acquisitions.js';
 import { createTreasuryRouter } from './routes/treasury.js';
 import { pullRoundMandates } from './lib/roundMandateSync.js';
 import { applyPublishedRoundTerms } from './lib/publishedRoundTerms.js';
+import { publishBudgetSettlements } from './lib/budgetSettlementPublisher.js';
 import { fetchKind38888, fetchKind0, Kind38888Data } from './lib/nostr.js';
 import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb } from './db/index.js';
 import { selectWholeGroups } from './lib/autoSendSelection.js';
@@ -708,6 +709,35 @@ async function syncUserProfiles(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// KIND 30961 — where each financing budget stands: every sale under its
+// mandate and every payment recorded for them. Runs beside the heartbeat, not
+// inside it: the first run after a deploy sends every budget, and a slow relay
+// must never hold up the auto-send. One run at a time.
+// ---------------------------------------------------------------------------
+
+let budgetSettlementRunning = false;
+let lastUnattributed = '';
+
+function runBudgetSettlementPublisher(): void {
+  const key = process.env.NOSTR_PRIVATE_KEY || '';
+  if (!key || budgetSettlementRunning) return;
+  budgetSettlementRunning = true;
+  publishBudgetSettlements(db, { privateKeyHex: key, relays: getRelaysFromDb() })
+    .then(r => {
+      if (r.published.length || r.failed.length) {
+        console.log(`[lana-discount] KIND 30961 budgets: ${r.published.length} published, ${r.failed.length} failed, ${r.unchanged} unchanged, ${r.deferred} waiting (of ${r.budgets})`);
+      }
+      const unattributed = r.unattributed.join(',');
+      if (unattributed !== lastUnattributed) {
+        lastUnattributed = unattributed;
+        if (unattributed) console.warn(`[lana-discount] KIND 30961: sales under a mandate that no budget claims: ${unattributed}`);
+      }
+    })
+    .catch(err => console.error('[lana-discount] KIND 30961 publish failed:', err?.message || err))
+    .finally(() => { budgetSettlementRunning = false; });
+}
+
 // Heartbeat loop — waits for tasks to finish before sleeping (no overlap)
 let heartbeatRunning = true;
 
@@ -775,6 +805,8 @@ async function heartbeatLoop() {
       if (heartbeatCount % 5 === 1) {
         await withTimeout(() => pullRoundMandates(db, getRelaysFromDb()), 'Round mandates sync', 30000);
       }
+
+      runBudgetSettlementPublisher();
     } catch (err: any) {
       console.error(`[lana-discount] Heartbeat #${heartbeatCount} error:`, err.message);
     }
@@ -818,6 +850,8 @@ app.listen(PORT, '0.0.0.0', async () => {
   } catch (err: any) {
     console.warn('[lana-discount] Initial round mandates sync failed:', err.message);
   }
+
+  runBudgetSettlementPublisher();
 
   // Freeze status on startup, so the public board is not blank about it for the
   // first quarter hour after a deploy.
