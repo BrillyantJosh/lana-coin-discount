@@ -71,7 +71,7 @@ function pay(txId: number, amount: number, when = '2026-09-13 10:35:03') {
 beforeEach(() => {
   db = createMandateTestDb();
   db.exec(BUDGET_SETTLEMENT_SCHEMA_SQL);
-  db.exec(`CREATE TABLE sale_payouts (id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INTEGER NOT NULL, payout_id TEXT NOT NULL,
+  db.exec(`CREATE TABLE IF NOT EXISTS sale_payouts (id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INTEGER NOT NULL, payout_id TEXT NOT NULL,
            amount REAL NOT NULL, currency TEXT NOT NULL, paid_to_account TEXT, reference TEXT, note TEXT,
            paid_at TEXT NOT NULL DEFAULT (datetime('now')), created_at TEXT DEFAULT (datetime('now')))`);
   setSplit(db, 9, { EUR: 0.256 });

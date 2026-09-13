@@ -971,6 +971,26 @@ export const ROUND_DATES = {
   remainingLabel: 'Remaining in this round',
   acceptedLabel: 'Accepted in this round',
   settledLabel: 'Settled in this round',
+  // How far the round has been paid out (owner, 13 Sept 2026: "koliko si
+  // izplačal od koliko, tudi v FIAT").
+  payoutsOpenLabel: 'Payouts open',
+  people: '{financers} financers · {budgets} budgets',
+  paidOutTitle: 'Paid out',
+  paidOf: 'of {total}',
+  paidOfUnknown: 'total not yet known',
+  paidPercent: '{percent} paid out',
+  stillToPay: 'Still to pay for LANA already transferred: {amount}',
+  inProgressMoney: 'Agreed, awaiting transfer: {amount}',
+  lanaTitle: 'LANA',
+  lanaReceived: 'Received by the budgets',
+  lanaAcquired: 'Bought by the treasury',
+  lanaPaid: 'Paid for',
+  lanaInProgress: 'Agreed, awaiting transfer',
+  lanaUnsold: 'Not yet sold',
+  moneyNote:
+    'Paid out = payments lana.discount has recorded. "Of" = everything agreed so far plus an estimate for the LANA ' +
+    'not yet sold, at today\'s reference value and the round\'s published terms — it moves when the reference value ' +
+    'moves, and only an accepted offer fixes a price. Money is shown in the currency it is paid in. Updated every minute.',
 } as const;
 
 // ─── words that must never reach a counterparty ───────────────────────────

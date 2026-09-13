@@ -14,7 +14,7 @@ import Database from 'better-sqlite3';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import type { NostrEvent } from './nostr.js';
 import {
-  ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, OFFER_DECISION_REASON_STATUS_COLUMN,
+  ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, OFFER_DECISION_REASON_STATUS_COLUMN, BUDGET_SETTLEMENT_SCHEMA_SQL,
 } from '../db/roundMandateSchema.js';
 import { signaturePayloadHash } from './requestSignature.js';
 
@@ -165,6 +165,10 @@ export function createMandateTestDb(): Database.Database {
     );
   `);
   db.exec(ROUND_MANDATE_SCHEMA_SQL);
+  db.exec(BUDGET_SETTLEMENT_SCHEMA_SQL);
+  db.exec(`CREATE TABLE IF NOT EXISTS sale_payouts (id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INTEGER NOT NULL,
+    payout_id TEXT NOT NULL, amount REAL NOT NULL, currency TEXT NOT NULL, paid_to_account TEXT, reference TEXT, note TEXT,
+    paid_at TEXT NOT NULL DEFAULT (datetime('now')), created_at TEXT DEFAULT (datetime('now')))`);
   for (const sql of ROUND_MANDATE_OFFER_COLUMNS) db.exec(sql);
   db.exec(OFFER_DECISION_REASON_STATUS_COLUMN);
   return db;

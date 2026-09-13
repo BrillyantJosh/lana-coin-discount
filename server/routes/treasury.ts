@@ -46,6 +46,9 @@ import { fundingByRound, modelReturnPercent, OFF_MODEL_POINTS, projectPrice, ref
 import { fetchBudgetMoney, type BudgetMoneyIndex } from '../lib/fundBudgets.js';
 import { BUYBACK_SPLIT_OFFSET } from '../lib/buybackSplit.js';
 import { activeRestrictionSet, listRestrictions, restrict, liftRestriction } from '../lib/acquisitionRestriction.js';
+import { loadBuildInput } from '../lib/budgetSettlementPublisher.js';
+import { buildBudgetSettlements, type BudgetDefinition } from '../lib/budgetSettlement.js';
+import { roundProgress, type RoundProgress } from '../lib/publicRoundProgress.js';
 
 const db = () => getDbHandle();
 const LANA = 100_000_000;
@@ -78,6 +81,47 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
 
   // ── public ──────────────────────────────────────────────────────────
 
+  /**
+   * How far each round has been paid out, from the same per-budget totals the
+   * KIND 30961 publisher builds. The landing page asks on every visit; the
+   * answer changes only when a sale or a payment does, so it is built at most
+   * once a minute per split.
+   */
+  const progressCache = new Map<number, { at: number; key: string; value: Map<number, RoundProgress> | null }>();
+  const PROGRESS_TTL_MS = 60_000;
+  const progressForSplit = (split: number, currentSplit: number | null): Map<number, RoundProgress> | null => {
+    // A new publish (a sale, a payment) shows at once; anything else within a minute.
+    let key = '';
+    try {
+      const f = db().prepare('SELECT COUNT(*) AS n, COALESCE(MAX(event_created_at), 0) AS m FROM budget_settlement_publications').get() as any;
+      key = `${f.n}:${f.m}:${currentSplit}`;
+    } catch { key = `none:${currentSplit}`; }
+    const hit = progressCache.get(split);
+    if (hit && hit.key === key && Date.now() - hit.at < PROGRESS_TTL_MS) return hit.value;
+    let value: Map<number, RoundProgress> | null = null;
+    try {
+      const budgets = (db().prepare('SELECT budget_json FROM budget_settlement_publications').all() as any[])
+        .map(r => JSON.parse(r.budget_json) as BudgetDefinition)
+        .filter(b => b.split === split);
+      if (budgets.length > 0) {
+        const input = loadBuildInput(db(), budgets, '', Math.floor(Date.now() / 1000));
+        const { events } = buildBudgetSettlements(input);
+        value = roundProgress(events, {
+          split,
+          currentSplit,
+          rates: getExchangeRatesFromDb(),
+          discountByRound: new Map(loadRoundTerms(db(), split).map(t => [t.round, t.discountPercent])),
+          sellable: input.sellable,
+        });
+      }
+    } catch (err: any) {
+      console.warn('[lana-discount] Round progress not built:', err?.message || err);
+      value = null;
+    }
+    progressCache.set(split, { at: Date.now(), key, value });
+    return value;
+  };
+
   router.get('/rounds', (req: Request, res: Response) => {
     const currentSplit = currentSplitNumber();
     // Default to the split whose mandates are (or will next be) in the window.
@@ -91,6 +135,8 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
     const totals = offerTotalsByMandate(db(), dTags);
     const restrictions = activeRestrictionSet(db());
     const now = Math.floor(Date.now() / 1000);
+
+    const progress = progressForSplit(split, currentSplit);
 
     const rounds = [1, 2, 3].map(round => {
       const rows = mandates.filter(m => m.round === round);
@@ -120,6 +166,9 @@ export function createTreasuryRouter(deps: TreasuryDeps = {}): Router {
         remainingLana: toLana(remaining),
         acceptedLana: toLana(accepted),
         settledLana: toLana(settled),
+        // Paid out, and out of how much — LANA and money per currency. Null when
+        // no budget of this round has been published yet.
+        progress: progress?.get(round) ?? null,
       };
     });
 

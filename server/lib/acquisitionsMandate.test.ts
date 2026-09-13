@@ -29,6 +29,7 @@ import { createReplayCache } from './requestSignature';
 import { expireStaleOffers, ACCEPTED_TRANSFER_WINDOW_HOURS, TRANSFER_NOT_COMPLETED } from './acquisitionOffer';
 import { makeKey, mandateEvent, signedHeaders, setSplit, setSetting, setRoundTerms, signEvent, type TestKey } from './roundMandateTestKit';
 import { applyPublishedRoundTerms } from './publishedRoundTerms';
+import { publishBudgetSettlements } from './budgetSettlementPublisher';
 import { createHash } from 'crypto';
 
 const LANA = 100_000_000;
@@ -96,7 +97,7 @@ beforeEach(async () => {
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   }
   // Fresh world per test.
-  for (const t of ['acquisition_offers', 'acquisition_mandates', 'acquisition_mandate_releases', 'acquisition_rounds', 'app_settings', 'buyback_transactions', 'admin_users', 'api_keys']) {
+  for (const t of ['acquisition_offers', 'acquisition_mandates', 'acquisition_mandate_releases', 'acquisition_rounds', 'app_settings', 'buyback_transactions', 'admin_users', 'api_keys', 'budget_settlement_publications', 'sale_payouts']) {
     db.prepare(`DELETE FROM ${t}`).run();
   }
   world.eligible = true; world.listedWallets = [W1]; world.balances = {}; world.balancesThrow = false; world.balanceShape = null; world.sent = [];
@@ -765,6 +766,27 @@ describe('/api/treasury', () => {
     expect(JSON.stringify(r.body)).not.toContain(seller.pub);
     expect(JSON.stringify(r.body)).not.toMatch(/discount/i);
     expect(r.body.rounds[1].state).toBe('no_mandates');
+  });
+
+  /**
+   * The landing page cards, 13 Sept 2026: "koliko si izplačal od koliko, tudi
+   * v FIAT" — money paid, out of what the round comes to, with no discount
+   * figure anywhere in the answer.
+   */
+  it('the public rounds view says how much has been paid out, and of how much — still with no discount', async () => {
+    await publishBudgetSettlements(db, {
+      privateKeyHex: '7'.repeat(64), relays: [], publish: async () => ({ success: ['x'], failed: [] }),
+    });
+    const r = await get('/api/treasury/rounds?split=8');
+    expect(r.status).toBe(200);
+    // 1,000 LANA × 0.256 = 256.00 − 22 % = 199.68, nothing sold or paid yet.
+    expect(r.body.rounds[0].progress).toMatchObject({
+      budgets: 1, lanaReceived: 1000, lanaAcquired: 0, lanaUnsold: 1000, paidPercent: 0,
+      money: [{ currency: 'EUR', paid: 0, agreed: 0, unsoldValue: 199.68, total: 199.68, owed: 0, paidPercent: 0 }],
+    });
+    expect(r.body.rounds[1].progress).toBeNull();
+    expect(JSON.stringify(r.body)).not.toMatch(/discount/i);
+    expect(JSON.stringify(r.body)).not.toContain(seller.pub);
   });
 
   it('round-terms and ingest need the Bearer key; ingest is the same door as the relay pull', async () => {
