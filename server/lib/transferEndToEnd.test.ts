@@ -72,6 +72,8 @@ import {
   privateKeyToUncompressedPublicKey, publicKeyToAddress,
 } from './transaction';
 import { makeKey, mandateEvent, signedHeaders, setSplit, setSetting, setRoundTerms } from './roundMandateTestKit';
+import { buildTargetPlan } from './consolidationTarget';
+import { feeRoomLanoshis } from './consolidation';
 
 // ── the day's numbers ───────────────────────────────────────────────────
 const AGREED_LANA = 3261.796875;
@@ -326,16 +328,31 @@ describe('the eight failures of 10 September 2026, end to end', () => {
     const first = await press(ref);
     expect(first.status).toBe(400);
     expect(first.body.code).toBe('TOO_MANY_UTXOS');
-    expect(first.body.error).toContain('Consolidate them with Registrar');
+    expect(first.body.error).toContain('Consolidate them on this page');
     expect(first.body.error).not.toContain('UTXO');
     expect(first.body.retryable).toBe(true); // not a dead end, and it says so
     expect(chain.broadcast).toHaveLength(0);
 
-    // He does exactly what he was told. Twenty-one pieces become one, and the
-    // balance drops only by the fee that cost — far under the 0.01 LANA
-    // electrum prints, which is why the old memory could never see it.
-    const consolidated = AGREED_LANOSHIS - 4_000; // one consolidation fee lighter
-    chain.utxos = [{ tx_hash: 'c'.repeat(64), tx_pos: 0, value: consolidated, height: 1000 }];
+    // He does exactly what he was told, with the consolidation the offer page
+    // plans while this offer is open (consolidationTarget.ts): not
+    // MejmoSeFajn's 20-into-1, whose 546,600-lanoshi fee is more than the
+    // backing tolerance and would have made this transfer impossible, but the
+    // cheapest merge that makes the wallet fit — 2 pieces into 1. The balance
+    // drops only by that fee, far under the 0.01 LANA electrum prints, which is
+    // why the old memory could never see it.
+    const before = chain.utxos;
+    const balanceBefore = before.reduce((s: number, u: any) => s + u.value, 0);
+    const plan = buildTargetPlan(before, before.length);
+    expect(plan.batches.map(b => b.utxos.length)).toEqual([2]);
+    expect(plan.totalFee).toBeLessThanOrEqual(feeRoomLanoshis(balanceBefore, AGREED_LANOSHIS)!);
+    const spent = new Set(plan.batches[0].utxos.map(u => `${u.tx_hash}:${u.tx_pos}`));
+    chain.utxos = [
+      ...before.filter((u: any) => !spent.has(`${u.tx_hash}:${u.tx_pos}`)),
+      { tx_hash: 'c'.repeat(64), tx_pos: 0, value: plan.batches[0].net, height: 1000 },
+    ];
+    expect(chain.utxos).toHaveLength(20);
+    const consolidated = chain.utxos.reduce((s: number, u: any) => s + u.value, 0);
+    expect(consolidated).toBe(balanceBefore - plan.totalFee);
     expect(Math.round((consolidated / 100_000_000) * 100) / 100).toBe(PRINTED_LANA);
 
     const second = await press(ref);

@@ -265,7 +265,7 @@ describe('a refusal that pressing again cannot cure', () => {
     // own sentence asks for a consolidation, after which the press works.
     transferReply = {
       success: false,
-      error: 'This wallet holds its LANA in too many pieces. Consolidate them with Registrar and try again.',
+      error: 'This wallet holds its LANA in too many pieces. Consolidate them on this page, then send again.',
       code: 'TOO_MANY_UTXOS',
       retryable: true,
     };

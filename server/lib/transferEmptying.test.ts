@@ -257,7 +257,7 @@ describe('planTransfer, on the exact figures of 10 September 2026', () => {
     const plan = planTransfer({ utxos: many, amountLanoshis: AGREED_LANOSHIS, emptyWallet: true });
     if (!planFailed(plan)) throw new Error('expected a refusal');
     expect(plan.code).toBe('TOO_MANY_UTXOS');
-    expect(describePlanFailure(plan).error).toContain('Consolidate them with Registrar');
+    expect(describePlanFailure(plan).error).toContain('Consolidate them on this page');
     expect(describePlanFailure(plan).error).not.toContain('TOO_MANY_UTXOS');
     expect(planFailurePermanent(plan)).toBe(false);
     // The one refusal above that IS about the balance stays permanent.

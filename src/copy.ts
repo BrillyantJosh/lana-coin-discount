@@ -444,8 +444,9 @@ export const OFFER = {
     'We are not acquiring LANA from this wallet at the moment. Offers are open from LanaPays.Us wallets only for now — nothing is wrong with this wallet, and this is not a freeze.',
   consolidateTitle: 'This wallet needs consolidating first',
   consolidateBody:
-    'It holds more separate inputs than a single transfer can carry, so a transfer to our treasury wallet ' +
-    'would fail. Consolidate it, then submit an offer.',
+    'It holds its LANA in more separate pieces than a single transfer can carry, so a transfer to our treasury ' +
+    'wallet would fail. Consolidate it right here — your LANA stays in your wallet — then submit an offer.',
+  consolidatePieces: 'This wallet has {count} separate pieces; one transfer can carry {max}.',
   settlementCurrencyLabel: 'Settlement currency',
   noSettlementAccountTitle: 'No account we could settle to',
   noSettlementAccountBody:
@@ -658,6 +659,74 @@ export const MANDATE = {
   unavailable: 'Your mandate could not be read right now. You may still propose; the treasury judges it on receipt.',
   openNoRight: 'A round date opens a treasury mandate. It creates no right to sell (BEF P08 §8).',
   eventLabel: 'Mandate event',
+} as const;
+
+// ─── consolidating a wallet, on the offer page ────────────────────────────
+// Copied from MejmoSeFajn's Consolidate page (13 Sept 2026) and said in plain
+// words: a wallet holds its LANA in pieces, a transfer carries at most twenty,
+// and consolidating merges pieces back into the same wallet. Nothing in it is
+// a sale, and nothing leaves the wallet but the network fee — the sentences
+// have to make that impossible to misread, because a key is typed right here.
+
+export const CONSOLIDATE = {
+  openButton: 'Consolidate this wallet here',
+  hideButton: 'Hide',
+  title: 'Consolidate this wallet',
+  intro:
+    'Consolidating merges many small pieces of LANA into one, back into this same wallet. Your LANA stays ' +
+    'where it is — only the network fee for each consolidation leaves the wallet.',
+  piecesLabel: 'Pieces in this wallet',
+  limitLabel: 'One transfer can carry',
+  afterLabel: 'Pieces after the consolidations below',
+  keyLabel: 'WIF private key of this wallet',
+  keyPlaceholder: 'Enter the WIF private key of this wallet',
+  keyNote: 'Used once to sign each consolidation, then discarded. It is never stored.',
+  keyMismatch: 'This private key does not belong to this wallet',
+  scan: 'Scan QR',
+  batchTitle: 'Consolidation {n}',
+  batchPieces: '{count} pieces into 1',
+  batchFee: 'Network fee',
+  batchKeeps: 'Becomes one piece of',
+  batchButton: 'Consolidate',
+  batchWorking: 'Sending…',
+  batchNeedsKey: 'Enter the private key above first.',
+  sentToast: 'Sent. The network confirms it in a few minutes.',
+  uncertainTitle: 'Waiting for the network',
+  uncertainFailed: 'That consolidation did not go through — its pieces are back in the list, and nothing moved. You can send it again.',
+  pendingTitle: 'On its way',
+  pendingBody: '{count} pieces merged into one — waiting for the network to confirm it, usually a few minutes.',
+  otherInFlight:
+    'A transaction in this wallet is still waiting for the network to confirm it. Consolidating can start ' +
+    'once it has — usually within a few minutes.',
+  autoCheck: 'This page checks the wallet again by itself.',
+  unreadable: 'The wallet could not be read just now.',
+  nothingToDo: 'There is nothing to consolidate in this wallet right now.',
+  fitsNow: 'This wallet now fits in one transfer — there is nothing more to consolidate for it.',
+  // With an offer open from this wallet, only the cheapest consolidation that
+  // makes it fit is offered, and only if its fee keeps the offer deliverable.
+  targetIntro: 'Your open offer from this wallet is kept whole: only the cheapest consolidation that makes the wallet fit in one transfer is offered.',
+  tightTitle: 'Consolidating would cost more than your open offer allows',
+  tightBody:
+    'Making this wallet fit in one transfer costs {fee} LANA in network fees, but the offer from this wallet ' +
+    'leaves room for only {room} LANA before the transfer would be refused as short.',
+  tightTopUp: 'Add at least {amount} LANA to this wallet first, or consolidate after the offer has ended.',
+  tightCannot:
+    'This wallet cannot be consolidated enough for one transfer right now. Consolidate after the offer has ended.',
+  leftoverTitle: '{count} {pieces} cannot be consolidated',
+  leftoverBody:
+    'No consolidation of these pieces can pay its own network fee and still leave something behind — together ' +
+    'they hold {amount} LANA. Moving them would cost more than they are worth.',
+  leftoverLater: '{count} {pieces} left for a later round — they may join the result once the consolidations above confirm.',
+  leftoverDeposit:
+    'Nothing can be consolidated right now. A payment of at least {amount} LANA into this wallet would ' +
+    'cover the fee.',
+  confirmingPieces: '{count} {pieces} still waiting for their own confirmation, left out for now.',
+  piece: 'piece',
+  pieces: 'pieces',
+  checkAgain: 'Check again',
+  checking: 'Checking…',
+  waitBeforeTransfer: 'A transaction from this wallet is still on its way. Transfer once the network has confirmed it.',
+  video: 'Watch: how consolidating works',
 } as const;
 
 // ─── what a refusal from the mandate path means, in words ─────────────────

@@ -7,12 +7,13 @@ import { SellTermsGate } from '@/components/SellTermsGate';
 import { MandatePanel, proposalGate, proposableCapLana, counterBody, fill, fmtUtc, type MandateInfo, availabilityOf } from '@/components/MandatePanel';
 import { signedFetch, type SigningKey } from '@/lib/signedRequest';
 import { describeOfferError } from '@/lib/offerErrors';
-import { BRAND, OFFER, LANDING, MANDATE } from '@/copy';
+import { BRAND, OFFER, LANDING, MANDATE, CONSOLIDATE } from '@/copy';
 import { parseSqliteUtc, formatMoment, formatLeft, useCountdown } from '@/lib/offerClock';
 import { formatLana } from '@/lib/money';
 import { ESTIMATED_TRANSFER_FEE_LANA, maxProposable } from '@/lib/maxOffer';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
+const ConsolidateWallet = lazy(() => import('@/components/ConsolidateWallet'));
 
 /**
  * Offering LANA to the Lana.discount treasury.
@@ -196,6 +197,14 @@ const SubmitOffer = () => {
   const [splitCheck, setSplitCheck] = useState<SplitCheck | null>(null);
   const [splitChecking, setSplitChecking] = useState(false);
   const tooManyUtxos = utxoCount !== null && utxoCount > MAX_UTXOS;
+  // Consolidating right here, instead of being sent to Registrar (13 Sept 2026).
+  // `utxoRefresh` reads the count again once a consolidation has confirmed;
+  // `consolidationPending` holds the transfer back while one is on its way,
+  // because until it confirms the chain still lists the pieces it spent.
+  const [utxoRefresh, setUtxoRefresh] = useState(0);
+  const [showConsolidate, setShowConsolidate] = useState(false);
+  const [consolidationPending, setConsolidationPending] = useState(false);
+  const [consolidateAtTransfer, setConsolidateAtTransfer] = useState(false);
 
   // The financing-round mandate for this wallet — read with a signed GET,
   // because a financer's remaining cap is theirs to see and nobody else's.
@@ -449,7 +458,13 @@ const SubmitOffer = () => {
       .catch(e => console.error('UTXO check failed:', e))
       .finally(() => { if (!cancelled) setUtxoLoading(false); });
     return () => { cancelled = true; };
-  }, [selectedWallet]);
+  }, [selectedWallet, utxoRefresh]);
+
+  // A different wallet starts closed; a consolidation panel belongs to one wallet.
+  useEffect(() => { setShowConsolidate(false); setConsolidationPending(false); }, [selectedWallet]);
+  // …and the transfer-step panel belongs to one offer: it opens on that offer's
+  // TOO_MANY_UTXOS and never carries over to the next one.
+  useEffect(() => { setConsolidateAtTransfer(false); setConsolidationPending(false); }, [offer?.offerRef]);
 
   // WHICH SPLIT — the Split a wallet was registered in decides whether we
   // acquire from it at all. Asked the moment a wallet is picked, so it is
@@ -678,6 +693,8 @@ const SubmitOffer = () => {
       const data = await res.json();
       if (!res.ok || !data.success) {
         if (data.code === 'OFFER_EXPIRED') setServerLapsed(true);
+        // The one refusal the seller can put right on this page.
+        if (data.code === 'TOO_MANY_UTXOS') setConsolidateAtTransfer(true);
         setTransferError({
           error: describeOfferError(data) || 'The transfer did not go through.',
           code: data.code,
@@ -806,6 +823,8 @@ const SubmitOffer = () => {
     setLapsedReason(null);
     setShowTerms(false);
     setTransferError(null);
+    setConsolidateAtTransfer(false);
+    setConsolidationPending(false);
     setPrivateKey('');
     setPrivateKeyValid(null);
     setPrivateKeyError('');
@@ -1093,15 +1112,31 @@ const SubmitOffer = () => {
 
                 {/* Too many inputs to sign a single transfer */}
                 {selectedWallet && tooManyUtxos && (
-                  <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-4 space-y-2">
-                    <p className="text-sm font-semibold text-red-700 dark:text-red-400">{OFFER.consolidateTitle}</p>
-                    <p className="text-xs text-red-600 dark:text-red-500">
-                      {OFFER.consolidateBody} This wallet has <strong>{utxoCount}</strong> separate inputs; the limit is {MAX_UTXOS}.
-                    </p>
-                    <a href="https://youtu.be/kBi4MKcc4qM?si=bIeWS_dlgHjFproo" target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:underline">
-                      Watch: how to consolidate your wallet
-                    </a>
+                  <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-4 space-y-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold text-red-700 dark:text-red-400">{OFFER.consolidateTitle}</p>
+                      <p className="text-xs text-red-600 dark:text-red-500">{OFFER.consolidateBody}</p>
+                      <p className="text-xs text-red-600 dark:text-red-500">
+                        {fill(OFFER.consolidatePieces, { count: utxoCount ?? 0, max: MAX_UTXOS })}
+                      </p>
+                    </div>
+                    {session && (showConsolidate ? (
+                      <Suspense fallback={null}>
+                        <ConsolidateWallet
+                          address={selectedWallet}
+                          hexId={session.nostrHexId}
+                          onSettled={(count) => { setUtxoCount(count); setUtxoRefresh(n => n + 1); refreshBalances(); }}
+                        />
+                      </Suspense>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowConsolidate(true)}
+                        className="rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-white hover:bg-primary/90"
+                      >
+                        {CONSOLIDATE.openButton}
+                      </button>
+                    ))}
                   </div>
                 )}
 
@@ -1832,6 +1867,26 @@ const SubmitOffer = () => {
                       )}
                     </div>
                   )}
+
+                  {/* Too many pieces for one transfer: consolidate them here, with
+                      the key already typed above when it is this wallet's, and
+                      hold the transfer back until the consolidation confirms. */}
+                  {consolidateAtTransfer && offer?.senderWallet && session && (
+                    <div className="mt-4 space-y-2">
+                      <Suspense fallback={null}>
+                        <ConsolidateWallet
+                          address={offer.senderWallet}
+                          hexId={session.nostrHexId}
+                          initialKey={privateKeyValid === true ? privateKey : undefined}
+                          onPendingChange={setConsolidationPending}
+                          onSettled={() => { setTransferError(null); refreshBalances(); }}
+                        />
+                      </Suspense>
+                      {consolidationPending && (
+                        <p className="text-xs font-medium text-amber-700 dark:text-amber-400">{CONSOLIDATE.waitBeforeTransfer}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex flex-col-reverse sm:flex-row sm:justify-between gap-3">
@@ -1840,9 +1895,9 @@ const SubmitOffer = () => {
                   </Link>
                   <button
                     onClick={transfer}
-                    disabled={transferring || !privateKey.trim() || privateKeyValid !== true || hopeless}
+                    disabled={transferring || !privateKey.trim() || privateKeyValid !== true || hopeless || consolidationPending}
                     className={`rounded-xl px-8 py-3 font-semibold text-white transition-all ${
-                      transferring || !privateKey.trim() || privateKeyValid !== true || hopeless
+                      transferring || !privateKey.trim() || privateKeyValid !== true || hopeless || consolidationPending
                         ? 'bg-muted-foreground/30 cursor-not-allowed'
                         : 'bg-primary hover:bg-primary/90 shadow-lg'
                     }`}

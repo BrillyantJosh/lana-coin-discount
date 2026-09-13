@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import apiRouter from './routes/api.js';
 import { createAcquisitionsRouter } from './routes/acquisitions.js';
 import { createTreasuryRouter } from './routes/treasury.js';
+import { createConsolidationRouter } from './routes/consolidation.js';
 import { pullRoundMandates } from './lib/roundMandateSync.js';
 import { applyPublishedRoundTerms } from './lib/publishedRoundTerms.js';
 import { publishBudgetSettlements } from './lib/budgetSettlementPublisher.js';
@@ -80,6 +81,12 @@ app.use('/api/acquisitions', createAcquisitionsRouter({
 // push/terms endpoints, and the admin worklist. Reads the tables the
 // acquisitions router's gate reads; writes nothing that moves money.
 app.use('/api/treasury', createTreasuryRouter());
+// Merging a wallet's pieces so a transfer can carry them — copied from
+// MejmoSeFajn's Consolidate page (13 Sept 2026). Signs with the seller's key
+// exactly as the transfer does; the only output is the seller's own wallet.
+app.use('/api/wallets', createConsolidationRouter({
+  walletCheckBaseUrl: process.env.WALLET_CHECK_BASE_URL || 'https://check.lanapays.us',
+}));
 app.use('/health', (_req, res) => res.redirect('/api/health'));
 
 // Heartbeat status for the admin page. It MUST be registered before the static

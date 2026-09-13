@@ -236,7 +236,7 @@ describe('the transfer of 10 September 2026, run again', () => {
     });
     expect(r.success).toBe(false);
     expect(r.code).toBe('TOO_MANY_UTXOS');
-    expect(r.error).toContain('Consolidate them with Registrar');
+    expect(r.error).toContain('Consolidate them on this page');
     expect(r.error).not.toContain('UTXO'); // words the seller can act on, not a code
     expect(r.retryable).toBe(true);   // consolidating is the cure, and it works
     expect(chain.broadcast).toHaveLength(0);

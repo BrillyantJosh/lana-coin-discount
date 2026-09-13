@@ -8,6 +8,7 @@ import {
   rewriteStoredReviewPhrase,
   stuckTransfers,
 } from './roundMandateSchema.js';
+import { WALLET_CONSOLIDATION_SCHEMA_SQL } from '../lib/consolidation.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -304,6 +305,8 @@ for (const sql of migrationColumns) {
 // read-only file, missing table) throws and stops the boot on purpose.
 db.exec(ROUND_MANDATE_SCHEMA_SQL);
 db.exec(BUDGET_SETTLEMENT_SCHEMA_SQL);
+// Merges of a seller's wallet pieces signed on the offer page (routes/consolidation.ts).
+db.exec(WALLET_CONSOLIDATION_SCHEMA_SQL);
 for (const sql of ROUND_MANDATE_OFFER_COLUMNS) addColumnIfMissing(db, sql);
 addColumnIfMissing(db, OFFER_DECISION_REASON_STATUS_COLUMN);
 addColumnIfMissing(db, KIND_38888_SPLIT_ENDS_AT_COLUMN);

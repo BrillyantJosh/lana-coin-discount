@@ -41,6 +41,13 @@ async function connectElectrum(servers: ElectrumServer[], maxRetries = 1): Promi
       try {
         const socket = await new Promise<net.Socket>((resolve, reject) => {
           const conn = net.connect(server.port, server.host, () => {
+            // The 8 s below bounds CONNECTING. Left on, it is an idle timer for
+            // the whole call: an answer slower than 8 s had its socket destroyed
+            // under it, and the caller then waited out its own timeout and
+            // reported a failure — for a broadcast the network had already
+            // taken (review of the consolidation route, 13 Sept 2026). Once
+            // connected, each call's own timeout is the only clock.
+            conn.setTimeout(0);
             resolve(conn);
           });
           conn.setTimeout(8000);
@@ -73,7 +80,15 @@ export async function electrumCall(
 ): Promise<any> {
   let socket: net.Socket | null = null;
   try {
-    socket = await connectElectrum(servers);
+    try {
+      socket = await connectElectrum(servers);
+    } catch (err: any) {
+      // Nothing was written anywhere: the request provably never left this
+      // server. A broadcast caller must be able to tell this from a lost
+      // answer, which it cannot rule out (routes/consolidation.ts).
+      if (err && typeof err === 'object') err.notSent = true;
+      throw err;
+    }
     const request = { id: Date.now(), method, params };
     const requestData = JSON.stringify(request) + '\n';
 
@@ -92,7 +107,10 @@ export async function electrumCall(
             responseText = responseText.trim();
             const response = JSON.parse(responseText);
             if (response.error) {
-              reject(new Error(`Electrum error: ${JSON.stringify(response.error)}`));
+              // electrum's own explicit refusal — an answer, not a silence.
+              const refusal: any = new Error(`Electrum error: ${JSON.stringify(response.error)}`);
+              refusal.electrumRefused = true;
+              reject(refusal);
             } else {
               resolve(response.result);
             }
@@ -105,6 +123,13 @@ export async function electrumCall(
       socket!.on('error', (err) => {
         clearTimeout(timer);
         reject(err);
+      });
+
+      // A connection that closes before answering will never answer; say so now
+      // rather than after the full timeout. (After an answer this is a no-op.)
+      socket!.on('close', () => {
+        clearTimeout(timer);
+        reject(new Error('Electrum connection closed before answering'));
       });
 
       socket!.write(requestData);

@@ -664,8 +664,11 @@ export function planTransfer(params: {
     // route forgives at every step that commits something. Reusing it means the
     // two layers cannot disagree — a wallet the route called backed is never
     // refused here as short, and a wallet the route would have refused is never
-    // swept here. A seller who consolidates his pieces and loses the merge fee
-    // stays inside it; an unconfirmed credit that never lands does not.
+    // swept here. A seller who consolidates his pieces on the offer page and
+    // loses the merge fee stays inside it — because that page, and the server
+    // behind it, refuse a consolidation whose fee would not (see
+    // consolidation.ts feeRoomLanoshis; a 20-piece merge alone costs 546,600,
+    // more than this tolerance). An unconfirmed credit that never lands does not.
     const floorLanoshis = params.amountLanoshis !== undefined && params.amountLanoshis > 0
       ? params.amountLanoshis - BACKING_TOLERANCE_LANOSHIS
       : undefined;
@@ -901,7 +904,7 @@ export function describePlanFailure(plan: TransferPlanFailure): { error: string;
       // says what to do in words rather than naming its own error constant.
       return {
         code: 'TOO_MANY_UTXOS',
-        error: `This wallet holds its ${lanaText(plan.totalBalance)} LANA in ${plan.utxoCount} separate pieces, and one transfer can carry at most ${plan.maxInputs}. Consolidate them with Registrar and send again. Nothing has moved.`,
+        error: `This wallet holds its ${lanaText(plan.totalBalance)} LANA in ${plan.utxoCount} separate pieces, and one transfer can carry at most ${plan.maxInputs}. Consolidate them on this page, then send again. Nothing has moved.`,
       };
     case 'EMPTY_WALLET_EXCEEDS_CEILING':
       return {
