@@ -11,10 +11,12 @@ import { DISCOUNT_BAND } from '../../server/lib/roundMandate';
  * ROUND DATES & DISCOUNTS — the terms of the financing-round mandate.
  *
  * One date and one discount per round, per Split (owner's decisions 1 and 2,
- * 4 Sep 2026). lana.discount is the authority for both: the KIND 30960 event
- * only echoes them. A date OPENS a mandate and grants no right to sell (BEF
- * P08 §8); the discount is orientation within the P08 §4 band and is flagged,
- * not refused, outside it.
+ * 4 Sep 2026). Since 13 Sept 2026 the owner publishes them in KIND 38888
+ * (split_payout) and the server copies them in; for such a split this page is
+ * read-only and says where to change them. A split never published there is
+ * still typed here. The KIND 30960 event only echoes them. A date OPENS a
+ * mandate and grants no right to sell (BEF P08 §8); the discount is
+ * orientation within the P08 §4 band and is flagged, not refused, outside it.
  *
  * Dates are entered as UTC. A datetime-local input has no zone of its own,
  * so the value is read and written as if it were UTC — the field label says
@@ -41,6 +43,14 @@ interface RoundsResponse {
    * app_settings, not in acquisition_rounds, and it applies to every split.
    */
   lanapaysOnly?: boolean;
+  /** The terms of this split came from KIND 38888 — change them there, not here. */
+  publishedIn38888?: boolean;
+  kind38888?: {
+    eventId: string | null;
+    createdAt: number | null;
+    /** This split's rows in the event that were refused, with why. */
+    rejected: Array<{ split: string; reason: string }>;
+  };
 }
 
 /** ISO → "YYYY-MM-DDTHH:mm" in UTC, for a datetime-local input. */
@@ -138,6 +148,8 @@ const AdminTreasuryRounds = () => {
     return out;
   };
 
+  const locked = data?.publishedIn38888 === true;
+
   const save = async () => {
     if (!session || split === null) return;
     setSaving(true);
@@ -147,10 +159,12 @@ const AdminTreasuryRounds = () => {
         opensAt: localUtcToIso(opens[round]),
         discountPercent: (discount[round] || '').trim() === '' ? null : Number(discount[round]),
       }));
+      // A published split's terms are not ours to send; the switch still is.
+      const body = locked ? { split, lanapaysOnly } : { split, rounds, lanapaysOnly };
       const res = await fetch('/api/treasury/admin/rounds', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
-        body: JSON.stringify({ split, rounds, lanapaysOnly }),
+        body: JSON.stringify(body),
       });
       const json = await res.json();
       if (!res.ok || json.error) {
@@ -252,15 +266,49 @@ const AdminTreasuryRounds = () => {
             <div className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold text-foreground">Split {split ?? '—'}</h2>
-                <button
-                  onClick={prefill}
-                  disabled={!data}
-                  className="rounded-lg border border-border px-3 py-1.5 text-xs font-bold text-foreground hover:bg-accent transition-colors disabled:opacity-50"
-                  title={data?.directFundReachable === false ? ADMIN_ROUNDS.prefillUnreachable : undefined}
-                >
-                  {ADMIN_ROUNDS.prefill}
-                </button>
+                {!locked && (
+                  <button
+                    onClick={prefill}
+                    disabled={!data}
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs font-bold text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                    title={data?.directFundReachable === false ? ADMIN_ROUNDS.prefillUnreachable : undefined}
+                  >
+                    {ADMIN_ROUNDS.prefill}
+                  </button>
+                )}
               </div>
+
+              {locked ? (
+                <div className="rounded-lg border border-sky-200 bg-sky-50 dark:bg-sky-950/30 dark:border-sky-800 px-4 py-3 space-y-2">
+                  <p className="text-sm font-semibold text-sky-900 dark:text-sky-200">{ADMIN_ROUNDS.publishedTitle}</p>
+                  <p className="text-xs leading-relaxed text-sky-900 dark:text-sky-200">{fill(ADMIN_ROUNDS.publishedBody, { split: split ?? '' })}</p>
+                  {data?.kind38888?.eventId && (
+                    <p className="text-[11px] text-sky-800/80 dark:text-sky-300/80 font-mono">
+                      {fill(ADMIN_ROUNDS.publishedEvent, {
+                        event: `${data.kind38888.eventId.slice(0, 12)}…`,
+                        when: data.kind38888.createdAt ? fmtUtcLong(new Date(data.kind38888.createdAt * 1000).toISOString()) : '—',
+                      })}
+                    </p>
+                  )}
+                  <a
+                    href={ADMIN_ROUNDS.publishedUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-block rounded-lg border border-sky-300 dark:border-sky-700 px-3 py-1.5 text-xs font-bold text-sky-900 dark:text-sky-100 hover:bg-sky-100 dark:hover:bg-sky-900/40"
+                  >
+                    {ADMIN_ROUNDS.publishedCta}
+                  </a>
+                </div>
+              ) : (
+                <p className="text-xs leading-relaxed text-muted-foreground">{fill(ADMIN_ROUNDS.notPublished, { split: split ?? '' })}</p>
+              )}
+
+              {(data?.kind38888?.rejected || []).map((r, i) => (
+                <div key={i} className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3">
+                  <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">{ADMIN_ROUNDS.refusedTitle}</p>
+                  <p className="text-xs text-amber-800 dark:text-amber-300">{fill(ADMIN_ROUNDS.refusedBody, { reason: r.reason })}</p>
+                </div>
+              ))}
 
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -282,9 +330,10 @@ const AdminTreasuryRounds = () => {
                           <td className="py-3 pr-3">
                             <input
                               type="datetime-local"
+                              disabled={locked}
                               value={opens[round] || ''}
                               onChange={e => setOpens(prev => ({ ...prev, [round]: e.target.value }))}
-                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-70 disabled:cursor-not-allowed"
                             />
                             {opens[round] && (
                               <p className="mt-1 text-[11px] text-muted-foreground">= {fmtUtcLong(localUtcToIso(opens[round]))}</p>
@@ -294,10 +343,11 @@ const AdminTreasuryRounds = () => {
                             <div className="relative w-28">
                               <input
                                 type="number" min="0" max="100" step="0.5"
+                                disabled={locked}
                                 value={discount[round] || ''}
                                 onChange={e => setDiscount(prev => ({ ...prev, [round]: e.target.value }))}
                                 placeholder={row?.prefillDiscountPercent !== null && row?.prefillDiscountPercent !== undefined ? `DF: ${row.prefillDiscountPercent}` : ''}
-                                className="w-full rounded-lg border border-border bg-background px-3 py-2 pr-8 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                className="w-full rounded-lg border border-border bg-background px-3 py-2 pr-8 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-70 disabled:cursor-not-allowed"
                               />
                               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-bold">%</span>
                             </div>
@@ -309,7 +359,13 @@ const AdminTreasuryRounds = () => {
                             {row?.updatedAt ? (
                               <>
                                 {row.updatedAt}
-                                {row.updatedBy && <><br /><span className="font-mono">{row.updatedBy.slice(0, 12)}…</span></>}
+                                {row.updatedBy && (
+                                  <><br /><span className="font-mono">
+                                    {row.updatedBy.startsWith('kind38888:')
+                                      ? `${ADMIN_ROUNDS.lastChangeEvent} ${row.updatedBy.slice('kind38888:'.length, 'kind38888:'.length + 12)}…`
+                                      : `${row.updatedBy.slice(0, 12)}…`}
+                                  </span></>
+                                )}
                               </>
                             ) : '—'}
                           </td>
@@ -334,7 +390,7 @@ const AdminTreasuryRounds = () => {
                     saving || split === null ? 'bg-muted-foreground/30 cursor-not-allowed' : 'bg-primary hover:bg-primary/90'
                   }`}
                 >
-                  {saving ? 'Saving…' : ADMIN_ROUNDS.save}
+                  {saving ? 'Saving…' : locked ? ADMIN_ROUNDS.saveScope : ADMIN_ROUNDS.save}
                 </button>
               </div>
             </div>

@@ -9,6 +9,7 @@ import apiRouter from './routes/api.js';
 import { createAcquisitionsRouter } from './routes/acquisitions.js';
 import { createTreasuryRouter } from './routes/treasury.js';
 import { pullRoundMandates } from './lib/roundMandateSync.js';
+import { applyPublishedRoundTerms } from './lib/publishedRoundTerms.js';
 import { fetchKind38888, fetchKind0, Kind38888Data } from './lib/nostr.js';
 import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb } from './db/index.js';
 import { selectWholeGroups } from './lib/autoSendSelection.js';
@@ -173,6 +174,27 @@ async function syncKind38888ToDb(): Promise<boolean> {
     );
 
     console.log(`[lana-discount] KIND 38888 synced — ${data.relays.length} relays, version ${data.version}`);
+
+    // Payout dates and sell fees per round now come from the same event. Its
+    // own try: a refusal here must not report the parameters sync as failed.
+    try {
+      const terms = applyPublishedRoundTerms(db, JSON.parse(data.raw_event));
+      if (terms.outcome === 'ignored' && terms.reason === 'unverified') {
+        console.warn(`[lana-discount] Round terms NOT read from KIND 38888 ${data.event_id.slice(0, 12)}… — signature or author did not verify`);
+      }
+      for (const split of terms.changed) {
+        const rows = (db.prepare('SELECT round, opens_at, discount_percent FROM acquisition_rounds WHERE split = ? ORDER BY round').all(split) as any[])
+          .map(r => `R${r.round}:${r.opens_at ?? '-'}/${r.discount_percent ?? '-'}%`).join(' ');
+        console.log(`[lana-discount] Round terms for Split ${split} taken from KIND 38888 ${data.event_id.slice(0, 12)}… (${rows})`);
+      }
+      if (terms.rejectedChanged) {
+        for (const r of terms.rejected) {
+          console.warn(`[lana-discount] KIND 38888 round terms for Split ${r.split} refused, last good terms kept: ${r.reason}`);
+        }
+      }
+    } catch (err: any) {
+      console.error('[lana-discount] Round terms from KIND 38888 not applied:', err?.message || err);
+    }
     return true;
   } catch (error) {
     console.error('[lana-discount] KIND 38888 sync failed:', error);

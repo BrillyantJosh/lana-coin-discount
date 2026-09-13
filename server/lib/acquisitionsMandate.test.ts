@@ -27,7 +27,8 @@ import { createTreasuryRouter } from '../routes/treasury';
 import { ingestMandateEvent } from './roundMandateSync';
 import { createReplayCache } from './requestSignature';
 import { expireStaleOffers, ACCEPTED_TRANSFER_WINDOW_HOURS, TRANSFER_NOT_COMPLETED } from './acquisitionOffer';
-import { makeKey, mandateEvent, signedHeaders, setSplit, setSetting, setRoundTerms, type TestKey } from './roundMandateTestKit';
+import { makeKey, mandateEvent, signedHeaders, setSplit, setSetting, setRoundTerms, signEvent, type TestKey } from './roundMandateTestKit';
+import { applyPublishedRoundTerms } from './publishedRoundTerms';
 import { createHash } from 'crypto';
 
 const LANA = 100_000_000;
@@ -833,6 +834,66 @@ describe('/api/treasury', () => {
     expect(ok.status).toBe(200);
     expect(body.warnings).toHaveLength(1);
     expect(body.rounds.find((x: any) => x.round === 1).discount_percent).toBe(21);
+  });
+
+  /**
+   * KIND 38888 split_payout, 13 Sept 2026: once the owner publishes a split's
+   * payout dates and sell fees there, this form must not become a second place
+   * to change them — a value saved here would be put back within a minute.
+   */
+  describe('round terms published in KIND 38888', () => {
+    const admin = { 'content-type': 'application/json', 'x-admin-hex-id': ADMIN };
+    const put = (body: any) => fetch(base + '/api/treasury/admin/rounds', { method: 'PUT', headers: admin, body: JSON.stringify(body) })
+      .then(async r => ({ status: r.status, body: await r.json() as any }));
+    const publishSplit8 = () => {
+      const authority = makeKey();
+      const e = signEvent(authority, {
+        kind: 38888, created_at: 1_789_300_000, content: '{}',
+        tags: [['d', 'main'], ['split', '9'], ['split_payout', '8', '1', '1788932000', '22'], ['split_payout', '8', '2', '', '25'], ['split_payout', '8', '3', '', '']],
+      });
+      expect(applyPublishedRoundTerms(db, e, { author: authority.pub }).changed).toEqual([8]);
+      return e;
+    };
+
+    it('the page opens on the split being paid out, not the one still running', async () => {
+      const r = await get('/api/treasury/admin/rounds', { 'x-admin-hex-id': ADMIN });
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ split: 8, currentSplit: 9, publishedIn38888: false });
+    });
+
+    it('says where the terms come from', async () => {
+      const e = publishSplit8();
+      const r = await get('/api/treasury/admin/rounds?split=8', { 'x-admin-hex-id': ADMIN });
+      expect(r.body.publishedIn38888).toBe(true);
+      expect(r.body.kind38888).toMatchObject({ eventId: e.id, createdAt: 1_789_300_000, rejected: [] });
+      expect(r.body.rounds[0]).toMatchObject({ round: 1, opensAt: '2026-09-09T05:33:20.000Z', discountPercent: 22 });
+    });
+
+    it('refuses to overwrite them from the form', async () => {
+      publishSplit8();
+      const r = await put({ split: 8, rounds: [{ round: 1, opensAt: '2026-09-14T22:00:00Z', discountPercent: 30 }] });
+      expect(r.status).toBe(409);
+      expect(r.body.code).toBe('PUBLISHED_IN_KIND_38888');
+      expect((db.prepare('SELECT discount_percent FROM acquisition_rounds WHERE split = 8 AND round = 1').get() as any).discount_percent).toBe(22);
+    });
+
+    it('still lets the scope switch on the same page be saved', async () => {
+      publishSplit8();
+      const r = await put({ split: 8, lanapaysOnly: true });
+      expect(r.status).toBe(200);
+      expect(r.body.lanapaysOnly).toBe(true);
+      expect((db.prepare('SELECT discount_percent FROM acquisition_rounds WHERE split = 8 AND round = 1').get() as any).discount_percent).toBe(22);
+    });
+
+    it('a split the event does not carry is still typed here', async () => {
+      publishSplit8();
+      const r = await put({ split: 9, rounds: [{ round: 1, opensAt: null, discountPercent: 21 }] });
+      expect(r.status).toBe(200);
+    });
+
+    it('a request with neither rounds nor the switch is still refused', async () => {
+      expect((await put({ split: 9 })).status).toBe(400);
+    });
   });
 });
 

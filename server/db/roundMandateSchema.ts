@@ -15,10 +15,12 @@
 import type Database from 'better-sqlite3';
 
 export const ROUND_MANDATE_SCHEMA_SQL = `
-  -- One date and one discount per (split, round). lana.discount is the
-  -- AUTHORITY for both (plan: "Datumi fail-closed"): a missing row, or a row
-  -- with no date, means the round is closed. The event's own opens_at tag is
-  -- an echo of this table, never the other way round.
+  -- One date and one discount per (split, round): a missing row, or a row
+  -- with no date, means the round is closed (plan: "Datumi fail-closed").
+  -- Since 13 Sept 2026 the owner publishes them in KIND 38888 (split_payout)
+  -- and publishedRoundTerms.ts copies them here, marking updated_by
+  -- 'kind38888:<event id>'; a split never published there keeps what was typed
+  -- on the admin form. KIND 30960's opens_at tag echoes this table.
   CREATE TABLE IF NOT EXISTS acquisition_rounds (
     split INTEGER NOT NULL,
     round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 3),

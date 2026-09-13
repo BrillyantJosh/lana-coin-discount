@@ -720,6 +720,22 @@ export const ADMIN_ROUNDS = {
   bandWarning: 'Outside the BEF P08 §4 orientation band of {min}–{max} %.',
   save: 'Save round terms',
   saved: 'Round terms saved',
+  // Since 13 Sept 2026 the owner publishes these in KIND 38888 (split_payout).
+  publishedUrl: 'https://lananostr.site/update-lana-system-parameters',
+  publishedTitle: 'Published in KIND 38888',
+  publishedBody:
+    'The dates and discounts for Split {split} come from the Lana System Parameters (KIND 38888). ' +
+    'They are changed only there — open the form on lananostr.site, section "Payouts", publish, ' +
+    'and lana.discount takes the new terms over within a minute.',
+  publishedCta: 'Open the form on lananostr.site',
+  publishedEvent: 'Event {event}, published {when}',
+  notPublished:
+    'Split {split} is not published in KIND 38888 yet, so the terms below are the ones saved on this page. ' +
+    'Once its payouts are published on lananostr.site, they replace these and this form becomes read-only.',
+  refusedTitle: 'KIND 38888 carries terms for this Split that lana.discount refused',
+  refusedBody: 'Nothing was changed; the terms below are the last good ones. Fix it on lananostr.site: {reason}',
+  lastChangeEvent: 'KIND 38888',
+  saveScope: 'Save',
 } as const;
 
 /** The payouts screen — the one place a document about a person is produced. */
