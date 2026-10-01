@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import { knownNames, resolveNames } from '@/lib/counterpartyNames';
 import AdminNav, { OFFERS_COUNT_EVENT } from '@/components/AdminNav';
@@ -117,13 +119,13 @@ const AdminOffers = () => {
     if (!ref || !reason) { toast.error('Reference and reason are both required'); return; }
     setVoiding(true);
     try {
-      const res = await fetch(`/api/acquisitions/admin/${encodeURIComponent(ref)}/void`, {
+      const res = await signedFetch(`/api/acquisitions/admin/${encodeURIComponent(ref)}/void`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason }),
       });
       const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || 'Void failed');
+      if (!res.ok || data.error) throw new Error(refusalText(data, 'Void failed'));
       toast.success(`${ref} voided — its cap returns to the mandate`);
       setVoidRef(''); setVoidReason('');
     } catch (err: any) {
@@ -147,11 +149,9 @@ const AdminOffers = () => {
     if (!session) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/acquisitions/admin/queue', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch('/api/acquisitions/admin/queue');
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
       const list: QueueOffer[] = data.offers || [];
       setOffers(list);
       // A hex says nothing about who is selling; the name does.
@@ -176,16 +176,15 @@ const AdminOffers = () => {
     if (!session) return;
     setBusyRef(ref);
     try {
-      const res = await fetch(`/api/acquisitions/admin/${ref}/decide`, {
+      const res = await signedFetch(`/api/acquisitions/admin/${ref}/decide`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-hex-id': session.nostrHexId,
         },
         body: JSON.stringify({ action, ...body }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
 
       if (action === 'decline') {
         toast.success(`${ref} declined`);

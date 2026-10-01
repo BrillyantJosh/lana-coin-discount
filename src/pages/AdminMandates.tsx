@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { ADMIN_MANDATES, MANDATE, OFFER_STATUS_LABELS } from '@/copy';
@@ -252,9 +254,9 @@ export default function AdminMandates() {
       // are always the same set. It was decided in the browser for a few
       // hours, and the totals went on describing the whole round.
       if (!allPicked) q.set('settlement', picked.join(','));
-      const res = await fetch(`/api/treasury/admin/mandates?${q.toString()}`, { headers: { 'x-admin-hex-id': session.nostrHexId } });
+      const res = await signedFetch(`/api/treasury/admin/mandates?${q.toString()}`);
       const json: MandatesResponse & { error?: string } = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Failed to load mandates');
+      if (!res.ok || json.error) throw new Error(refusalText(json, 'Failed to load mandates'));
       setData(json);
       if (split === null) setSplit(json.split);
       const missing = [...new Set(json.mandates.map(m => m.financerHex))].filter(h => names[h] === undefined);
@@ -272,9 +274,9 @@ export default function AdminMandates() {
     if (!session) return;
     setSyncing(true);
     try {
-      const res = await fetch('/api/treasury/admin/mandates/sync', { method: 'POST', headers: { 'x-admin-hex-id': session.nostrHexId } });
+      const res = await signedFetch('/api/treasury/admin/mandates/sync', { method: 'POST' });
       const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Sync failed');
+      if (!res.ok || json.error) throw new Error(refusalText(json, 'Sync failed'));
       toast.success(`Synced — ${json.seen ?? 0} seen, ${json.stored ?? 0} stored, ${json.rejected ?? 0} rejected`);
       await load();
     } catch (err: any) {
@@ -290,13 +292,13 @@ export default function AdminMandates() {
     if (restricted && !reason) { toast.error(ADMIN_MANDATES.restrictReasonRequired); return; }
     setRestricting(true);
     try {
-      const res = await fetch(`/api/treasury/admin/restrictions/${encodeURIComponent(restrictFor.financerHex)}`, {
+      const res = await signedFetch(`/api/treasury/admin/restrictions/${encodeURIComponent(restrictFor.financerHex)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ restricted, reason }),
       });
       const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Could not save');
+      if (!res.ok || json.error) throw new Error(refusalText(json, 'Could not save'));
       toast.success(restricted ? ADMIN_MANDATES.restrictDone : ADMIN_MANDATES.restrictLifted);
       setRestrictFor(null); setRestrictReason('');
       await load();
@@ -314,13 +316,13 @@ export default function AdminMandates() {
     if (released && releaseFor.round === 1 && !round1Confirm) { toast.error('Confirm the round-1 release first.'); return; }
     setReleasing(true);
     try {
-      const res = await fetch(`/api/treasury/admin/mandates/${encodeURIComponent(releaseFor.mandateRef)}/release`, {
+      const res = await signedFetch(`/api/treasury/admin/mandates/${encodeURIComponent(releaseFor.mandateRef)}/release`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ released, reason }),
       });
       const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Release failed');
+      if (!res.ok || json.error) throw new Error(refusalText(json, 'Release failed'));
       toast.success(released ? 'Mandate released' : 'Release withdrawn');
       setReleaseFor(null); setReleaseReason(''); setRound1Confirm(false);
       await load();
@@ -337,13 +339,13 @@ export default function AdminMandates() {
     if (!reason) { toast.error('A reason is required.'); return; }
     setVoiding(true);
     try {
-      const res = await fetch(`/api/acquisitions/admin/${voidFor.offerRef}/void`, {
+      const res = await signedFetch(`/api/acquisitions/admin/${voidFor.offerRef}/void`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason }),
       });
       const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Void failed');
+      if (!res.ok || json.error) throw new Error(refusalText(json, 'Void failed'));
       toast.success(`${voidFor.offerRef} voided`);
       setVoidFor(null); setVoidReason('');
       await load();

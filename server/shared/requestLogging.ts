@@ -13,6 +13,7 @@
  */
 import type { Express } from 'express';
 import type Database from 'better-sqlite3';
+import { verifyRequestNip98, nip98Refusal } from '../lib/nip98Auth.js';
 
 const ROOT_ADMIN_HEX = '56e8670aa65491f8595dc3a71c94aa7445dcdca755ca5f77c07218498a362061';
 const ASSET_RE = /\.(js|css|map|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot)$/i;
@@ -51,8 +52,14 @@ export function installRequestLogging(app: Express, db: Database.Database): void
   const purgeTimer = setInterval(purge, 60 * 60 * 1000);
   (purgeTimer as any).unref?.();
   app.get('/api/request-logs', (req, res) => {
-    const caller = String(req.headers['x-admin-hex'] || req.headers['x-admin-hex-id'] || req.query.admin_hex || '').toLowerCase();
-    if (caller !== ROOT_ADMIN_HEX) return res.status(403).json({ error: 'forbidden' });
+    // Root only, and root must SIGN (2 Oct 2026): this used to compare a bare
+    // x-admin-hex / ?admin_hex — a public key anyone could copy — to ROOT.
+    const r = verifyRequestNip98(req);
+    if (r.ok === false) {
+      console.warn(`[admin-auth] REJECT ${req.method} ${String(req.originalUrl || req.url || '').split('?')[0]} reason=${r.reason}`);
+      return res.status(403).json(nip98Refusal(r.reason));
+    }
+    if (r.hex !== ROOT_ADMIN_HEX) return res.status(403).json({ error: 'forbidden' });
     const limit = Math.min(parseInt(String(req.query.limit || '200')) || 200, 2000);
     const q = String(req.query.q || '').trim();
     const rows = q

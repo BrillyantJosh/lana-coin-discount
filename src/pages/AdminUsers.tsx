@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 
@@ -36,11 +38,9 @@ const AdminUsers = () => {
   const fetchAdmins = async () => {
     if (!session) return;
     try {
-      const res = await fetch('/api/admin/users', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch('/api/admin/users');
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
       setAdmins(data.admins || []);
     } catch (err) {
       console.error('Failed to fetch admins:', err);
@@ -61,18 +61,17 @@ const AdminUsers = () => {
 
     setAdding(true);
     try {
-      const res = await fetch('/api/admin/users', {
+      const res = await signedFetch('/api/admin/users', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-hex-id': session.nostrHexId,
         },
         body: JSON.stringify({ hexId, label: newLabel.trim() || null }),
       });
 
       const data = await res.json();
       if (data.error) {
-        toast.error(data.error);
+        toast.error(refusalText(data, data.error));
         return;
       }
 
@@ -93,14 +92,13 @@ const AdminUsers = () => {
     setRemovingId(hexId);
 
     try {
-      const res = await fetch(`/api/admin/users/${hexId}`, {
+      const res = await signedFetch(`/api/admin/users/${hexId}`, {
         method: 'DELETE',
-        headers: { 'x-admin-hex-id': session.nostrHexId },
       });
 
       const data = await res.json();
       if (data.error) {
-        toast.error(data.error);
+        toast.error(refusalText(data, data.error));
         return;
       }
 

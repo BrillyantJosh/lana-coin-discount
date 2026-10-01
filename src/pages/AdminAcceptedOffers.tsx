@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { knownNames, resolveNames } from '@/lib/counterpartyNames';
@@ -322,11 +324,9 @@ const AdminAcceptedOffers = () => {
     if (!session) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/acquisitions/admin/accepted', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch('/api/acquisitions/admin/accepted');
       const body = await res.json();
-      if (body.error) throw new Error(body.error);
+      if (body.error) throw new Error(refusalText(body, body.error));
       setData(body as AcceptedResponse);
       // A hex says nothing about who sold; the name does.
       const list: AcceptedOffer[] = body.offers || [];

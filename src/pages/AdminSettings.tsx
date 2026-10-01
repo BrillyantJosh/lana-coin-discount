@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import {
@@ -135,11 +137,9 @@ const AdminSettings = () => {
   const fetchSettings = async () => {
     if (!session) return;
     try {
-      const res = await fetch('/api/admin/settings', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch('/api/admin/settings');
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
 
       const bwId = data.settings.buyback_wallet_id || '';
       let currencies: string[] = [];
@@ -178,9 +178,7 @@ const AdminSettings = () => {
 
       // Fetch bank accounts
       try {
-        const bankRes = await fetch('/api/admin/bank-accounts', {
-          headers: { 'x-admin-hex-id': session.nostrHexId },
-        });
+        const bankRes = await signedFetch('/api/admin/bank-accounts');
         const bankData = await bankRes.json();
         setBankAccounts(bankData.accounts || []);
       } catch {}
@@ -260,11 +258,10 @@ const AdminSettings = () => {
     setSaving(true);
     try {
       const acq = mandatePayload();
-      const res = await fetch('/api/admin/settings', {
+      const res = await signedFetch('/api/admin/settings', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-hex-id': session.nostrHexId,
         },
         body: JSON.stringify({
           buyback_wallet_id: walletId.trim(),
@@ -276,7 +273,7 @@ const AdminSettings = () => {
 
       const data = await res.json();
       if (data.error) {
-        toast.error(data.error);
+        toast.error(refusalText(data, data.error));
         return;
       }
 
@@ -644,13 +641,15 @@ const AdminSettings = () => {
                   onClick={async () => {
                     setSavingBanks(true);
                     try {
-                      await fetch('/api/admin/bank-accounts', {
+                      const res = await signedFetch('/api/admin/bank-accounts', {
                         method: 'PUT',
-                        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session!.nostrHexId },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ accounts: bankAccounts }),
                       });
+                      // A refused save (e.g. an unsigned session) must not read as "saved".
+                      if (!res.ok) throw new Error(refusalText(await res.json().catch(() => null), 'Failed to save bank accounts'));
                       toast.success('Bank accounts saved');
-                    } catch { toast.error('Failed to save bank accounts'); }
+                    } catch (err: any) { toast.error(err?.message || 'Failed to save bank accounts'); }
                     setSavingBanks(false);
                   }}
                   disabled={savingBanks}

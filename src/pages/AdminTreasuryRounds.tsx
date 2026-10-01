@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { ADMIN_ROUNDS } from '@/copy';
@@ -77,9 +79,9 @@ const AdminTreasuryRounds = () => {
     setLoading(true);
     try {
       const q = s === null ? '' : `?split=${s}`;
-      const res = await fetch(`/api/treasury/admin/rounds${q}`, { headers: { 'x-admin-hex-id': session.nostrHexId } });
+      const res = await signedFetch(`/api/treasury/admin/rounds${q}`);
       const json: RoundsResponse & { error?: string } = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Failed to load round dates');
+      if (!res.ok || json.error) throw new Error(refusalText(json, 'Failed to load round dates'));
       setData(json);
       if (s === null) setSplit(json.split);
       setLanapaysOnly(json.lanapaysOnly === true);
@@ -94,13 +96,13 @@ const AdminTreasuryRounds = () => {
     if (!session) return;
     setSaving(true);
     try {
-      const res = await fetch('/api/treasury/admin/rounds', {
+      const res = await signedFetch('/api/treasury/admin/rounds', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lanapaysOnly }),
       });
       const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Save failed');
+      if (!res.ok || json.error) throw new Error(refusalText(json, 'Save failed'));
       setLanapaysOnly(json.lanapaysOnly === true);
       setData(d => (d ? { ...d, lanapaysOnly: json.lanapaysOnly === true } : d));
       toast.success(ADMIN_ROUNDS.savedScope);

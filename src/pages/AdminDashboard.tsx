@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { AdminPagination } from '@/components/AdminPagination';
@@ -70,11 +72,9 @@ const AdminDashboard = () => {
     if (!session || !isAdmin) return;
     const fetchStats = async () => {
       try {
-        const res = await fetch('/api/admin/stats', {
-          headers: { 'x-admin-hex-id': session.nostrHexId },
-        });
+        const res = await signedFetch('/api/admin/stats');
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        if (data.error) throw new Error(refusalText(data, data.error));
         setStats(data);
       } catch (err) {
         toast.error('Failed to load dashboard stats');
@@ -96,9 +96,7 @@ const AdminDashboard = () => {
         status: txStatus,
         search: txSearch,
       });
-      const res = await fetch(`/api/admin/transactions?${params}`, {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch(`/api/admin/transactions?${params}`);
       const data = await res.json();
       setTransactions(data.transactions || []);
       setTxTotal(data.total || 0);

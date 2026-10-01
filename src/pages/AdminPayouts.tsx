@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { buildStatementHtml } from '@/lib/statement';
@@ -258,11 +260,9 @@ const AdminPayouts = () => {
     if (!session) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/payouts', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch('/api/admin/payouts');
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
 
       // Fetch full KIND 0 profile for each user (payment methods + names)
       const usersWithProfiles = await Promise.all(
@@ -295,9 +295,7 @@ const AdminPayouts = () => {
   const fetchNextPayoutId = async () => {
     if (!session) return;
     try {
-      const res = await fetch('/api/admin/next-payout-id', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch('/api/admin/next-payout-id');
       const data = await res.json();
       if (data.payoutId) setNextPayoutId(data.payoutId);
     } catch {
@@ -344,11 +342,10 @@ const AdminPayouts = () => {
     try {
       // No order guard: the round order is shown, never enforced. The date on
       // the offer is what governs a settlement.
-      const res = await fetch('/api/admin/payouts', {
+      const res = await signedFetch('/api/admin/payouts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-hex-id': session.nostrHexId,
         },
         body: JSON.stringify({
           transactionId: sale.id,
@@ -359,7 +356,7 @@ const AdminPayouts = () => {
         }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
 
       toast.success(`Payout ${data.payout.payoutId} recorded successfully!`);
       setPayoutFormSaleId(null);

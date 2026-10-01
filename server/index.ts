@@ -17,6 +17,7 @@ import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb }
 import { selectWholeGroups } from './lib/autoSendSelection.js';
 import { settleBatchesWithSentLana } from './lib/batchSettlement.js';
 import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from './lib/sendLock.js';
+import { keepRawBody } from './lib/nip98Auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,7 +44,9 @@ app.use(cors({
     callback(null, false);
   },
 }));
-app.use(express.json({ limit: '50kb' }));
+// verify: keepRawBody keeps the exact bytes the client sent, so a signed admin
+// request's `payload` tag is checked against what arrived, not a re-serialisation.
+app.use(express.json({ limit: '50kb', verify: keepRawBody }));
 
 // ─── Request logging + 24h retention ──────────────────────
 // Breadcrumb trail of every request path, to debug stuck flows. Stores

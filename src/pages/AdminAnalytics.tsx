@@ -1,6 +1,8 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 
@@ -126,11 +128,9 @@ const AdminAnalytics = () => {
     try {
       const since = presetToSince(preset);
       const url = since ? `/api/admin/analytics?since=${since}` : '/api/admin/analytics';
-      const res = await fetch(url, {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch(url);
       const json = await res.json();
-      if (json.error) throw new Error(json.error);
+      if (json.error) throw new Error(refusalText(json, json.error));
       setData(json);
     } catch (err: any) {
       toast.error(err.message || 'Failed to load analytics');

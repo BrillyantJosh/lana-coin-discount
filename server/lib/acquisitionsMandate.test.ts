@@ -31,11 +31,15 @@ import { makeKey, mandateEvent, signedHeaders, setSplit, setSetting, setRoundTer
 import { applyPublishedRoundTerms } from './publishedRoundTerms';
 import { publishBudgetSettlements } from './budgetSettlementPublisher';
 import { createHash } from 'crypto';
+import { keepRawBody } from './nip98Auth';
+import { newSigner, nip98Header } from './nip98TestKit';
 
 const LANA = 100_000_000;
 const W1 = 'LKs7QqC2TVJ4y92waNrBjVZQB2oFhcmZqB';
 const W_OTHER = 'LdY5W1Qm6xXoTmr3hjCkGyeJ7YqTx6Zv4t';
-const ADMIN = 'c'.repeat(64);
+// The admin proves who it is by signing (NIP-98), so it needs a real key.
+const adminKey = newSigner();
+const ADMIN = adminKey.hex;
 const API_KEY = 'ldk_test_key';
 
 const db: Database.Database = getDbHandle();
@@ -63,7 +67,8 @@ const world = {
 };
 
 const app = express();
-app.use(express.json());
+// As in server/index.ts: the signed admin token covers the exact body bytes.
+app.use(express.json({ verify: keepRawBody }));
 app.use('/api/acquisitions', createAcquisitionsRouter({
   walletCheckBaseUrl: 'http://check.test',
   publishBuybackEvent: async () => undefined,
@@ -130,6 +135,19 @@ const post = (path: string, body: any, headers: Record<string, string> = {}) =>
     .then(async r => ({ status: r.status, body: await r.json() as any }));
 const get = (path: string, headers: Record<string, string> = {}) =>
   fetch(base + path, { headers }).then(async r => ({ status: r.status, body: await r.json() as any }));
+/** As the admin: signed over exactly this method, path and body — a fresh token per call (single use). */
+const adminPost = (path: string, body: any) =>
+  post(path, body, { authorization: nip98Header(adminKey, { method: 'POST', url: path, body: JSON.stringify(body) }) });
+const adminGet = (path: string) =>
+  get(path, { authorization: nip98Header(adminKey, { method: 'GET', url: path }) });
+const adminPut = (path: string, body: any) => {
+  const text = JSON.stringify(body);
+  return fetch(base + path, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', authorization: nip98Header(adminKey, { method: 'PUT', url: path, body: text }) },
+    body: text,
+  }).then(async r => ({ status: r.status, body: await r.json() as any }));
+};
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 /** The v2 scheme signs the BODY, so the body is built first and signed as sent. */
@@ -207,11 +225,11 @@ describe('proposal under a mandate', () => {
 
   it('a released mandate opens before its date', async () => {
     setRoundTerms(db, 8, 1, Math.floor(Date.now() / 1000) + 86400, 22);
-    const rel = await post(`/api/treasury/admin/mandates/${encodeURIComponent(`8:1:${seller.pub}`)}/release`, { released: true, reason: 'owner said so' }, { 'x-admin-hex-id': ADMIN });
+    const rel = await adminPost(`/api/treasury/admin/mandates/${encodeURIComponent(`8:1:${seller.pub}`)}/release`, { released: true, reason: 'owner said so' });
     expect(rel.status).toBe(200);
     expect((await propose(100)).body.offer.status).toBe('offered');
     // …and the release needs a reason.
-    const noReason = await post(`/api/treasury/admin/mandates/${encodeURIComponent(`8:1:${seller.pub}`)}/release`, { released: false, reason: '' }, { 'x-admin-hex-id': ADMIN });
+    const noReason = await adminPost(`/api/treasury/admin/mandates/${encodeURIComponent(`8:1:${seller.pub}`)}/release`, { released: false, reason: '' });
     expect(noReason.status).toBe(400);
   });
 
@@ -262,7 +280,7 @@ describe('proposal under a mandate', () => {
     // Under review reserves nothing on the mandate…
     expect((await propose(1000)).body.offer.status).toBe('under_review');
     // …and the admin's acceptance prices it at the round discount (22 %), not the class one.
-    const ok = await post(`/api/acquisitions/admin/${o.offerRef}/decide`, { action: 'accept' }, { 'x-admin-hex-id': ADMIN });
+    const ok = await adminPost(`/api/acquisitions/admin/${o.offerRef}/decide`, { action: 'accept' });
     expect(ok.status).toBe(200);
     expect(ok.body.offer.status).toBe('offered');
     expect(row(o.offerRef).discount_percent).toBe(22);
@@ -703,8 +721,8 @@ describe('accepted but never transferred', () => {
   it('an admin voids it with a reason and the remaining is free again', async () => {
     const ref = await acceptedRef(1000);
     expect((await post(`/api/acquisitions/admin/${ref}/void`, { reason: 'seller lost the key' })).status).toBe(403);
-    expect((await post(`/api/acquisitions/admin/${ref}/void`, { reason: '' }, { 'x-admin-hex-id': ADMIN })).status).toBe(400);
-    const r = await post(`/api/acquisitions/admin/${ref}/void`, { reason: 'seller lost the key' }, { 'x-admin-hex-id': ADMIN });
+    expect((await adminPost(`/api/acquisitions/admin/${ref}/void`, { reason: '' })).status).toBe(400);
+    const r = await adminPost(`/api/acquisitions/admin/${ref}/void`, { reason: 'seller lost the key' });
     expect(r.status).toBe(200);
     expect(r.body.offer.status).toBe('withdrawn');
     expect(row(ref)).toMatchObject({ status: 'withdrawn', decided_by: ADMIN, decision_reason: 'seller lost the key' });
@@ -726,13 +744,13 @@ describe('accepted but never transferred', () => {
     backdate(ref, 1000);
     expect(expireStaleOffers(db)).toBe(0);
     expect(row(ref).status).toBe('accepted');
-    const v = await post(`/api/acquisitions/admin/${ref}/void`, { reason: 'try' }, { 'x-admin-hex-id': ADMIN });
+    const v = await adminPost(`/api/acquisitions/admin/${ref}/void`, { reason: 'try' });
     expect(v.status).toBe(409);
     expect(v.body.code).toBe('ALREADY_SETTLED');
     expect(row(ref).status).toBe('accepted');
     // Voiding something that was never accepted is refused too.
     const offered = (await propose(100)).body.offer.offerRef;
-    expect((await post(`/api/acquisitions/admin/${offered}/void`, { reason: 'try' }, { 'x-admin-hex-id': ADMIN })).body.code).toBe('NOT_VOIDABLE');
+    expect((await adminPost(`/api/acquisitions/admin/${offered}/void`, { reason: 'try' })).body.code).toBe('NOT_VOIDABLE');
   });
 });
 
@@ -743,7 +761,7 @@ describe('admin decide on a mandate-bound offer', () => {
     db.prepare(`INSERT INTO acquisition_offers (offer_ref, user_hex_id, sender_wallet_id, wallet_class, lana_amount_lanoshis, lana_amount_display,
       currency, status, mandate_ref, round, mandate_code) VALUES ('OFF-R-1', ?, ?, 'lanapays', ?, 900, 'EUR', 'under_review', ?, 1, 'UNMEASURABLE')`)
       .run(seller.pub, W1, 900 * LANA, `8:1:${seller.pub}`);
-    const ok = await post('/api/acquisitions/admin/OFF-R-1/decide', { action: 'accept' }, { 'x-admin-hex-id': ADMIN });
+    const ok = await adminPost('/api/acquisitions/admin/OFF-R-1/decide', { action: 'accept' });
     expect(ok.status).toBe(200);
     expect(row('OFF-R-1').discount_percent).toBe(22);
     expect(row('OFF-R-1').purchase_price_fiat).toBe(179.71); // 900 × 0.256 × 0.78
@@ -751,7 +769,7 @@ describe('admin decide on a mandate-bound offer', () => {
     db.prepare(`INSERT INTO acquisition_offers (offer_ref, user_hex_id, sender_wallet_id, wallet_class, lana_amount_lanoshis, lana_amount_display,
       currency, status, mandate_ref, round, mandate_code) VALUES ('OFF-R-2', ?, ?, 'lanapays', ?, 200, 'EUR', 'under_review', ?, 1, 'UNMEASURABLE')`)
       .run(seller.pub, W1, 200 * LANA, `8:1:${seller.pub}`);
-    const over = await post('/api/acquisitions/admin/OFF-R-2/decide', { action: 'accept' }, { 'x-admin-hex-id': ADMIN });
+    const over = await adminPost('/api/acquisitions/admin/OFF-R-2/decide', { action: 'accept' });
     expect(over.status).toBe(409);
     expect(over.body.code).toBe('MANDATE_EXHAUSTED');
     expect(over.body.remainingLana).toBe(100);
@@ -805,7 +823,7 @@ describe('/api/treasury', () => {
   it('the admin worklist shows expected / proposed / accepted / remaining per mandate and the degraded flags', async () => {
     world.balances[W1] = 1234.5;
     await propose(600);
-    const r = await get('/api/treasury/admin/mandates?split=8', { 'x-admin-hex-id': ADMIN });
+    const r = await adminGet('/api/treasury/admin/mandates?split=8');
     expect(r.status).toBe(200);
     const m = r.body.mandates[0];
     expect(m).toMatchObject({ round: 1, financerHex: seller.pub, expectedLana: 1000, proposedLana: 600, acceptedLana: 0, remainingLana: 400, state: 'open' });
@@ -828,7 +846,7 @@ describe('/api/treasury', () => {
    * state.
    */
   it('reports what is unsold, and whether anybody could still sell it', async () => {
-    const r = await get('/api/treasury/admin/mandates?split=8', { 'x-admin-hex-id': ADMIN });
+    const r = await adminGet('/api/treasury/admin/mandates?split=8');
     const m = r.body.mandates[0];
     // Untouched: the whole mandate is unsold, and plainly sellable.
     expect(m.unsoldLana).toBe(1000);
@@ -837,7 +855,7 @@ describe('/api/treasury', () => {
 
   it('a live offer does NOT make a mandate sold — only a completed purchase does', async () => {
     await propose(600);
-    const r = await get('/api/treasury/admin/mandates?split=8', { 'x-admin-hex-id': ADMIN });
+    const r = await adminGet('/api/treasury/admin/mandates?split=8');
     const m = r.body.mandates[0];
     // 600 is reserved, so `remaining` has moved; nothing has settled, so the
     // unsold figure has not. These two must not be confused for one another.
@@ -851,10 +869,10 @@ describe('/api/treasury', () => {
    * the owner asked for the fees to leave the admin page "da ne bo zmede".
    */
   it('PUT /admin/rounds no longer takes round terms, for any split', async () => {
-    const r = await fetch(base + '/api/treasury/admin/rounds', { method: 'PUT', headers: { 'content-type': 'application/json', 'x-admin-hex-id': ADMIN },
-      body: JSON.stringify({ split: 9, rounds: [{ round: 1, opensAt: '2026-09-14T22:00:00Z', discountPercent: 21 }] }) });
+    const r = await adminPut('/api/treasury/admin/rounds',
+      { split: 9, rounds: [{ round: 1, opensAt: '2026-09-14T22:00:00Z', discountPercent: 21 }] });
     expect(r.status).toBe(409);
-    expect(((await r.json()) as any).code).toBe('ROUND_TERMS_FROM_KIND_38888');
+    expect(r.body.code).toBe('ROUND_TERMS_FROM_KIND_38888');
     expect(db.prepare('SELECT COUNT(*) c FROM acquisition_rounds WHERE split = 9').get()).toEqual({ c: 0 });
   });
 
@@ -864,9 +882,7 @@ describe('/api/treasury', () => {
    * to change them — a value saved here would be put back within a minute.
    */
   describe('round terms published in KIND 38888', () => {
-    const admin = { 'content-type': 'application/json', 'x-admin-hex-id': ADMIN };
-    const put = (body: any) => fetch(base + '/api/treasury/admin/rounds', { method: 'PUT', headers: admin, body: JSON.stringify(body) })
-      .then(async r => ({ status: r.status, body: await r.json() as any }));
+    const put = (body: any) => adminPut('/api/treasury/admin/rounds', body);
     const publishSplit8 = () => {
       const authority = makeKey();
       const e = signEvent(authority, {
@@ -878,14 +894,14 @@ describe('/api/treasury', () => {
     };
 
     it('the page opens on the split being paid out, not the one still running', async () => {
-      const r = await get('/api/treasury/admin/rounds', { 'x-admin-hex-id': ADMIN });
+      const r = await adminGet('/api/treasury/admin/rounds');
       expect(r.status).toBe(200);
       expect(r.body).toMatchObject({ split: 8, currentSplit: 9, publishedIn38888: false });
     });
 
     it('says where the terms come from', async () => {
       const e = publishSplit8();
-      const r = await get('/api/treasury/admin/rounds?split=8', { 'x-admin-hex-id': ADMIN });
+      const r = await adminGet('/api/treasury/admin/rounds?split=8');
       expect(r.body.publishedIn38888).toBe(true);
       expect(r.body.kind38888).toMatchObject({ eventId: e.id, createdAt: 1_789_300_000, rejected: [] });
       expect(r.body.rounds[0]).toMatchObject({ round: 1, opensAt: '2026-09-09T05:33:20.000Z' });
@@ -967,19 +983,19 @@ describe('a proposal must be backed by the wallet it comes from', () => {
       .run(seller.pub, W1, 20070 * LANA);
     world.balances[W1] = 2200.72;
 
-    const accept = await post('/api/acquisitions/admin/OFF-OLD-1/decide', { action: 'accept' }, { 'x-admin-hex-id': ADMIN });
+    const accept = await adminPost('/api/acquisitions/admin/OFF-OLD-1/decide', { action: 'accept' });
     expect(accept.status).toBe(409);
     expect(accept.body.code).toBe('INSUFFICIENT_BALANCE');
     expect(row('OFF-OLD-1').status).toBe('under_review');
 
     // A counteroffer is an acceptance at our own price — same refusal.
-    const counter = await post('/api/acquisitions/admin/OFF-OLD-1/decide',
-      { action: 'counter', purchasePrice: 100 }, { 'x-admin-hex-id': ADMIN });
+    const counter = await adminPost('/api/acquisitions/admin/OFF-OLD-1/decide',
+      { action: 'counter', purchasePrice: 100 });
     expect(counter.status).toBe(409);
 
     // Declining it is always possible; it commits nothing.
-    const decline = await post('/api/acquisitions/admin/OFF-OLD-1/decide',
-      { action: 'decline', reason: 'The wallet cannot deliver this amount.' }, { 'x-admin-hex-id': ADMIN });
+    const decline = await adminPost('/api/acquisitions/admin/OFF-OLD-1/decide',
+      { action: 'decline', reason: 'The wallet cannot deliver this amount.' });
     expect(decline.status).toBe(200);
     expect(row('OFF-OLD-1').status).toBe('declined');
   });
@@ -1010,7 +1026,7 @@ describe('a proposal must be backed by the wallet it comes from', () => {
       .run(seller.pub, W1, 20070 * LANA);
     world.balances[W1] = 2200.72;
 
-    const q = await get('/api/acquisitions/admin/queue', { 'x-admin-hex-id': ADMIN });
+    const q = await adminGet('/api/acquisitions/admin/queue');
     expect(q.status).toBe(200);
     const shown = q.body.offers.find((o: any) => o.offerRef === 'OFF-Q-1');
     expect(shown.walletLana).toBeCloseTo(2200.72, 6);
@@ -1024,7 +1040,7 @@ describe('a proposal must be backed by the wallet it comes from', () => {
       .run(seller.pub, W1, 10 * LANA);
     world.balancesThrow = true;
 
-    const q = await get('/api/acquisitions/admin/queue', { 'x-admin-hex-id': ADMIN });
+    const q = await adminGet('/api/acquisitions/admin/queue');
     expect(q.status).toBe(200);
     const shown = q.body.offers.find((o: any) => o.offerRef === 'OFF-Q-2');
     expect(shown.walletLana).toBeNull();

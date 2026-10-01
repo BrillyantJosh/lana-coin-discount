@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 
@@ -74,11 +76,9 @@ const AdminOverview = () => {
     if (!session || !isAdmin) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/overview', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch('/api/admin/overview');
       const json = await res.json();
-      if (json.error) throw new Error(json.error);
+      if (json.error) throw new Error(refusalText(json, json.error));
       setData(json);
     } catch (err: any) {
       toast.error(err.message || 'Failed to load overview');

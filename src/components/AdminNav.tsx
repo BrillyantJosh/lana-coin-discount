@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -72,9 +73,7 @@ const AdminNav = () => {
     const load = async () => {
       if (document.visibilityState === 'hidden') return;
       try {
-        const res = await fetch('/api/acquisitions/admin/queue', {
-          headers: { 'x-admin-hex-id': hexId },
-        });
+        const res = await signedFetch('/api/acquisitions/admin/queue');
         if (!res.ok) return;
         const data = await res.json();
         if (alive && Array.isArray(data.offers)) setAwaitingDecision(data.offers.length);

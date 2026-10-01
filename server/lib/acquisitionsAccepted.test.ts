@@ -38,15 +38,20 @@ import { getDbHandle } from '../db/index.js';
 import { createAcquisitionsRouter } from '../routes/acquisitions';
 import { ACCEPTED_TRANSFER_WINDOW_HOURS } from './acquisitionOffer';
 import { createReplayCache } from './requestSignature';
+import { keepRawBody } from './nip98Auth';
+import { newSigner, nip98Header } from './nip98TestKit';
 
 const db: Database.Database = getDbHandle();
-const ADMIN = 'c'.repeat(64);
+// The admin proves who it is by signing (NIP-98), so it needs a real key.
+const adminKey = newSigner();
+const ADMIN = adminKey.hex;
 const SELLER = 'a'.repeat(64);
 const WALLET = 'LKs7QqC2TVJ4y92waNrBjVZQB2oFhcmZqB';
 const LANOSHI = 100_000_000;
 
 const app = express();
-app.use(express.json());
+// As in server/index.ts: the signed admin token covers the exact body bytes.
+app.use(express.json({ verify: keepRawBody }));
 app.use('/api/acquisitions', createAcquisitionsRouter({
   walletCheckBaseUrl: 'http://check.test',
   publishBuybackEvent: async () => undefined,
@@ -71,7 +76,10 @@ afterAll(() => new Promise<void>(r => server?.close(() => r())));
 const get = (path: string, headers: Record<string, string> = {}) =>
   fetch(base + path, { headers }).then(async r => ({ status: r.status, body: await r.json() as any }));
 
-const list = () => get('/api/acquisitions/admin/accepted', { 'x-admin-hex-id': ADMIN });
+/** Signed by the admin, a fresh token per call (single use). */
+const list = () => get('/api/acquisitions/admin/accepted', {
+  authorization: nip98Header(adminKey, { method: 'GET', url: '/api/acquisitions/admin/accepted' }),
+});
 
 /** `YYYY-MM-DD HH:MM:SS` UTC, the only shape this table holds. */
 const at = (msFromNow: number) =>

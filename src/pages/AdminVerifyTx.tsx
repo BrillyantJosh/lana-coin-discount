@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 
@@ -58,11 +60,9 @@ const AdminVerifyTx = () => {
     if (!session) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/payouts', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch('/api/admin/payouts');
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
 
       // Filter only users who have pending_verification sales
       const filtered = (data.users || [])
@@ -85,12 +85,11 @@ const AdminVerifyTx = () => {
     if (!session) return;
     setVerifyingId(txId);
     try {
-      const res = await fetch(`/api/admin/verify-transaction/${txId}`, {
+      const res = await signedFetch(`/api/admin/verify-transaction/${txId}`, {
         method: 'POST',
-        headers: { 'x-admin-hex-id': session.nostrHexId },
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
       toast.success(`Transaction #${txId} verified ✓`);
       await fetchPending();
     } catch (err: any) {
@@ -104,16 +103,15 @@ const AdminVerifyTx = () => {
     if (!session) return;
     setRejectingId(txId);
     try {
-      const res = await fetch(`/api/admin/reject-transaction/${txId}`, {
+      const res = await signedFetch(`/api/admin/reject-transaction/${txId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-hex-id': session.nostrHexId,
         },
         body: JSON.stringify({ reason: 'Rejected by admin' }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
       toast.success(`Transaction #${txId} rejected`);
       setConfirmRejectId(null);
       await fetchPending();

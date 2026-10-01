@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { AdminPagination } from '@/components/AdminPagination';
@@ -228,8 +230,7 @@ const AdminIncomingPayments = () => {
       const timer = setTimeout(() => controller.abort(), 30000);
       let data: any;
       try {
-        const res = await fetch('/api/admin/incoming-payments', {
-          headers: { 'x-admin-hex-id': session.nostrHexId },
+        const res = await signedFetch('/api/admin/incoming-payments', {
           signal: controller.signal,
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -248,9 +249,7 @@ const AdminIncomingPayments = () => {
       try {
         // The reference rate moved behind admin auth: published next to a
         // discount percentage it was a standing formula anyone could use.
-        const spRes = await fetch('/api/admin/reference-rates', {
-          headers: session?.nostrHexId ? { 'x-admin-hex-id': session.nostrHexId } : {},
-        });
+        const spRes = await signedFetch('/api/admin/reference-rates');
         const spData = await spRes.json();
         const rates = spData.exchangeRates;
         if (rates?.EUR) setExchangeRate(rates.EUR);
@@ -340,9 +339,9 @@ const AdminIncomingPayments = () => {
     if (!session) return;
     setUpdating(batch.batchRef);
     try {
-      const res = await fetch(`/api/admin/incoming-batches/${encodeURIComponent(batch.batchRef)}/status`, {
+      const res = await signedFetch(`/api/admin/incoming-batches/${encodeURIComponent(batch.batchRef)}/status`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           status: newStatus,
           investorHex: batch.orders[0]?.investorHex || '',
@@ -412,13 +411,13 @@ const AdminIncomingPayments = () => {
     }
     setUpdating(batch.batchRef);
     try {
-      const res = await fetch('/api/admin/send-batch-lana', {
+      const res = await signedFetch('/api/admin/send-batch-lana', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-hex-id': session.nostrHexId },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transaction_refs: txRefs }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to send LANA');
+      if (!res.ok) throw new Error(refusalText(data, 'Failed to send LANA'));
       toast.success(`LANA sent! TX: ${data.tx_hash?.slice(0, 12)}... (${data.orders_count} recipients)`);
       // Move batch to lana_sent
       await updateBatchStatus(batch, 'lana_sent');

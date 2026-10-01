@@ -15,6 +15,7 @@ import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from '../lib/send
 import { buildLiquiditySeries, type FlowRow } from '../lib/liquidity.js';
 import { freezeOf, refreshFrozenDirectory } from '../lib/frozenDirectory.js';
 import { requireAdmin } from '../lib/adminAuth.js';
+import { selectManualSendOrders } from '../lib/manualSendSelection.js';
 import { requireApiKey } from '../lib/apiKeyAuth.js';
 import { DIRECT_FUND_URL } from '../lib/directFund.js';
 import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
@@ -2797,12 +2798,15 @@ function notifyBrainLanaSent(orders: Array<{ id: string; transaction_ref?: strin
  * POST /api/admin/send-batch-lana
  * Send LANA from buyback wallet to all recipients in pending brain_lana_orders
  * for a given set of transaction_refs (linked to a Direct.Fund batch)
+ *
+ * Until 2 Oct 2026 this accepted ANY non-empty x-admin-hex-id — not even
+ * checked against admin_users — and then broadcast from BUYBACK_WIF. It now
+ * takes a signed admin (requireAdmin, before the send lock), and sends only
+ * what the auto-sender would: every requested order authorised, or nothing.
  */
 router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
-  const adminHex = req.headers['x-admin-hex-id'] as string;
-  if (!adminHex) {
-    return res.status(403).json({ error: 'Admin authentication required' });
-  }
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
 
   try {
     // One broadcast at a time, shared with the auto-sender: both read
@@ -2825,17 +2829,16 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'BUYBACK_WIF not configured' });
     }
 
-    // Find all pending lana orders for these transaction refs
-    const placeholders = transaction_refs.map(() => '?').join(',');
-    const orders = db.prepare(`
-      SELECT * FROM brain_lana_orders
-      WHERE transaction_ref IN (${placeholders})
-        AND status = 'pending'
-      ORDER BY created_at
-    `).all(...transaction_refs) as any[];
+    // Find all pending lana orders for these transaction refs, each with the
+    // auto-sender's authorisation (brain_authorized, or batch at 'lana_bought').
+    const { pending: orders, unauthorised } = selectManualSendOrders(db, transaction_refs);
 
     if (orders.length === 0) {
       return res.status(400).json({ error: 'No pending LANA orders found for these transactions' });
+    }
+    if (unauthorised > 0) {
+      console.warn(`[lana-discount] send-batch-lana refused for ${adminHex.slice(0, 12)}…: ${unauthorised} of ${orders.length} orders not authorised — nothing sent`);
+      return res.status(409).json({ error: `${unauthorised} of these LANA orders are not authorised yet (money not confirmed) — nothing was sent`, code: 'NOT_AUTHORISED' });
     }
 
     // Build recipients array
@@ -2847,7 +2850,7 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
     const totalLanoshis = recipients.reduce((sum: number, r: any) => sum + r.amount_lanoshis, 0);
     const totalLana = totalLanoshis / 100_000_000;
 
-    console.log(`[lana-discount] Admin send-batch-lana: ${orders.length} orders, ${totalLana} LANA total`);
+    console.log(`[lana-discount] Admin send-batch-lana by ${adminHex.slice(0, 12)}…: ${orders.length} orders, ${totalLana} LANA total`);
 
     // Derive sender address from buyback WIF
     const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress } = await import('../lib/transaction.js');
@@ -2993,7 +2996,7 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
  * crashing on the stale bad address.
  *
  * Hard guards:
- *  - requireAdmin (x-admin-hex-id ∈ admin_users)
+ *  - requireAdmin (signed NIP-98 admin ∈ admin_users)
  *  - Allowlisted (table, field) pairs only
  *  - new_value must pass base58check (isValidLanaAddress)
  *

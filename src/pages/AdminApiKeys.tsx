@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { signedFetch } from '@/lib/nip98Fetch';
+import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 
@@ -41,11 +43,9 @@ const AdminApiKeys = () => {
   const fetchKeys = async () => {
     if (!session) return;
     try {
-      const res = await fetch('/api/admin/api-keys', {
-        headers: { 'x-admin-hex-id': session.nostrHexId },
-      });
+      const res = await signedFetch('/api/admin/api-keys');
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
       setApiKeys(data.apiKeys || []);
     } catch (err) {
       console.error('Failed to fetch API keys:', err);
@@ -59,17 +59,16 @@ const AdminApiKeys = () => {
     if (!session || !appName.trim()) return;
     setCreating(true);
     try {
-      const res = await fetch('/api/admin/api-keys', {
+      const res = await signedFetch('/api/admin/api-keys', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-hex-id': session.nostrHexId,
         },
         body: JSON.stringify({ appName: appName.trim(), label: label.trim() || null }),
       });
       const data = await res.json();
       if (data.error) {
-        toast.error(data.error);
+        toast.error(refusalText(data, data.error));
         return;
       }
       setNewKey(data.apiKey.key);
@@ -89,16 +88,15 @@ const AdminApiKeys = () => {
     if (!session) return;
     setTogglingId(id);
     try {
-      const res = await fetch(`/api/admin/api-keys/${id}`, {
+      const res = await signedFetch(`/api/admin/api-keys/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-hex-id': session.nostrHexId,
         },
         body: JSON.stringify({ isActive: !currentActive }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
       setApiKeys(data.apiKeys || []);
       toast.success(`API key ${currentActive ? 'deactivated' : 'activated'}`);
     } catch (err) {
@@ -111,12 +109,11 @@ const AdminApiKeys = () => {
   const deleteKey = async (id: number) => {
     if (!session) return;
     try {
-      const res = await fetch(`/api/admin/api-keys/${id}`, {
+      const res = await signedFetch(`/api/admin/api-keys/${id}`, {
         method: 'DELETE',
-        headers: { 'x-admin-hex-id': session.nostrHexId },
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(refusalText(data, data.error));
       setApiKeys(data.apiKeys || []);
       setConfirmDeleteId(null);
       toast.success('API key deleted');
