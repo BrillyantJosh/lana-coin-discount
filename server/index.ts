@@ -17,7 +17,7 @@ import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb }
 import { selectWholeGroups } from './lib/autoSendSelection.js';
 import { settleBatchesWithSentLana } from './lib/batchSettlement.js';
 import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from './lib/sendLock.js';
-import { keepRawBody } from './lib/nip98Auth.js';
+import { installJsonBodies } from './lib/jsonBodies.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,16 +44,18 @@ app.use(cors({
     callback(null, false);
   },
 }));
-// verify: keepRawBody keeps the exact bytes the client sent, so a signed admin
-// request's `payload` tag is checked against what arrived, not a re-serialisation.
-app.use(express.json({ limit: '50kb', verify: keepRawBody }));
-
 // ─── Request logging + 24h retention ──────────────────────
 // Breadcrumb trail of every request path, to debug stuck flows. Stores
 // method/path/status/duration/ip ONLY — never bodies (may hold WIF/secrets).
 // Skips static assets; auto-purges rows older than 24h; viewable by root admin.
-// Registered BEFORE the rate limiter so 429 (Too Many Requests) responses ARE logged.
+// Registered BEFORE the rate limiter so 429 (Too Many Requests) responses ARE logged,
+// and BEFORE the body parsers so a refused body is logged too: on 2 Oct 2026 a
+// batch too large to confirm left no trace here, because the parser threw first.
 installRequestLogging(app, db);
+
+// JSON bodies: 50 kb everywhere, more for the one route whose body is a whole
+// batch of payments, and refusals answered in JSON. See lib/jsonBodies.ts.
+installJsonBodies(app);
 
 // Rate limit per IP, ON THE API ONLY. It used to sit in front of everything,
 // so an operator who spent their budget on polls could not load the site at

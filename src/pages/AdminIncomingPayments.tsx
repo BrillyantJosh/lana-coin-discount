@@ -359,7 +359,13 @@ const AdminIncomingPayments = () => {
           })),
         }),
       });
-      if (!res.ok) throw new Error('Failed to update');
+      if (!res.ok) {
+        // Say WHY. A batch too large to read (2 Oct 2026, 288 payments) and a
+        // signature the server refused both used to read "Failed to update
+        // batch status", and the first left no trace anywhere else either.
+        const data = await res.json().catch(() => null);
+        throw new Error(refusalText(data, `Failed to update batch status (HTTP ${res.status})`));
+      }
       toast.success(`Batch ${batch.batchRef} → ${newStatus.replace('_', ' ')}`);
       // Optimistically move the batch to its new tab immediately so the admin
       // sees the change even if the background refresh is mid-flight (the in-flight
@@ -391,8 +397,8 @@ const AdminIncomingPayments = () => {
         }];
       });
       await fetchData();
-    } catch {
-      toast.error('Failed to update batch status');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to update batch status');
     } finally {
       setUpdating(null);
     }
