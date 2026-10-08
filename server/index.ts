@@ -2,7 +2,6 @@ import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
 import { installRequestLogging } from './shared/requestLogging.js';
-import rateLimit from 'express-rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './routes/api.js';
@@ -18,6 +17,7 @@ import { selectWholeGroups } from './lib/autoSendSelection.js';
 import { settleBatchesWithSentLana } from './lib/batchSettlement.js';
 import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from './lib/sendLock.js';
 import { installJsonBodies } from './lib/jsonBodies.js';
+import { apiRateLimit } from './lib/apiRateLimit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -67,7 +67,30 @@ installJsonBodies(app);
 // 1500/15min (≈100/min) stays: the admin pages poll incoming-payments,
 // heartbeat-status and profiles, and a tighter cap once blocked send-batch-lana
 // in the middle of a payout run.
-app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, max: 1500, standardHeaders: true, legacyHeaders: false }));
+//
+// Per IP is the right shape for browsers and the wrong one for lana-brain. The
+// brain reaches us over the docker network, so ALL of it arrives from one
+// container IP and shares one bucket. Its heartbeat asks GET
+// /api/brain/lana-order/:id about every open order — with ~1,078 of them open
+// in October that is ~1,000 requests every 10 minutes — on top of order
+// ingest, mandate pushes and round-terms. From 7 Oct 2026 12:01 UTC that
+// bucket ran dry early in every 15-minute window and the rest of the window
+// was 429: 19,692 refusals in 24 hours, every one of them to the brain's IP
+// and not one to anybody else. They did damage. A refused POST
+// /api/brain/lana-order made the brain record the leg as failed, and 10 cash
+// purchases were falsely settled on the strength of it; a refused
+// send-customer-lana turned LANA purchases away at the till; refused
+// round-terms kept KIND 30960 being republished over and over.
+//
+// So a machine caller that authenticates is let past, as Direct.Fund lets the
+// brain past its limiter (isBrainRequest in its server/index.ts): an
+// authenticated server-to-server caller is not the abuse this limit is for.
+// Anonymous and browser traffic keeps 1500/15min, unchanged. The test is the
+// one requireApiKey makes, not a look at the header — anybody can type
+// "Bearer ldk_": the whole key must hash to a row in api_keys and that row must
+// be active, and if the database cannot say, the request keeps the limit.
+// See lib/apiRateLimit.ts and isActiveMachineKey in lib/apiKeyAuth.ts.
+app.use('/api', apiRateLimit());
 
 // API routes
 app.use('/api', apiRouter);
