@@ -72,6 +72,9 @@ const app = express();
 app.use(express.json());
 app.use('/api/wallets', createConsolidationRouter({
   walletCheckBaseUrl: 'http://check.test',
+  // The flow as it ran until selling closed on 8 Oct 2026 (lib/sellingClosed.ts);
+  // the closure itself is pinned in server/lib/sellingClosed.test.ts.
+  sellingClosed: false,
   electrumCall: async (method, params) => {
     if (method === 'blockchain.address.listunspent') return world.chain;
     if (method === 'blockchain.address.get_balance') {

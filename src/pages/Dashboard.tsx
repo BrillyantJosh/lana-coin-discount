@@ -10,6 +10,8 @@ import { fill } from '@/components/MandatePanel';
 import { parseSqliteUtc, formatDate } from '@/lib/offerClock';
 import { formatFiat, formatLana } from '@/lib/money';
 import { describeDecisionReason } from '@/lib/offerErrors';
+import { SellingMovedNotice } from '@/components/SellingMovedNotice';
+import { SELLING_CLOSED } from '@/lib/sellingClosed';
 
 /**
  * The counterparty's own view: what they have offered us, and what we have
@@ -257,8 +259,12 @@ const Dashboard = () => {
    * carries its own clock and collapses to "This purchase offer has lapsed"
    * with a Refresh, rather than the row silently going missing.
    */
+  // SINCE SELLING CLOSED (8 Oct 2026) NOTHING WAITS ON THE SELLER: the server
+  // refuses accepting a purchase offer and transferring an accepted one, so a
+  // card asking him to do either would ask for what cannot be done. Such a
+  // row stays in the record below with its status, and lapses by itself.
   const waiting = offers
-    .filter(o => WAITING_ON_SELLER.includes(o.status))
+    .filter(o => !SELLING_CLOSED && WAITING_ON_SELLER.includes(o.status))
     .map(o => ({ ...o, actionDueAt: dueFor(o) ?? null }))
     // …AND STILL PLAUSIBLY OPEN. The status is the server's answer and it is
     // the right one, but a row it has not swept yet — or cannot sweep — kept
@@ -404,7 +410,12 @@ const Dashboard = () => {
           </div>
         )}
 
-        {/* Submit an offer */}
+        {/* Where the invitation to submit an offer was: where selling went. */}
+        {SELLING_CLOSED ? (
+          <div className="max-w-4xl mx-auto">
+            <SellingMovedNotice soldBefore="none" headingLevel="h2" />
+          </div>
+        ) : (
         <div className="max-w-4xl mx-auto">
           <Link to="/offer" className="group relative block rounded-2xl border-2 border-border bg-card p-6 sm:p-8 hover:border-primary transition-colors cursor-pointer">
             <div className="space-y-4">
@@ -429,6 +440,7 @@ const Dashboard = () => {
             </div>
           </Link>
         </div>
+        )}
 
         {/* ============ THE TWO RECORDS ============ */}
         <div className="max-w-4xl mx-auto mt-16">
@@ -546,7 +558,8 @@ const Dashboard = () => {
                       </div>
                     </div>
 
-                    {live && (
+                    {/* /offer no longer opens an offer: selling here has closed. */}
+                    {live && !SELLING_CLOSED && (
                       <div className="mt-3 pt-3 border-t border-border">
                         <Link to={`/offer?ref=${encodeURIComponent(o.offerRef)}`} className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:gap-2 transition-all">
                           Open

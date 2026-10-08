@@ -20,6 +20,8 @@ import AdminOverview from "./pages/AdminOverview";
 import AdminMandates from "./pages/AdminMandates";
 import AdminTreasuryRounds from "./pages/AdminTreasuryRounds";
 import SubmitOffer from "./pages/SubmitOffer";
+import SellingMoved from "./pages/SellingMoved";
+import { SELLING_CLOSED } from "@/lib/sellingClosed";
 import AdminOffers from "./pages/AdminOffers";
 import AdminAcceptedOffers from "./pages/AdminAcceptedOffers";
 import ApiDocs from "./pages/ApiDocs";
@@ -43,7 +45,9 @@ const App = () => (
             <Route path="/history" element={<PayoutHistory />} />
             <Route path="/login" element={<Login />} />
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/offer" element={<SubmitOffer />} />
+            {/* Selling LANA here closed on 8 Oct 2026 (src/lib/sellingClosed.ts):
+                /offer names the firms that buy LANA now, and offers no form. */}
+            <Route path="/offer" element={SELLING_CLOSED ? <SellingMoved /> : <SubmitOffer />} />
             {/* Kept so old links and bookmarks land somewhere true rather than
                 on a 404 — the page they point at no longer exists. */}
             <Route path="/sell" element={<Navigate to="/offer" replace />} />

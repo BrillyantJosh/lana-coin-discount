@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { SELLING_CLOSED } from '@/lib/sellingClosed';
 
 const ApiDocs = () => {
   return (
@@ -91,7 +92,24 @@ const ApiDocs = () => {
                 POST
               </span>
               <code className="text-lg font-mono font-bold text-foreground">/external/sale</code>
+              {SELLING_CLOSED && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-red-100 text-red-700 text-xs font-bold uppercase">
+                  Closed
+                </span>
+              )}
             </div>
+            {SELLING_CLOSED && (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4" data-testid="external-sale-closed">
+                <p className="text-sm text-red-800">
+                  <span className="font-bold">Closed since 8 October 2026.</span> LANA can no longer be sold on
+                  Lana.discount, so this endpoint records nothing: it answers <Code>410</Code> with
+                  {' '}<Code>{'"code": "SELLING_MOVED"'}</Code>, a sentence in <Code>error</Code> and, in
+                  {' '}<Code>buyers</Code>, the companies that buy LANA now — read from their own signed profiles
+                  (KIND 30972) on the Lana relays, as <Code>GET /api/buying-dealers</Code> also lists them. Looking
+                  up a sale reported earlier, below, still works.
+                </p>
+              </div>
+            )}
             <p className="text-muted-foreground mb-4">
               Submit a completed LanaCoin sale transaction. The transaction will be recorded
               with <Code>pending_verification</Code> status until an administrator verifies it.

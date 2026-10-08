@@ -72,6 +72,9 @@ import {
 import { listMandatesForHex, rowToCandidate, loadRoundTerms, loadReleases } from '../lib/roundMandateSync.js';
 import { resolveReferenceBasis } from '../lib/referenceBasis.js';
 import { BUYBACK_SPLIT_OFFSET } from '../lib/buybackSplit.js';
+import { SELLING_CLOSED, refuseSelling } from '../lib/sellingClosed.js';
+import type { BuyingDealersAnswer } from '../lib/buyingDealers.js';
+import { buyingDealers as sharedBuyingDealers } from '../lib/buyingDealersShared.js';
 
 /**
  * The terms a seller agrees to when accepting a purchase offer. Bump this
@@ -198,6 +201,13 @@ export interface AcquisitionsDeps {
   now?: () => number;
   /** Replay memory for signed requests; defaults to the process-wide one. Tests inject a fresh one. */
   replayCache?: ReplayCache;
+  /**
+   * Selling LANA here is closed (lib/sellingClosed.ts, 8 Oct 2026). Defaults
+   * to SELLING_CLOSED; only the tests of the old flow pass false.
+   */
+  sellingClosed?: boolean;
+  /** The firms the refusal names; defaults to the process-wide dealer reader, never waiting on a relay. */
+  buyingDealers?: () => BuyingDealersAnswer;
 }
 
 export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
@@ -207,6 +217,14 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
   const fetchBatchBalances = deps.fetchBatchBalances || realFetchBatchBalances;
   const sendLanaTransaction = deps.sendLanaTransaction || realSendLanaTransaction;
   const now = deps.now || (() => Math.floor(Date.now() / 1000));
+  const sellingClosed = deps.sellingClosed ?? SELLING_CLOSED;
+  const buyers = deps.buyingDealers ?? (() => sharedBuyingDealers.peek());
+  /**
+   * The one door every step of a sale passes first: refused before a single
+   * field is read, a balance asked or a row written. Answers the request
+   * itself and says so.
+   */
+  const refuseClosedSale = (res: Response): boolean => (sellingClosed ? refuseSelling(res, buyers()) : false);
 
   // ── shared helpers ──────────────────────────────────────────────────
 
@@ -321,6 +339,7 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
   // ── 1. Submit an offer ──────────────────────────────────────────────
 
   router.post('/offers', async (req: Request, res: Response) => {
+    if (refuseClosedSale(res)) return;
     try {
       const hexId = String(req.body?.hexId || '');
       const senderAddress = String(req.body?.senderAddress || '');
@@ -728,6 +747,9 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
   // ── 2. Seller accepts our purchase offer ────────────────────────────
 
   router.post('/:ref/accept', async (req: Request, res: Response) => {
+    // Accepting is the contract moment of a sale — closed with the rest. A
+    // purchase offer still standing lapses by itself (expireStaleOffers).
+    if (refuseClosedSale(res)) return;
     const ref = String(req.params.ref);
     const hexId = String(req.body?.hexId || '');
     if (!hexId) return res.status(400).json({ error: 'Missing hexId' });
@@ -902,6 +924,10 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
   };
 
   router.post('/:ref/transfer', async (req: Request, res: Response) => {
+    // The one place a seller's LANA moves. Closed before the private key in
+    // the body is even read: nothing has moved on an accepted offer, so
+    // nothing is owed, and the sweeper voids it after its 24 hours.
+    if (refuseClosedSale(res)) return;
     try {
       const ref = String(req.params.ref);
       const hexId = String(req.body?.hexId || '');
@@ -1387,6 +1413,12 @@ export function createAcquisitionsRouter(deps: AcquisitionsDeps): Router {
     const ref = String(req.params.ref);
     const action = String(req.body?.action || '');
     const reason = String(req.body?.reason || '').trim();
+
+    // An admin accepting or countering MAKES a purchase offer — buying LANA,
+    // which is closed. Declining a proposal still standing is not, and stays.
+    // Signed admin first, as for every action here: the closure answers no one
+    // the signature check would have turned away.
+    if ((action === 'accept' || action === 'counter') && refuseClosedSale(res)) return;
 
     const offer = getOfferByRef(db(), ref);
     if (!offer) return res.status(404).json({ error: 'No such acquisition offer.' });

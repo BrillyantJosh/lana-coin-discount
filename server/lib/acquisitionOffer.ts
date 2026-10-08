@@ -6,7 +6,8 @@
  *            │                                      │                             └─ admin voids ─────────▶ withdrawn
  *            │                                      └─ lapses ─────────▶ expired
  *            ├─ review ─▶ under_review ─┬─ admin accepts ─▶ offered
- *            │                          └─ admin declines ─▶ declined
+ *            │                          ├─ admin declines ─▶ declined
+ *            │                          └─ selling closed ─▶ expired (SELLING_CLOSED, the sweeper)
  *            └─ decline ─────────────────────────────────────▶ declined
  *
  * Two properties this module exists to hold:
@@ -27,6 +28,7 @@
  * clicks or two tabs cannot both win.
  */
 import type Database from 'better-sqlite3';
+import { SELLING_CLOSED } from './sellingClosed.js';
 
 export type OfferStatus =
   | 'submitted'
@@ -76,6 +78,14 @@ export const MANUAL_OFFER_VALIDITY_DAYS = 8;
 export const ACCEPTED_TRANSFER_WINDOW_HOURS = 24;
 /** decision_reason written by the sweeper on such a lapse. */
 export const TRANSFER_NOT_COMPLETED = 'TRANSFER_NOT_COMPLETED';
+/**
+ * decision_reason written by the sweeper on a proposal nobody had decided when
+ * selling here closed (./sellingClosed.ts, 8 Oct 2026). Not the refusal code
+ * SELLING_MOVED: a page turns that one into the server's own sentence naming
+ * the firms, and this one into the sentence for a lapsed row (copy.ts
+ * OFFER_ERRORS).
+ */
+export const SELLING_CLOSED_UNDECIDED = 'SELLING_CLOSED';
 
 /**
  * WHETHER `decision_reason` DESCRIBES THE ROW IT IS SITTING ON.
@@ -83,9 +93,10 @@ export const TRANSFER_NOT_COMPLETED = 'TRANSFER_NOT_COMPLETED';
  * The column is written at some transitions and not at others. It is written
  * at SUBMISSION (the review verdict from treasuryMandate/roundMandate) and at
  * SOME endings — markDeclined, markExpiredWithReason, the sweeper's
- * TRANSFER_NOT_COMPLETED, markVoidedByAdmin. It is written at NO other
- * transition: markOffered, markAccepted, markSettled, markWithdrawn and the
- * sweeper's unaccepted lapse all leave whatever the last writer left.
+ * TRANSFER_NOT_COMPLETED and SELLING_CLOSED_UNDECIDED, markVoidedByAdmin. It
+ * is written at NO other transition: markOffered, markAccepted, markSettled,
+ * markWithdrawn and the sweeper's unaccepted lapse all leave whatever the
+ * last writer left.
  *
  * So the status is not the question. A live purchase offer saying "This
  * proposal is under treasury review." and a proposal its own seller withdrew
@@ -415,7 +426,7 @@ export function offerTotalsByMandate(db: Database.Database, dTags: string[]): Ma
 }
 
 /**
- * The sweeper, called by the heartbeat. Two kinds of stale row:
+ * The sweeper, called by the heartbeat. Three kinds of stale row:
  *
  *   offered   nobody accepted inside OFFER_VALIDITY_MINUTES → expired
  *   accepted  MANDATE-BOUND (mandate_ref IS NOT NULL), but no transfer for
@@ -424,13 +435,25 @@ export function offerTotalsByMandate(db: Database.Database, dTags: string[]): Ma
  *             again (consumedByMandate ignores 'expired'). `transaction_id
  *             IS NULL` is the guard: a row whose transfer DID happen is
  *             never touched here, whatever its clock.
+ *   submitted, under_review — ONLY while selling here is closed: nobody can
+ *             decide them any more (an admin's accept and counter answer
+ *             410), and nothing else ever ends a proposal under review, so
+ *             each would wait on the seller's dashboard and in the admin
+ *             queue for good. → expired with decision_reason
+ *             SELLING_CLOSED_UNDECIDED, which the seller is shown. Nothing
+ *             had moved on such a row and it reserved no mandate
+ *             (consumedByMandate): ending it changes no money.
  *
  * The second sweep exists only to free a financer's cap, which a legacy
  * offer (no mandate_ref) never held — so legacy rows are left exactly as the
  * sweeper left them before rounds existed. An admin can still void any
  * accepted-but-untransferred row, legacy or not (markVoidedByAdmin).
+ *
+ * `sellingClosed` defaults to SELLING_CLOSED; only the tests of the old flow
+ * pass false.
  */
-export function expireStaleOffers(db: Database.Database): number {
+export function expireStaleOffers(db: Database.Database, opts: { sellingClosed?: boolean } = {}): number {
+  const sellingClosed = opts.sellingClosed ?? SELLING_CLOSED;
   const unaccepted = db.prepare(`
     UPDATE acquisition_offers
        SET status = 'expired', updated_at = datetime('now')
@@ -467,7 +490,18 @@ export function expireStaleOffers(db: Database.Database): number {
        AND offer_expires_at <= datetime('now')
   `).run(TRANSFER_NOT_COMPLETED).changes;
 
-  return unaccepted + untransferred + undatedAccepted;
+  // The review reason written at submission is overwritten here, as a decline
+  // overwrites it; why the proposal went to review stays in mandate_code.
+  const undecided = sellingClosed
+    ? db.prepare(`
+        UPDATE acquisition_offers
+           SET status = 'expired', decision_reason = ?, decision_reason_status = 'expired',
+               updated_at = datetime('now')
+         WHERE status IN ('submitted', 'under_review')
+      `).run(SELLING_CLOSED_UNDECIDED).changes
+    : 0;
+
+  return unaccepted + untransferred + undatedAccepted + undecided;
 }
 
 /** `YYYY-MM-DD HH:MM:SS` UTC plus N hours, in the shape SQLite writes. */

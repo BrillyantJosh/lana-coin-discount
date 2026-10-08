@@ -1,3 +1,5 @@
+import { SELLING_CLOSED } from "@/lib/sellingClosed";
+
 const Navbar = () => {
   return (
     <nav className="sticky top-0 z-50 bg-background/80 backdrop-blur-md border-b border-border">
@@ -7,7 +9,10 @@ const Navbar = () => {
           <span>Lana<span className="text-gold">.Discount</span></span>
         </a>
         <div className="hidden md:flex items-center gap-8 text-sm font-medium text-muted-foreground">
-          <a href="/#how-it-works" className="hover:text-foreground transition-colors">How it works</a>
+          {/* The section it pointed at described selling to us; it is not shown since 8 Oct 2026. */}
+          {!SELLING_CLOSED && (
+            <a href="/#how-it-works" className="hover:text-foreground transition-colors">How it works</a>
+          )}
           <a href="/#settlement" className="hover:text-foreground transition-colors">How we settle</a>
           <a href="/obligations" className="hover:text-foreground transition-colors">What we owe</a>
           <a href="/history" className="hover:text-foreground transition-colors">Acquisitions</a>

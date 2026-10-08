@@ -2,6 +2,8 @@ import { useState, useEffect, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import { SellingMovedNotice, NOTICE_TEXT, useNoticeLang } from '@/components/SellingMovedNotice';
+import { SELLING_CLOSED } from '@/lib/sellingClosed';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
 
@@ -14,6 +16,10 @@ const Login = () => {
   const { login, session } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+  // One language for the notice and the form under it. Before sign-in there is
+  // no profile to read it from, so it starts from the browser.
+  const [lang, setLang] = useNoticeLang();
+  const t = NOTICE_TEXT[lang];
 
   // If already logged in, redirect to dashboard
   useEffect(() => {
@@ -63,27 +69,48 @@ const Login = () => {
         </div>
       </nav>
 
+      {/* Where selling went (8 Oct 2026). Above the form, because most people
+          who arrive here came to sell — and the form below no longer leads to
+          a sale: it is for sellers who are still owed, and for the admins. */}
+      {SELLING_CLOSED && (
+        <div className="px-4 sm:px-6 pt-8 sm:pt-12">
+          <div className="w-full max-w-2xl mx-auto">
+            <SellingMovedNotice lang={lang} onLangChange={setLang} soldBefore="below" />
+          </div>
+        </div>
+      )}
+
       {/* Login form */}
       <div className="flex-1 flex items-center justify-center px-6 py-12">
         <div className="w-full max-w-md space-y-8">
           <div className="text-center space-y-2">
             <img src="/lana-logo.png" alt="Lana" className="h-16 w-16 mx-auto dark:invert" />
-            <h1 className="text-3xl font-bold text-foreground">Sign In</h1>
-            <p className="text-muted-foreground">
-              Enter your LanaCoin WIF private key to access your account.
-            </p>
+            {SELLING_CLOSED ? (
+              <>
+                <h2 className="text-3xl font-bold text-foreground">{t.signInTitle}</h2>
+                <p className="text-muted-foreground">{t.signInIntro}</p>
+                <p className="text-muted-foreground">{t.signInKeyIntro}</p>
+              </>
+            ) : (
+              <>
+                <h1 className="text-3xl font-bold text-foreground">Sign In</h1>
+                <p className="text-muted-foreground">
+                  Enter your LanaCoin WIF private key to access your account.
+                </p>
+              </>
+            )}
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
               <label htmlFor="wif" className="text-sm font-medium text-foreground">
-                WIF Private Key
+                {t.signInKeyLabel}
               </label>
               <div className="flex gap-2">
                 <input
                   id="wif"
                   type="password"
-                  placeholder="Enter your WIF key..."
+                  placeholder={t.signInKeyPlaceholder}
                   value={wif}
                   onChange={(e) => setWif(e.target.value)}
                   className="flex-1 rounded-lg border border-border bg-background px-4 py-3 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
@@ -111,7 +138,7 @@ const Login = () => {
                 className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
               />
               <label htmlFor="remember" className="text-sm text-muted-foreground">
-                Remember me for 90 days (otherwise 30 days)
+                {t.signInRemember}
               </label>
             </div>
 
@@ -126,15 +153,15 @@ const Login = () => {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
-                  Signing in...
+                  {t.signInSubmitting}
                 </span>
-              ) : 'Sign In'}
+              ) : t.signInSubmit}
             </button>
           </form>
 
           <div className="text-center">
             <p className="text-xs text-muted-foreground">
-              Your private key is processed locally in your browser and never sent to our servers.
+              {t.signInKeyLocal}
             </p>
           </div>
 

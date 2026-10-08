@@ -20,6 +20,8 @@ import { requireApiKey } from '../lib/apiKeyAuth.js';
 import { DIRECT_FUND_URL } from '../lib/directFund.js';
 import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
 import { WALLET_CLASSES } from '../lib/treasuryMandate.js';
+import { SELLING_CLOSED, refuseSelling } from '../lib/sellingClosed.js';
+import { buyingDealers } from '../lib/buyingDealersShared.js';
 
 // The registrar's freeze answer is read through check.lanapays.us — the same
 // public proxy the mobile app uses, so both refuse on identical evidence.
@@ -1517,6 +1519,9 @@ router.post('/sell/split-check', async (req: Request, res: Response) => {
  * instead of looking like an outage.
  */
 router.post('/sell/execute', (_req: Request, res: Response) => {
+  // Since 8 Oct 2026 the truthful answer is no longer "submit an offer":
+  // selling here is closed, and the refusal names who buys LANA now.
+  if (SELLING_CLOSED) return refuseSelling(res, buyingDealers.peek());
   return res.status(410).json({
     error: 'This page is out of date. Please reload and submit an offer — Lana.discount now reviews each '
       + 'proposed acquisition and makes a purchase offer before any LANA is transferred.',
@@ -1533,6 +1538,7 @@ router.post('/sell/execute', (_req: Request, res: Response) => {
  * offer on a specific proposal, after reviewing it.
  */
 router.post('/sell/preview', (_req: Request, res: Response) => {
+  if (SELLING_CLOSED) return refuseSelling(res, buyingDealers.peek());
   return res.status(410).json({
     error: 'This page is out of date. Please reload and submit an offer.',
     code: 'FLOW_REPLACED',
@@ -2205,8 +2211,20 @@ router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Respo
 /**
  * POST /api/external/sale
  * Report a completed LANA sale from an external application.
+ *
+ * CLOSED 8 Oct 2026 with every other way of selling LANA here
+ * (lib/sellingClosed.ts). What this books is a person's sale TO lana.discount:
+ * an obligation to pay them, priced at the caller's own rate. Its last caller
+ * is being3's registerExternalSale (src/lana-discount.js), whose sell flow
+ * prices itself on /api/sell/preview — refused since August — and no sale has
+ * come through here since 18 Aug 2026. (being3 still keeps a hard-coded
+ * fallback address to send to, and broadcasts BEFORE it registers; that flow
+ * has to come down on the being's side too.) The key is not checked
+ * first: the answer is public news, and refusing it touches nothing. The
+ * status lookup below stays, for the sales already booked.
  */
 router.post('/external/sale', (req: Request, res: Response) => {
+  if (SELLING_CLOSED) return refuseSelling(res, buyingDealers.peek());
   const auth = requireApiKey(req, res);
   if (!auth) return;
 
@@ -2337,6 +2355,27 @@ router.get('/external/sale/:id', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
+
+/**
+ * GET /api/buying-dealers — the firms that buy LANA now that selling here is
+ * closed: BEF dealers whose own signed KIND 30972 profile says "buys", admitted
+ * by BEF Explorer's rule and read from the relays the verified stored KIND
+ * 38888 publishes (lib/buyingDealers.ts). Public and read-only: the facts are
+ * the firms' own published profiles. Kept in memory and read again every ten
+ * minutes; the first request after a start waits for the first read, at most
+ * COLD_WAIT_MS, and is otherwise answered "unknown" with no firm and the BEF
+ * Explorer list. One finding an answer older than MAX_ANSWER_AGE_MS waits the
+ * same way for the read behind it.
+ */
+router.get('/buying-dealers', async (_req: Request, res: Response) => {
+  try {
+    res.set('Cache-Control', 'no-cache');
+    return res.json(await buyingDealers.get());
+  } catch (err: any) {
+    console.error('[buying-dealers] answer failed:', err?.message || err);
+    return res.status(500).json({ error: 'The companies could not be read right now.' });
+  }
+});
 
 /**
  * GET /health

@@ -21,6 +21,15 @@ import Dashboard from './Dashboard';
 
 const HEX = 'a'.repeat(64);
 
+// These rules are the dashboard AS IT WAS while selling here was open: since
+// 8 Oct 2026 nothing waits on the seller (src/lib/sellingClosed.ts), and that
+// page is pinned in Dashboard.closed.test.tsx. They stay, so that reopening —
+// a commit, never a setting — reopens a page that is still tested.
+vi.mock('@/lib/sellingClosed', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/sellingClosed')>()),
+  SELLING_CLOSED: false,
+}));
+
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({
     session: { nostrHexId: HEX, profileDisplayName: 'Joshua Andrej Brilly', walletId: 'LKs7QqC2TVJ4y92waNrBjVZQB2oFhcmZqB' },

@@ -105,9 +105,10 @@ export const UI = {
 
 export const LANDING = {
   metaTitle: 'Lana.discount — Treasury Acquisitions',
+  // Since 8 Oct 2026 (selling here closed). Kept in step with index.html.
   metaDescription:
-    'Lana.discount acquires selected LANA for its own proprietary treasury, using its own capital. ' +
-    'Holders may submit an offer.',
+    'LANA can no longer be sold on Lana.discount: the purchase of LANA has been taken over by other ' +
+    'companies. Every purchase price we still owe is published here.',
 
   heroEyebrow: 'Proprietary treasury',
   heroTitle: 'We acquire selected LANA',
@@ -335,8 +336,10 @@ export const OFFER = {
     'There is nothing more for you to do here. You may close this page — closing it does not close the ' +
     'proposal, and nothing is waiting on you.',
   // No horizon is printed, because the server enforces none: expireStaleOffers
-  // sweeps 'offered' and 'accepted' rows and never a proposal under review.
-  // A time this server does not keep is not written on this page.
+  // sweeps 'offered' and 'accepted' rows and never a proposal under review —
+  // except while selling here is closed (8 Oct 2026), when it ends every one
+  // and this page is not shown at all. A time this server does not keep is
+  // not written on this page.
   reviewNoDeadline:
     'There is no deadline on that decision and none is invented here. Your proposal stands until it is ' +
     'decided, or until you withdraw it.',
@@ -750,6 +753,13 @@ export const OFFER_ERRORS: Record<string, string> = {
   TRANSFER_NOT_COMPLETED:
     'The LANA did not reach our treasury wallet in time, so this purchase offer lapsed. Nothing was ' +
     'transferred, and you may propose again.',
+  // Written onto a proposal nobody had decided yet when selling here closed
+  // (8 Oct 2026, server/lib/acquisitionOffer.ts SELLING_CLOSED_UNDECIDED). Not
+  // SELLING_MOVED: that refusal code must fall through to the server's own
+  // sentence, which names the firms that buy LANA now.
+  SELLING_CLOSED:
+    'Selling LANA on Lana.discount has closed, so this proposal lapsed without a decision. Nothing was ' +
+    'transferred.',
   // EMPTY_WALLET_EXCEEDS_MANDATE was here until 11 Sept 2026. The server no
   // longer sends it: it told a seller to "transfer the agreed amount only"
   // when transferring the agreed amount is exactly what the button already
@@ -1060,6 +1070,47 @@ export const ROUND_DATES = {
     'Paid out = payments lana.discount has recorded. "Of" = everything agreed so far plus an estimate for the LANA ' +
     'not yet sold, at today\'s reference value and the round\'s published terms — it moves when the reference value ' +
     'moves, and only an accepted offer fixes a price. Money is shown in the currency it is paid in. Updated every minute.',
+} as const;
+
+// ─── selling here has closed (8 Oct 2026) ─────────────────────────────────
+// The owner, in his own words: "napiši da sta odkup Lan prevzela firme Krog
+// Menjave ali Ravena Plus … naj se uporabniki pri enem od podjetji
+// registrirajo … da nihče več ne more tam prodajati Lan". The firms are never
+// written here: they are read from the relays (GET /api/buying-dealers) and
+// put in by src/components/SellingMovedNotice.tsx, which also holds the
+// Slovenian, beside it, as SellTermsGate does.
+
+export const SELLING_MOVED = {
+  eyebrow: 'Selling LANA here has closed',
+  /** Followed by the firms' names, joined with `and`. */
+  titleLead: 'The purchase of LANA has been taken over by',
+  and: 'and',
+  titleNone: 'The purchase of LANA has been taken over by other companies.',
+  closed: 'LANA can no longer be sold on Lana.discount.',
+  registerOne: 'To sell your LANA, register with this company.',
+  registerTwo: 'To sell your LANA, register with one of the two companies.',
+  registerMany: 'To sell your LANA, register with one of these companies.',
+  registerNone: 'To sell your LANA, register with one of the companies listed on BEF Explorer.',
+  register: 'Register or sign in',
+  sell: 'Sell LANA',
+  directory: 'Companies on BEF Explorer',
+  loading: 'Reading the companies from the Lana relays…',
+  source: 'Read from each company’s own signed profile (KIND 30972) on the Lana relays.',
+  soldBefore: 'Already sold LANA to Lana.discount?',
+  soldBeforeLink: 'Sign in to see what we still owe you.',
+  soldBeforeBelow: 'Sign in below to see what we still owe you.',
+  // The sign-in form, which stays: for sellers who are still owed, and for the administrators.
+  signInTitle: 'Sign In',
+  signInIntro:
+    'Signing in is only for seeing the LANA you have already sold here and what we still owe you, and for ' +
+    'the administrators of this site.',
+  signInKeyIntro: 'Enter your LanaCoin WIF private key to access your account.',
+  signInKeyLabel: 'WIF Private Key',
+  signInKeyPlaceholder: 'Enter your WIF key...',
+  signInRemember: 'Remember me for 90 days (otherwise 30 days)',
+  signInSubmit: 'Sign In',
+  signInSubmitting: 'Signing in...',
+  signInKeyLocal: 'Your private key is processed locally in your browser and never sent to our servers.',
 } as const;
 
 // ─── words that must never reach a counterparty ───────────────────────────

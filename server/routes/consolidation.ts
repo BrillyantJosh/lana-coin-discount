@@ -40,6 +40,9 @@ import {
   assessWallet, broadcastOutcome, decideConsolidation, feeRoomLanoshis, rowToRecorded, walletGateVerdict,
   PENDING_WINDOW_HOURS, type ChainUtxo, type WalletAssessment,
 } from '../lib/consolidation.js';
+import { SELLING_CLOSED, refuseSelling } from '../lib/sellingClosed.js';
+import type { BuyingDealersAnswer } from '../lib/buyingDealers.js';
+import { buyingDealers as sharedBuyingDealers } from '../lib/buyingDealersShared.js';
 
 export type WalletGate = (hexId: string, address: string) =>
   Promise<{ blocked: false } | { blocked: true; httpStatus: number; code: string; reason: string }>;
@@ -53,6 +56,14 @@ export interface ConsolidationDeps {
   /** Ownership and freeze, as lib/consolidation.ts walletGateVerdict decides them. */
   walletGate?: WalletGate;
   now?: () => number;
+  /**
+   * Selling LANA here is closed (lib/sellingClosed.ts, 8 Oct 2026), and a merge
+   * existed only so a transfer to us could carry the wallet. Defaults to
+   * SELLING_CLOSED; only the tests of the merge itself pass false.
+   */
+  sellingClosed?: boolean;
+  /** The firms the refusal names; defaults to the process-wide dealer reader. */
+  buyingDealers?: () => BuyingDealersAnswer;
 }
 
 /** Which of the two addresses a WIF derives this address is, or null when neither. */
@@ -97,6 +108,8 @@ export function createConsolidationRouter(deps: ConsolidationDeps): Router {
   const electrumCall = deps.electrumCall || realElectrumCall;
   const buildSignedTx = deps.buildSignedTx || realBuildSignedTx;
   const now = deps.now || (() => Math.floor(Date.now() / 1000));
+  const sellingClosed = deps.sellingClosed ?? SELLING_CLOSED;
+  const buyers = deps.buyingDealers ?? (() => sharedBuyingDealers.peek());
   const walletGate: WalletGate = deps.walletGate || (async (hexId, address) => {
     try {
       const { freeze, listedWallets } = await readFreeze(hexId, address, {
@@ -202,6 +215,10 @@ export function createConsolidationRouter(deps: ConsolidationDeps): Router {
 
   // ── merge one batch ───────────────────────────────────────────────────
   router.post('/consolidate', async (req: Request, res: Response) => {
+    // Closed with selling: a merge was only ever the step before a transfer to
+    // us. Refused before the private key in the body is read. The read above
+    // stays, like every other read-only helper.
+    if (sellingClosed && refuseSelling(res, buyers())) return;
     const hexId = String(req.body?.hexId || '').toLowerCase();
     const address = normalizeAddress(String(req.body?.address || ''));
     const privateKey = String(req.body?.privateKey || '');

@@ -11,6 +11,7 @@ import PayoutStats from "@/components/PayoutStats";
 import LiquidityBalance from "@/components/LiquidityBalance";
 import Footer from "@/components/Footer";
 import { LANDING, FRAMEWORK_COPY } from "@/copy";
+import { SELLING_CLOSED } from "@/lib/sellingClosed";
 
 const Index = () => {
   return (
@@ -21,6 +22,12 @@ const Index = () => {
       {/* What we are, in the framework's own sentences (§14). It sits above the
           numbers on purpose: a reader who stops after one section should have
           read this one, not inferred a service from the lists below. */}
+      {/* Since selling closed (8 Oct 2026) the sections that describe how to
+          sell to us — the framework paragraph ("Holders may submit an
+          offer"), the round dates that open selling, how an acquisition works
+          and what we acquire — are not shown: each would describe a sale the
+          server now refuses. What we owe, what we settled and the flows stay. */}
+      {!SELLING_CLOSED && (
       <section id="how-we-acquire" className="py-16 md:py-20 border-y border-border bg-card">
         <div className="container mx-auto px-6 max-w-4xl">
           <h2 className="text-3xl md:text-4xl font-bold text-foreground">{LANDING.frameworkTitle}</h2>
@@ -43,10 +50,11 @@ const Index = () => {
           </div>
         </div>
       </section>
+      )}
 
       {/* The round dates: when the treasury starts acquiring from each financing
           round. Dates and totals only — never a discount (P08 §4). */}
-      <RoundDates />
+      {!SELLING_CLOSED && <RoundDates />}
 
       {/* Live board of every purchase price we owe and have not yet settled */}
       <section id="settlements" className="py-16 md:py-20 bg-muted/50">
@@ -101,8 +109,8 @@ const Index = () => {
 
       {/* Explanations come after the live data */}
       <RoundOrderExplainer />
-      <HowItWorks />
-      <Requirements />
+      {!SELLING_CLOSED && <HowItWorks />}
+      {!SELLING_CLOSED && <Requirements />}
       <Footer />
     </div>
   );

@@ -137,6 +137,9 @@ const app = express();
 app.use(express.json());
 app.use('/api/acquisitions', createAcquisitionsRouter({
   walletCheckBaseUrl: 'http://check.test',
+  // The flow as it ran until selling closed on 8 Oct 2026 (lib/sellingClosed.ts);
+  // the closure itself is pinned in server/lib/sellingClosed.test.ts.
+  sellingClosed: false,
   publishBuybackEvent: async () => undefined,
   checkSellerEligibility: async () => ({
     ok: true, walletType: 'LanaPays.Us', walletClass: 'lanapays', evidence: { splitCode: 'OK' },
