@@ -79,7 +79,7 @@ export const NOTICE_TEXT: Record<NoticeLang, NoticeText> = {
     signInTitle: 'Prijava',
     signInIntro:
       'Prijava je namenjena le še pregledu LAN, ki ste jih tu že prodali, in temu, kar vam še dolgujemo, ' +
-      'ter skrbnikom strani.',
+      'financerjem za poravnavo njihovih nakupov (/financer) ter skrbnikom strani.',
     signInKeyIntro: 'Vnesite zasebni ključ WIF svoje denarnice LanaCoin.',
     signInKeyLabel: 'Zasebni ključ WIF',
     signInKeyPlaceholder: 'Vnesite ključ WIF ...',

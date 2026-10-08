@@ -46,7 +46,9 @@ interface OrderStats {
  * its own LANA orders say so:
  *   - it must HAVE linked orders (no orders is not proof of anything, and this
  *     function never guesses);
- *   - none of them may still be pending;
+ *   - none of them may still be pending — and 'sending' is pending here: a
+ *     signed send that has not confirmed on chain may still be released, and
+ *     the leg then goes back to 'pending' (8 Oct 2026);
  *   - at least one must actually have been sent, so a batch whose every leg was
  *     cancelled is never dressed up as settled.
  *
@@ -67,7 +69,7 @@ export function settleBatchesWithSentLana(db: Database.Database): SettledBatch[]
   const statsFor = db.prepare(`
     SELECT
       COUNT(*)                                                        AS total,
-      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END)             AS pending,
+      SUM(CASE WHEN status IN ('pending', 'sending') THEN 1 ELSE 0 END) AS pending,
       SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END)                AS sent,
       MIN(CASE WHEN status = 'sent' THEN completed_at END)            AS first_sent_at,
       MAX(CASE WHEN status = 'sent' AND tx_hash IS NOT NULL AND tx_hash != ''

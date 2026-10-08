@@ -14,6 +14,7 @@
  * truncated window may itself be incomplete (its remaining legs are just past
  * the window), and it waits for the next run rather than being sent in part.
  */
+import type Database from 'better-sqlite3';
 
 export interface PendingLanaRow {
   id: string;
@@ -85,4 +86,100 @@ export function selectWholeGroups<T extends PendingLanaRow>(rows: T[], opts: Sel
     outputs += g.length;
   }
   return { groups: chosen, orders: chosen.flat(), droppedTail, deferredOversized };
+}
+
+// ─── which legs are the TREASURY's to send ─────────────────────────────────
+
+/**
+ * The treasury sends a leg only when its PURCHASE was settled by the treasury
+ * (db/financerSchema.ts). From 8 Oct 2026 a financer pays the legs of the
+ * purchases they confirmed from their own Lana.Discount wallet, and a purchase
+ * nobody has confirmed yet is sent by nobody. Without this join the auto-sender
+ * would pay a financer's legs from BUYBACK_WIF the moment the brain authorised
+ * them — and the financer would pay them again. One fragment, used by the
+ * auto-sender, the manual button and the heartbeat badge, so the three can
+ * never disagree about whose leg it is.
+ */
+export const TREASURY_LEG_JOIN =
+  "JOIN purchase_settlement ps ON ps.transaction_ref = blo.transaction_ref AND ps.settled_by = 'treasury'";
+
+/**
+ * The money-arrived gate, unchanged: the brain authorised the leg, or the
+ * operator marked its batch 'lana_bought'. Needs `ib` LEFT JOINed on batch_ref.
+ */
+export const TREASURY_AUTHORISED = "(blo.brain_authorized = 1 OR ib.status = 'lana_bought')";
+
+/**
+ * The window of rows the auto-sender picks whole purchases from (oldest
+ * first; see selectWholeGroups). A leg carrying a send_txid belongs to a
+ * signed send that is still in flight or not yet released — never rebuilt.
+ */
+export function readAutoSendWindow<T = any>(db: Database.Database, limit: number): T[] {
+  return db.prepare(`
+    SELECT DISTINCT blo.* FROM brain_lana_orders blo
+    ${TREASURY_LEG_JOIN}
+    LEFT JOIN incoming_batches ib ON blo.batch_ref = ib.batch_ref
+    WHERE blo.status = 'pending'
+      AND blo.send_txid IS NULL
+      AND ${TREASURY_AUTHORISED}
+    ORDER BY blo.created_at ASC, blo.transaction_ref ASC, blo.id ASC
+    LIMIT ?
+  `).all(limit) as T[];
+}
+
+export interface LegCount { orders: number; lanoshis: number }
+
+export interface HeartbeatLegCounts {
+  /** Every pending leg, whoever owes it. */
+  pending: LegCount;
+  /** What the next auto-send will attempt: the treasury's own, authorised. */
+  sendable: LegCount;
+  /** The treasury's own legs that no gate has released (the old "stranded"). */
+  stranded: LegCount;
+  /** Pending legs of purchases a financer settles — they send these themselves. */
+  financer: LegCount;
+  /** Pending legs of purchases nobody has confirmed yet — sent by nobody until then. */
+  unowned: LegCount;
+  /** Legs in a signed send that has not confirmed yet. */
+  sending: LegCount;
+}
+
+/**
+ * The numbers behind /api/heartbeat-status. pending = sendable + stranded +
+ * financer + unowned; `sending` is apart (those legs are not pending).
+ */
+export function heartbeatLegCounts(db: Database.Database): HeartbeatLegCounts {
+  const one = (sql: string): LegCount => {
+    const r = db.prepare(sql).get() as { c: number; lanoshis: number };
+    return { orders: r.c, lanoshis: r.lanoshis };
+  };
+  const pending = one(`SELECT COUNT(*) AS c, COALESCE(SUM(lana_amount), 0) AS lanoshis
+    FROM brain_lana_orders WHERE status = 'pending'`);
+  const sendable = one(`SELECT COUNT(*) AS c, COALESCE(SUM(blo.lana_amount), 0) AS lanoshis
+    FROM brain_lana_orders blo
+    ${TREASURY_LEG_JOIN}
+    LEFT JOIN incoming_batches ib ON blo.batch_ref = ib.batch_ref
+    WHERE blo.status = 'pending' AND blo.send_txid IS NULL AND ${TREASURY_AUTHORISED}`);
+  const treasury = one(`SELECT COUNT(*) AS c, COALESCE(SUM(blo.lana_amount), 0) AS lanoshis
+    FROM brain_lana_orders blo
+    ${TREASURY_LEG_JOIN}
+    WHERE blo.status = 'pending'`);
+  const financer = one(`SELECT COUNT(*) AS c, COALESCE(SUM(blo.lana_amount), 0) AS lanoshis
+    FROM brain_lana_orders blo
+    JOIN purchase_settlement ps ON ps.transaction_ref = blo.transaction_ref AND ps.settled_by = 'financer'
+    WHERE blo.status = 'pending'`);
+  const sending = one(`SELECT COUNT(*) AS c, COALESCE(SUM(lana_amount), 0) AS lanoshis
+    FROM brain_lana_orders WHERE status = 'sending'`);
+  const minus = (a: LegCount, ...b: LegCount[]): LegCount => ({
+    orders: b.reduce((s, x) => s - x.orders, a.orders),
+    lanoshis: b.reduce((s, x) => s - x.lanoshis, a.lanoshis),
+  });
+  return {
+    pending,
+    sendable,
+    stranded: minus(treasury, sendable),
+    financer,
+    unowned: minus(pending, treasury, financer),
+    sending,
+  };
 }

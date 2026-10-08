@@ -1,11 +1,14 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { SellingMovedNotice, NOTICE_TEXT, useNoticeLang } from '@/components/SellingMovedNotice';
 import { SELLING_CLOSED } from '@/lib/sellingClosed';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
+
+/** Pages a sign-in may return to (`/login?next=…`): a financer sent here from Direct.Fund goes back to /financer. */
+const AFTER_SIGN_IN = ['/financer'];
 
 const Login = () => {
   const [wif, setWif] = useState('');
@@ -16,6 +19,10 @@ const Login = () => {
   const { login, session } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+  // Where to go once signed in. Only pages named here: an address from the link
+  // must never decide where a fresh session is taken (an open redirect).
+  const [searchParams] = useSearchParams();
+  const home = AFTER_SIGN_IN.includes(searchParams.get('next') || '') ? (searchParams.get('next') as string) : '/dashboard';
   // One language for the notice and the form under it. Before sign-in there is
   // no profile to read it from, so it starts from the browser.
   const [lang, setLang] = useNoticeLang();
@@ -23,8 +30,8 @@ const Login = () => {
 
   // If already logged in, redirect to dashboard
   useEffect(() => {
-    if (session) navigate('/dashboard');
-  }, [session, navigate]);
+    if (session) navigate(home);
+  }, [session, navigate, home]);
 
   // Fetch relays on mount
   useEffect(() => {
@@ -45,7 +52,7 @@ const Login = () => {
     try {
       await login(wif, relays, rememberMe);
       toast({ title: "Welcome!", description: "Login successful." });
-      navigate('/dashboard');
+      navigate(home);
     } catch (error) {
       toast({
         title: "Login failed",

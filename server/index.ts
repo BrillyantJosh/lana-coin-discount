@@ -13,9 +13,15 @@ import { applyPublishedRoundTerms } from './lib/publishedRoundTerms.js';
 import { publishBudgetSettlements } from './lib/budgetSettlementPublisher.js';
 import { fetchKind38888, fetchKind0, Kind38888Data } from './lib/nostr.js';
 import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb } from './db/index.js';
-import { selectWholeGroups } from './lib/autoSendSelection.js';
+import { heartbeatLegCounts } from './lib/autoSendSelection.js';
+import { runOutbox, outboxHealth, brainCallbackTarget } from './lib/financer/brainOutbox.js';
+import { createFinancerRouter } from './routes/financer.js';
+// The LANA send machine (8 Oct 2026): every send recorded before it is
+// broadcast and finished from the chain — the financers' and the treasury's.
+import { defaultSends, sendsHealth } from './lib/financer/sends.js';
+import { financerHeartbeatFields } from './lib/financer/heartbeatStatus.js';
+import { createTreasuryAutoSend } from './lib/treasuryAutoSend.js';
 import { settleBatchesWithSentLana } from './lib/batchSettlement.js';
-import { tryAcquireSendLock, releaseSendLock, sendLockHolder } from './lib/sendLock.js';
 import { installJsonBodies } from './lib/jsonBodies.js';
 import { apiRateLimit } from './lib/apiRateLimit.js';
 
@@ -116,6 +122,14 @@ app.use('/api/wallets', createConsolidationRouter({
   walletCheckBaseUrl: process.env.WALLET_CHECK_BASE_URL || 'https://check.lanapays.us',
 }));
 app.use('/health', (_req, res) => res.redirect('/api/health'));
+// A financer's own page: confirm their internal batches and send the LANA of
+// their purchases from their own Lana.Discount wallet (8 Oct 2026). Signed by
+// the financer's key (NIP-98), not an admin route. Before the SPA catch-all
+// below, like every /api route — after it, express would answer index.html.
+app.use('/api/financer', createFinancerRouter({
+  walletCheckBaseUrl: process.env.WALLET_CHECK_BASE_URL || 'https://check.lanapays.us',
+  sends: defaultSends(),
+}));
 
 // Heartbeat status for the admin page. It MUST be registered before the static
 // files and the SPA catch-all below: an /api route declared after them never
@@ -125,22 +139,20 @@ app.use('/health', (_req, res) => res.redirect('/api/health'));
 // added after the catch-all and never once answered, so the dashboard reported
 // "No pending LANA orders" while the auto-sender was failing every 3 minutes.
 app.get('/api/heartbeat-status', (_req, res) => {
-  const pending = db.prepare(
-    "SELECT COUNT(*) AS c, COALESCE(SUM(lana_amount), 0) AS lanoshis FROM brain_lana_orders WHERE status = 'pending'"
-  ).get() as any;
   // What the next send will actually attempt — the same gate autoSendPendingLana
   // uses. Not every pending order is one of them: three caretaker legs from June
   // and July were never authorised and no run has ever picked them up. Counting
   // them in the badge would light it amber for ever and teach the operator to
   // ignore it, which is how they stayed invisible in the first place. So they
   // are reported apart, as stranded.
-  const sendable = db.prepare(`
-    SELECT COUNT(*) AS c, COALESCE(SUM(blo.lana_amount), 0) AS lanoshis
-    FROM brain_lana_orders blo
-    LEFT JOIN incoming_batches ib ON blo.batch_ref = ib.batch_ref
-    WHERE blo.status = 'pending'
-      AND (blo.brain_authorized = 1 OR ib.status = 'lana_bought')
-  `).get() as any;
+  //
+  // From 8 Oct 2026 the treasury sends only the purchases it settles, so two
+  // more kinds of pending leg are counted apart too: a financer's (they send
+  // those themselves) and those of purchases nobody has confirmed yet. Neither
+  // is the treasury's work, and neither is "stranded" — see heartbeatLegCounts.
+  const legs = heartbeatLegCounts(db);
+  const callbacks = outboxHealth(db);
+  const sends = sendsHealth(db);
   // Seconds until the next heartbeat (60s cycle)
   const now = Date.now();
   const elapsedSinceLastHb = now % HEARTBEAT_INTERVAL;
@@ -153,12 +165,27 @@ app.get('/api/heartbeat-status', (_req, res) => {
     nextAutoSendMin: nextAutoSendIn,
     nextHeartbeatSec: nextHbSec,
     lastAutoSendAt,
-    pendingLanaOrders: pending.c as number,
-    pendingLanoshis: pending.lanoshis as number,
-    sendableLanaOrders: sendable.c as number,
-    sendableLanoshis: sendable.lanoshis as number,
-    strandedLanaOrders: (pending.c as number) - (sendable.c as number),
-    strandedLanoshis: (pending.lanoshis as number) - (sendable.lanoshis as number),
+    pendingLanaOrders: legs.pending.orders,
+    pendingLanoshis: legs.pending.lanoshis,
+    sendableLanaOrders: legs.sendable.orders,
+    sendableLanoshis: legs.sendable.lanoshis,
+    strandedLanaOrders: legs.stranded.orders,
+    strandedLanoshis: legs.stranded.lanoshis,
+    financerLanaOrders: legs.financer.orders,
+    financerLanoshis: legs.financer.lanoshis,
+    unownedLanaOrders: legs.unowned.orders,
+    unownedLanoshis: legs.unowned.lanoshis,
+    sendingLanaOrders: legs.sending.orders,
+    sendingLanoshis: legs.sending.lanoshis,
+    // Calls to the brain still owed, those given up after 7 days (a person has
+    // to look: a lost fiat-received leaves a purchase unauthorised; the admin
+    // page re-sends one by its key), and those the brain took but whose
+    // purchases are still not approved after 7 days. Signed sends (financers'
+    // and the treasury's) not confirmed yet, and those unconfirmed for a day
+    // with their coins unspent — never released without proof. Financer
+    // purchases whose investor leg now names another investor. All of it in
+    // lib/financer/heartbeatStatus.ts.
+    ...financerHeartbeatFields(callbacks, sends),
   });
 });
 
@@ -282,19 +309,10 @@ const AUTO_SEND_OFFSET = 3;
 let heartbeatCount = 0;
 let lastAutoSendAt: string | null = null;
 let nextAutoSendIn = AUTO_SEND_CYCLE - AUTO_SEND_OFFSET; // initial countdown
-let autoSendSkipUntil = 0; // timestamp — skip auto-send until this time (insufficient balance cooldown)
-// Concurrency between the auto-sender and the admin's manual batch is a
-// shared lock in ./lib/sendLock.ts — both read status='pending' and both
-// broadcast, so only one may be in flight.
-let lastKnownBalance = 0; // LANA balance from last Electrum fetch (for quick pre-check)
-// UTXOs that produced a -22 "TX rejected" broadcast. The buyback wallet is SHARED
-// with other services, and electrum1 has no mempool tracking — so listunspent can
-// report a UTXO as unspent when another service's mempool tx already spends it.
-// Spending such a UTXO is rejected as a double-spend; since selection always picks
-// the largest UTXO, the same one loops every cycle. We blacklist failed UTXOs for a
-// while so the next attempt selects different inputs instead of retrying the doomed one.
-const failedUtxos = new Map<string, number>(); // "txid:vout" -> expiry timestamp
-const FAILED_UTXO_TTL = 20 * 60 * 1000; // 20 min
+// Concurrency between the auto-sender, the admin's manual batch and the send
+// round is a shared lock in ./lib/sendLock.ts — all three touch the treasury
+// wallet's sends, so only one may be in flight. The auto-sender's own state
+// (cooldown, -22 blacklist) lives with it in ./lib/treasuryAutoSend.ts.
 
 async function verifyUnconfirmedTransactions(): Promise<void> {
   try {
@@ -421,283 +439,24 @@ function settleFinishedBatches(): void {
   }
 }
 
+// The treasury's auto-send (moved to lib/treasuryAutoSend.ts on 8 Oct 2026 so
+// it runs in a test against a fake chain): the same selection and signing, but
+// every transaction is RECORDED with its legs 'sending' before it is broadcast,
+// and the send round below marks them 'sent' once the chain has it — a
+// broadcast whose answer did not come can no longer be paid a second time.
+const treasuryAutoSend = createTreasuryAutoSend({
+  db,
+  sends: defaultSends(),
+  electrumServers: getElectrumServersFromDb,
+  wif: () => process.env.BUYBACK_WIF,
+  settleFinishedBatches,
+  settleOrphanBoughtBatches,
+  maxOutputs: AUTO_SEND_MAX_OUTPUTS,
+  windowRows: AUTO_SEND_WINDOW_ROWS,
+});
+
 async function autoSendPendingLana(): Promise<void> {
-  // The cooldown check comes FIRST, and deliberately so: it needs no lock, and
-  // when it sat below the acquire its `return` left the process-wide send lock
-  // taken with no finally above it to give it back. sendLock has no TTL, so one
-  // such return would have frozen every payout — auto and manual — until the
-  // next restart, behind a log line that reads like ordinary concurrency
-  // protection. It never fired only because every cooldown (2, 3 and 5 minutes)
-  // is shorter than the 5m03s send cycle, by about three seconds.
-  if (Date.now() < autoSendSkipUntil) {
-    const remainSec = Math.ceil((autoSendSkipUntil - Date.now()) / 1000);
-    console.log(`[lana-discount] Auto-send: insufficient balance cooldown (${remainSec}s remaining) — skipping`);
-    return;
-  }
-
-  // Prevent concurrent runs
-  if (!tryAcquireSendLock('auto-send')) {
-    const h = sendLockHolder();
-    console.log(`[lana-discount] Auto-send: skipped — ${h?.who ?? 'another sender'} holds the send lock (${Math.round((h?.heldForMs ?? 0) / 1000)}s)`);
-    return;
-  }
-
-  try {
-    const buybackWif = process.env.BUYBACK_WIF;
-    if (!buybackWif) return;
-
-    // Send LANA orders that are either:
-    // 1. Explicitly authorized by Brain (brain_authorized=1), OR
-    // 2. In a batch with incoming_batches.status = 'lana_bought' (admin confirmed receipt)
-    // Read a WIDE window of authorized rows, then pick whole purchases from it.
-    // The old query took the first 100 ROWS, which could end in the middle of a
-    // purchase (its last legs being rows 101-103) — the legs then went out in
-    // two broadcasts and the brain recorded one hash for all of them.
-    const windowRows = db.prepare(`
-      SELECT DISTINCT blo.* FROM brain_lana_orders blo
-      LEFT JOIN incoming_batches ib ON blo.batch_ref = ib.batch_ref
-      WHERE blo.status = 'pending'
-        AND (blo.brain_authorized = 1 OR ib.status = 'lana_bought')
-      ORDER BY blo.created_at ASC, blo.transaction_ref ASC, blo.id ASC
-      LIMIT ?
-    `).all(AUTO_SEND_WINDOW_ROWS) as any[];
-    const selection = selectWholeGroups(windowRows, {
-      maxOutputs: AUTO_SEND_MAX_OUTPUTS,
-      windowTruncated: windowRows.length >= AUTO_SEND_WINDOW_ROWS,
-    });
-    if (selection.droppedTail) console.log(`[lana-discount] Auto-send: window full (${windowRows.length} rows) — purchase ${selection.droppedTail} waits for the next run so it is not sent in part`);
-    if (selection.groups[0] && selection.groups[0].length > AUTO_SEND_MAX_OUTPUTS) console.error(`[lana-discount] Auto-send: purchase ${selection.groups[0][0].transaction_ref} has ${selection.groups[0].length} legs — more than one broadcast normally carries; sending it whole, alone`);
-    if (selection.deferredOversized.length) console.warn(`[lana-discount] Auto-send: ${selection.deferredOversized.length} purchase(s) larger than ${AUTO_SEND_MAX_OUTPUTS} outputs deferred: ${selection.deferredOversized.join(', ')}`);
-    let pendingOrders = selection.orders;
-
-    if (pendingOrders.length === 0) {
-      // Batches whose own orders prove the LANA went out are closed by
-      // settleFinishedBatches() on every cycle, whether or not anything is
-      // pending. What is left here is the one case that function refuses to
-      // touch: a batch the operator marked 'lana_bought' that has NO linked
-      // orders at all, because the batch_ref never matched. That is a guess,
-      // not evidence, so it stays behind the idle check and a 10-minute wait.
-      settleOrphanBoughtBatches();
-      return;
-    }
-
-    // Whole purchases only (selectWholeGroups already grouped them); the
-    // insufficient-balance branch below picks affordable groups smallest-first.
-    const txGroups = selection.groups.slice().sort((a, b) => {
-      const sumA = a.reduce((s: number, o: any) => s + o.lana_amount, 0);
-      const sumB = b.reduce((s: number, o: any) => s + o.lana_amount, 0);
-      return sumA - sumB; // smallest groups first
-    });
-
-    let totalLanoshis = pendingOrders.reduce((s: number, o: any) => s + o.lana_amount, 0);
-    const totalLana = totalLanoshis / 100_000_000;
-
-    console.log(`[lana-discount] Auto-send LANA: ${pendingOrders.length} orders in ${txGroups.length} groups, ${totalLana.toFixed(3)} LANA total`);
-
-    const { normalizeWif, base58CheckDecode, privateKeyToUncompressedPublicKey, privateKeyToPublicKey, publicKeyToAddress, normalizeAddress, buildSignedTx } = await import('./lib/transaction.js');
-    const { electrumCall } = await import('./lib/electrum.js');
-
-    const electrumServers = getElectrumServersFromDb();
-    if (electrumServers.length === 0) {
-      console.warn('[lana-discount] Auto-send: no electrum servers');
-      return;
-    }
-
-    // Derive addresses from WIF
-    const normalizedKey = normalizeWif(buybackWif);
-    const keyBytes = base58CheckDecode(normalizedKey);
-    const privKeyHex = Array.from(keyBytes.slice(1, 33)).map(b => b.toString(16).padStart(2, '0')).join('');
-
-    const uncompAddr = publicKeyToAddress(privateKeyToUncompressedPublicKey(privKeyHex));
-    const compAddr = publicKeyToAddress(privateKeyToPublicKey(privKeyHex));
-
-    let useAddress = uncompAddr;
-    let useCompressed = false;
-
-    let utxos = await electrumCall('blockchain.address.listunspent', [uncompAddr], electrumServers);
-    if (!utxos || utxos.length === 0) {
-      utxos = await electrumCall('blockchain.address.listunspent', [compAddr], electrumServers);
-      if (utxos && utxos.length > 0) { useAddress = compAddr; useCompressed = true; }
-    }
-
-    if (!utxos || utxos.length === 0) {
-      console.warn('[lana-discount] Auto-send: no UTXOs in buyback wallet');
-      autoSendSkipUntil = Date.now() + 3 * 60 * 1000;
-      return;
-    }
-
-    // Only spend CONFIRMED UTXOs. listunspent also returns the unconfirmed change
-    // (height <= 0) created by a just-broadcast send; because selection sorts by
-    // value desc, that large unconfirmed change gets picked first and the node
-    // rejects the new TX with code -22 ("TX rejected") until the parent confirms.
-    // The auto-send then retries the same doomed TX every heartbeat for ~30 min
-    // (exactly the pattern seen in the logs). Filtering to height > 0 avoids it;
-    // there's normally ample confirmed balance, and if not we just wait one cycle.
-    const nowMs = Date.now();
-    // Drop expired blacklist entries so good UTXOs become spendable again.
-    for (const [k, exp] of failedUtxos) { if (exp <= nowMs) failedUtxos.delete(k); }
-
-    const confirmedUtxos = utxos.filter((u: any) => (u.height || 0) > 0);
-    if (confirmedUtxos.length === 0) {
-      console.warn('[lana-discount] Auto-send: all UTXOs still unconfirmed (change not yet mined) — cooldown 3min');
-      autoSendSkipUntil = nowMs + 3 * 60 * 1000;
-      return;
-    }
-    // Exclude UTXOs that recently produced a -22 rejection (likely already spent by
-    // a co-tenant service's mempool tx that electrum1 hasn't reflected yet).
-    const spendableUtxos = confirmedUtxos.filter((u: any) => !failedUtxos.has(`${u.tx_hash}:${u.tx_pos}`));
-    if (spendableUtxos.length === 0) {
-      console.warn(`[lana-discount] Auto-send: all ${confirmedUtxos.length} confirmed UTXOs are blacklisted from recent -22 rejections — cooldown 5min`);
-      autoSendSkipUntil = nowMs + 5 * 60 * 1000;
-      return;
-    }
-    utxos = spendableUtxos;
-
-    // Update known balance from UTXOs (confirmed only)
-    lastKnownBalance = utxos.reduce((s: number, u: any) => s + u.value, 0) / 100_000_000;
-
-    // Build recipients
-    const txRecipients = pendingOrders.map((o: any) => ({
-      address: normalizeAddress(o.to_wallet),
-      amount: o.lana_amount,
-    }));
-
-    // UTXO selection
-    const outputCount = txRecipients.length + 1;
-    const sorted = [...utxos].sort((a: any, b: any) => b.value - a.value);
-    let selected: any[] = [];
-    let total = 0;
-    let fee = 0;
-
-    for (const u of sorted) {
-      if (selected.length >= 30) break;
-      selected.push(u);
-      total += u.value;
-      fee = Math.floor((selected.length * 180 + outputCount * 34 + 10) * 150);
-      if (total >= totalLanoshis + fee) break;
-    }
-
-    if (total < totalLanoshis + fee) {
-      // Try to send whole groups (batches) that we can afford — never split a group
-      console.warn(`[lana-discount] Auto-send: insufficient balance for all ${pendingOrders.length} orders (need ${totalLanoshis + fee}, have ${total}). Trying whole groups...`);
-
-      const affordableGroups: any[][] = [];
-      let runningTotal = 0;
-
-      for (const group of txGroups) {
-        const groupTotal = group.reduce((s: number, o: any) => s + o.lana_amount, 0);
-        const newTotal = runningTotal + groupTotal;
-        const estInputs = Math.min(5, sorted.length);
-        const estOutputs = affordableGroups.reduce((s, g) => s + g.length, 0) + group.length + 1;
-        const estFee = Math.floor((estInputs * 180 + estOutputs * 34 + 10) * 150);
-        if (newTotal + estFee <= total) {
-          affordableGroups.push(group);
-          runningTotal = newTotal;
-        }
-      }
-
-      if (affordableGroups.length === 0) {
-        const smallestGroup = txGroups[0];
-        const smallestTotal = smallestGroup?.reduce((s: number, o: any) => s + o.lana_amount, 0) || 0;
-        // Cooldown for 15 minutes — don't keep retrying when balance is too low
-        autoSendSkipUntil = Date.now() + 3 * 60 * 1000;
-        console.warn(`[lana-discount] Auto-send: cannot afford even smallest group (${(smallestTotal / 100_000_000).toFixed(3)} LANA, ${smallestGroup?.length} orders, available: ${(total / 100_000_000).toFixed(3)} LANA) — cooldown 3min`);
-        return;
-      }
-
-      const affordableOrders = affordableGroups.flat();
-      console.log(`[lana-discount] Auto-send partial: sending ${affordableGroups.length}/${txGroups.length} groups (${affordableOrders.length} orders, ${(runningTotal / 100_000_000).toFixed(3)} LANA)`);
-
-      // Re-select UTXOs for partial amount only
-      selected = [];
-      total = 0;
-      const partialOutputCount = affordableOrders.length + 1;
-      for (const u of sorted) {
-        if (selected.length >= 30) break;
-        selected.push(u);
-        total += u.value;
-        fee = Math.floor((selected.length * 180 + partialOutputCount * 34 + 10) * 150);
-        if (total >= runningTotal + fee) break;
-      }
-
-      if (total < runningTotal + fee) {
-        console.warn('[lana-discount] Auto-send partial: still insufficient after UTXO re-select — skipping');
-        return;
-      }
-
-      // Replace with affordable subset
-      pendingOrders = affordableOrders;
-      totalLanoshis = runningTotal;
-
-      // Rebuild recipients for partial set
-      txRecipients.length = 0;
-      txRecipients.push(...affordableOrders.map((o: any) => ({
-        address: normalizeAddress(o.to_wallet),
-        amount: o.lana_amount,
-      })));
-    }
-
-    // Build, sign, broadcast
-    const { txHex } = await buildSignedTx(selected, buybackWif, txRecipients, fee, useAddress, electrumServers, useCompressed);
-    const txHash = await electrumCall('blockchain.transaction.broadcast', [txHex], electrumServers);
-
-    if (!txHash || typeof txHash !== 'string' || txHash.length !== 64) {
-      console.error('[lana-discount] Auto-send broadcast failed:', txHash);
-      // Blacklist the inputs we just tried — a -22 here almost always means one of
-      // these UTXOs is already (mempool-)spent by a co-tenant of the shared buyback
-      // wallet, but electrum1 still lists it as unspent. Excluding them lets the next
-      // attempt pick different inputs instead of looping on the same doomed TX every
-      // 5 min. Short cooldown so we don't immediately rebuild the identical failure.
-      const exp = Date.now() + FAILED_UTXO_TTL;
-      for (const u of selected) failedUtxos.set(`${u.tx_hash}:${u.tx_pos}`, exp);
-      autoSendSkipUntil = Date.now() + 2 * 60 * 1000;
-      console.warn(`[lana-discount] Blacklisted ${selected.length} UTXO(s) for ${FAILED_UTXO_TTL / 60000}min after -22; cooldown 2min`);
-      return;
-    }
-
-    const sentLana = totalLanoshis / 100_000_000;
-    console.log(`[lana-discount] Auto-send LANA TX: ${txHash} (${pendingOrders.length} recipients, ${sentLana.toFixed(3)} LANA)`);
-
-    // Update all orders to 'sent'
-    const updateStmt = db.prepare("UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ? AND status = 'pending'");
-    for (const o of pendingOrders) {
-      if (updateStmt.run(txHash, o.id).changes !== 1) {
-        // The row left 'pending' while we were building the tx (a cancel, or
-        // another sender). The LANA has moved regardless — say so where an
-        // operator will see it instead of overwriting whatever is there now.
-        console.error(`[lana-discount] Auto-send: order ${o.id} (${o.transaction_ref}) was paid in ${txHash} but is no longer pending — needs a look`);
-      }
-    }
-
-    // Notify Brain that LANA was sent (callback)
-    const sentTxRefs = [...new Set(pendingOrders.map((o: any) => o.transaction_ref).filter(Boolean))];
-    if (sentTxRefs.length > 0) {
-      const brainUrl = process.env.BRAIN_CALLBACK_URL || process.env.BRAIN_API_URL;
-      const brainKey = process.env.BRAIN_CALLBACK_KEY || process.env.LANA_DISCOUNT_API_KEY;
-      if (brainUrl) {
-        fetch(`${brainUrl}/api/callbacks/lana-sent`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-callback-key': brainKey || '' },
-          // order_ids: the brain stamps exactly these — a purchase's other legs
-          // may go out in a later broadcast and must keep their own hash.
-          body: JSON.stringify({ transaction_refs: sentTxRefs, tx_hash: txHash, order_ids: pendingOrders.map((o: any) => o.id) }),
-        }).then(r => {
-          if (r.ok) console.log(`[lana-discount] Brain callback lana-sent: ${sentTxRefs.length} txs, ${pendingOrders.length} orders`);
-          else console.warn(`[lana-discount] Brain callback failed: HTTP ${r.status}`);
-        }).catch(err => console.warn('[lana-discount] Brain callback error:', err.message));
-      }
-    }
-
-    // Close whatever this broadcast finished, from the evidence, plus the
-    // orphan case. Both used to be written out here a second time, with their
-    // own copy of the rules.
-    settleFinishedBatches();
-    settleOrphanBoughtBatches();
-  } catch (err: any) {
-    console.error('[lana-discount] Auto-send LANA error:', err.message);
-  } finally {
-    releaseSendLock('auto-send');
-  }
+  await treasuryAutoSend.run();
 }
 
 // ---------------------------------------------------------------------------
@@ -797,6 +556,25 @@ async function heartbeatLoop() {
       if (heartbeatCount % 10 === 0) {
         await withTimeout(() => verifyUnconfirmedTransactions(), 'RPC verification', 30000);
       }
+
+      // Calls owed to the brain (fiat-received, lana-sent), every beat. Its
+      // own timeout; a brain that does not answer stops the run, not the beat.
+      await withTimeout(() => runOutbox(db, brainCallbackTarget()).then(r => {
+        if (r.gaveUp > 0) console.error(`[lana-discount] ${r.gaveUp} brain callback(s) given up after 7 days — see /api/heartbeat-status`);
+      }), 'Brain callbacks', 45000);
+
+      // The LANA sends on their way (lib/financer/sends.ts), every beat: each
+      // read on the chain with the two-server proof — confirmed, its legs are
+      // 'sent' and lana-sent goes to the brain; not yet, the same bytes are sent
+      // again; proven dead, its legs go back to pending. One round at a time
+      // (its own lock); the treasury's sends only while no treasury send is
+      // being built (the send lock the auto-sender and the button take).
+      await withTimeout(() => defaultSends().round().then(r => {
+        const done = r.confirmed.length + r.lateConfirmed.length;
+        if (done || r.released.length || r.stuck.length) {
+          console.log(`[lana-discount] Send round: ${done} confirmed, ${r.released.length} released, ${r.sent.length} sent again, ${r.held.length} held, ${r.stuck.length} stuck`);
+        }
+      }), 'LANA send round', 55000);
 
       // A purchase offer nobody accepted stops standing. Cheap, so every beat.
       try {

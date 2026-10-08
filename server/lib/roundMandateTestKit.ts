@@ -17,6 +17,7 @@ import {
   ROUND_MANDATE_SCHEMA_SQL, ROUND_MANDATE_OFFER_COLUMNS, OFFER_DECISION_REASON_STATUS_COLUMN, BUDGET_SETTLEMENT_SCHEMA_SQL,
 } from '../db/roundMandateSchema.js';
 import { signaturePayloadHash } from './requestSignature.js';
+import { migrateFinancerSchema } from '../db/financerSchema.js';
 
 export interface TestKey { priv: Uint8Array; pub: string }
 
@@ -171,6 +172,30 @@ export function createMandateTestDb(): Database.Database {
     paid_at TEXT NOT NULL DEFAULT (datetime('now')), created_at TEXT DEFAULT (datetime('now')))`);
   for (const sql of ROUND_MANDATE_OFFER_COLUMNS) db.exec(sql);
   db.exec(OFFER_DECISION_REASON_STATUS_COLUMN);
+  // The LANA legs and the incoming batches, as db/index.ts and routes/api.ts
+  // build them (with the columns their safe migrations add), and then the
+  // financer self-settlement migration itself — the same function the server
+  // runs at boot, so a test sees exactly the tables and columns production has.
+  db.exec(`
+    CREATE TABLE incoming_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, batch_ref TEXT NOT NULL UNIQUE, investor_hex TEXT NOT NULL,
+      total_amount REAL NOT NULL, currency TEXT NOT NULL, payment_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'incoming', received_at TEXT, lana_bought_at TEXT, lana_sent_at TEXT,
+      lana_tx_hash TEXT, notes TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE incoming_batch_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL REFERENCES incoming_batches(id),
+      pp_id INTEGER NOT NULL, order_type TEXT, amount_fiat REAL NOT NULL, currency TEXT NOT NULL,
+      recipient_wallet TEXT, shop_name TEXT, created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE brain_lana_orders (
+      id TEXT PRIMARY KEY, transaction_ref TEXT, order_type TEXT NOT NULL, to_wallet TEXT NOT NULL, to_hex TEXT NOT NULL,
+      lana_amount INTEGER NOT NULL, fiat_value REAL NOT NULL, currency TEXT NOT NULL, exchange_rate REAL NOT NULL,
+      tx_hash TEXT, status TEXT DEFAULT 'pending', error_message TEXT, created_at TEXT DEFAULT (datetime('now')),
+      completed_at TEXT, batch_ref TEXT, brain_authorized INTEGER DEFAULT 0, brain_authorized_at TEXT, cancel_reason TEXT
+    );
+  `);
+  migrateFinancerSchema(db);
   return db;
 }
 

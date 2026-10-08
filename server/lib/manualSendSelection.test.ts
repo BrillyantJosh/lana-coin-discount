@@ -6,11 +6,17 @@
  * refs it was given, authorised or not. selectManualSendOrders() is the rule
  * that replaced it — the auto-sender's own (brain_authorized = 1, or the batch
  * is at 'lana_bought') — and the route sends nothing unless `unauthorised` is 0.
+ *
+ * And since 8 Oct 2026 only the TREASURY's purchases (purchase_settlement
+ * 'treasury'): a financer's are theirs to send, an unconfirmed one is nobody's.
+ * The tests from before that day give every purchase a treasury owner, so they
+ * keep asking what they always asked.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import DatabaseCtor from 'better-sqlite3';
 import type Database from 'better-sqlite3';
 import { selectManualSendOrders } from './manualSendSelection';
+import { migrateFinancerSchema } from '../db/financerSchema';
 
 let db: Database.Database;
 
@@ -49,13 +55,19 @@ beforeEach(() => {
       brain_authorized_at TEXT, cancel_reason TEXT
     );
   `);
+  migrateFinancerSchema(db);
 });
 
 const batch = (ref: string, status: string) =>
   db.prepare('INSERT INTO incoming_batches (batch_ref, status) VALUES (?, ?)').run(ref, status);
 let seq = 0;
-const order = (txRef: string, o: { batch?: string | null; brain?: 0 | 1; status?: string; at?: string } = {}) => {
+const order = (txRef: string, o: { batch?: string | null; brain?: 0 | 1; status?: string; at?: string; owner?: 'treasury' | 'financer' | null } = {}) => {
   const id = `O${++seq}`;
+  const owner = o.owner === undefined ? 'treasury' : o.owner;
+  if (owner) {
+    db.prepare(`INSERT OR IGNORE INTO purchase_settlement (transaction_ref, owner_hex, settled_by, confirmed_by)
+                VALUES (?, 'f1', ?, 'test')`).run(txRef, owner);
+  }
   db.prepare(`INSERT INTO brain_lana_orders (id, transaction_ref, lana_amount, status, batch_ref, brain_authorized, created_at)
               VALUES (?, ?, 100, ?, ?, ?, ?)`)
     .run(id, txRef, o.status ?? 'pending', o.batch ?? null, o.brain ?? 0, o.at ?? `2026-10-01 10:00:${String(seq).padStart(2, '0')}`);
@@ -114,6 +126,35 @@ describe('selectManualSendOrders', () => {
   });
 
   it('nothing requested, nothing selected', () => {
-    expect(selectManualSendOrders(db, [])).toEqual({ pending: [], unauthorised: 0 });
+    expect(selectManualSendOrders(db, [])).toEqual({ pending: [], unauthorised: 0, notTreasury: 0 });
+  });
+
+  // ── whose purchase it is (8 Oct 2026) ──
+
+  it("a financer's purchase is not the treasury's to send, even authorised and bought", () => {
+    batch('B1', 'lana_bought');
+    order('T1', { batch: 'B1', brain: 1, owner: 'financer' });
+    order('T1', { batch: 'B1', brain: 1, owner: 'financer' });
+    const sel = selectManualSendOrders(db, ['T1']);
+    expect(sel.pending).toHaveLength(2);
+    expect(sel.notTreasury).toBe(2);
+    // Not authorised for the treasury either, so either check alone refuses it.
+    expect(sel.unauthorised).toBe(0);
+  });
+
+  it('a purchase nobody has confirmed is nobody\'s — counted, so the request is refused, not sent in part', () => {
+    batch('B1', 'lana_bought');
+    order('T-OURS', { batch: 'B1' });
+    order('T-NOBODY', { batch: 'B1', brain: 1, owner: null });
+    const sel = selectManualSendOrders(db, ['T-OURS', 'T-NOBODY']);
+    expect(ids(sel.pending)).toHaveLength(2);
+    expect(sel.notTreasury).toBe(1);
+  });
+
+  it("the treasury's own purchase passes, the lana_bought branch included", () => {
+    batch('B1', 'lana_bought');
+    order('T1', { batch: 'B1' });
+    order('T2', { brain: 1 });
+    expect(selectManualSendOrders(db, ['T1', 'T2'])).toMatchObject({ unauthorised: 0, notTreasury: 0 });
   });
 });

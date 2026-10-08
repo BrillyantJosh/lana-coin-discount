@@ -104,6 +104,15 @@ describe('closing a batch whose LANA has gone out', () => {
     expect(read('2026001831').status).toBe('received');
   });
 
+  it("waits on a leg that is 'sending' — signed, not yet on chain, and it may still be released", () => {
+    batch('2026002417', 'received');
+    order('2026002417', 'sent');
+    order('2026002417', 'sending');
+
+    expect(settleBatchesWithSentLana(db)).toEqual([]);
+    expect(read('2026002417').status).toBe('received');
+  });
+
   it('never guesses: a batch with no linked orders stays where it is', () => {
     batch('2026001900', 'received');
     order(null, 'sent');

@@ -51,7 +51,12 @@ interface LocalBatch {
   lanaTxHash: string | null;
   notes: string | null;
   createdAt: string;
+  /** 'treasury' | 'financer' since 8 Oct 2026; null on every batch confirmed before. */
+  settledBy?: 'treasury' | 'financer' | null;
 }
+
+/** Who sends a purchase's LANA (purchase_settlement): the treasury, its financer, or nobody yet (not confirmed). */
+type SettledBy = 'treasury' | 'financer' | null;
 
 interface LanaOrder {
   id: string;
@@ -68,6 +73,11 @@ interface LanaOrder {
   brainAuthorized: boolean;
   batchRef: string | null;
   createdAt: string;
+  settledBy?: SettledBy;
+  /** The financer (or, for the treasury, the batch's financer) the purchase is settled for. */
+  settlementOwnerHex?: string | null;
+  /** The signed send it is in while 'sending' (recorded, not yet in a block). */
+  sendTxid?: string | null;
 }
 
 interface BatchGroup {
@@ -111,7 +121,7 @@ const STATUS_TAB: Record<BatchStatus, TabId> = {
 
 const tabs: { id: TabId; label: string; desc: string; color: string }[] = [
   { id: 'pending_direct', label: 'Pending Direct', desc: 'Awaiting payment on Lana Direct Fund — not yet sent by investors', color: 'text-gray-500' },
-  { id: 'incoming', label: 'Incoming', desc: 'FIAT payments sent by investors', color: 'text-amber-500' },
+  { id: 'incoming', label: 'Incoming', desc: 'FIAT payments sent by investors. Confirm here only money that arrived on the TREASURY bank account — a financer confirms their own internal Lana Discount batches on /financer and sends the LANA from their own wallet.', color: 'text-amber-500' },
   { id: 'awaiting_lana', label: 'Awaiting LANA', desc: 'FIAT confirmed on the bank account — the LANA goes out on its own, and the batch closes itself once every leg is on chain', color: 'text-blue-500' },
   { id: 'lana_sent', label: 'LANA Sent', desc: 'LANA distributed to recipients', color: 'text-emerald-500' },
 ];
@@ -179,13 +189,94 @@ const purposeConfig: Record<string, { label: string; cls: string }> = {
   caretaker_via_discount: { label: 'Caretaker', cls: 'bg-purple-100 text-purple-700 dark:bg-purple-500/10 dark:text-purple-400' },
 };
 
+/**
+ * "Confirm Received" — for money that arrived on the TREASURY's bank account,
+ * and nothing else.
+ *
+ * Owner, 8 Oct 2026: a financer's Lana Discount share is internal — they pay
+ * themselves, confirm the batch on /financer and send its LANA from their own
+ * Lana.Discount wallet. Confirming such a batch here would make the treasury's
+ * wallet pay LANA the financer owes, for money that never reached the treasury.
+ * So the click asks the admin to SAY it, by typing the batch's reference (the
+ * server also requires {treasuryReceived: true}, and refuses a batch any of
+ * whose purchases a financer already settles).
+ */
+function TreasuryConfirmDialog(props: {
+  batch: { batchRef: string; totalFiat: number; currency: string; orders: unknown[] };
+  payer: string;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { batch, payer, busy } = props;
+  const [typed, setTyped] = useState('');
+  const matches = typed.trim() === batch.batchRef;
+  return (
+    <div
+      className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="treasury-confirm-title"
+      onKeyDown={e => { if (e.key === 'Escape') props.onCancel(); }}
+    >
+      <div className="bg-card rounded-2xl border-2 border-border p-5 w-full max-w-md space-y-3 text-sm">
+        <h2 id="treasury-confirm-title" className="text-base font-bold">Confirm received on the treasury account</h2>
+        <p>
+          Batch <span className="font-mono font-semibold">{batch.batchRef}</span> · {payer} · {formatFiat(batch.totalFiat, batch.currency)} · {batch.orders.length} payment{batch.orders.length !== 1 ? 's' : ''}
+        </p>
+        <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-700 dark:text-amber-300">
+          Confirm only money that arrived on the <strong>treasury bank account</strong>. A financer&apos;s Lana Discount batch is internal:
+          the financer confirms it on /financer and sends its LANA from their own wallet — confirming it here would make the
+          treasury wallet pay LANA the financer owes.
+        </p>
+        <label htmlFor="treasury-confirm-ref" className="block font-medium">
+          Type the batch reference to confirm
+        </label>
+        <input
+          id="treasury-confirm-ref"
+          value={typed}
+          onChange={e => setTyped(e.target.value)}
+          autoFocus
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={batch.batchRef}
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono"
+        />
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={props.onCancel} className="px-3 py-2 rounded-lg text-xs font-semibold border border-border text-muted-foreground hover:text-foreground">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={props.onConfirm}
+            disabled={!matches || busy}
+            className="px-3 py-2 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            Received on the treasury account
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const AdminIncomingPayments = () => {
   const { session, isLoading: authLoading, isAdmin } = useAuth();
   const navigate = useNavigate();
   const [orders, setOrders] = useState<FiatOrder[]>([]);
   const [lanaOrders, setLanaOrders] = useState<LanaOrder[]>([]);
   const [buybackBalance, setBuybackBalance] = useState<{ wallet: string; balanceLana: number; confirmedLana?: number; unconfirmedLana?: number }>({ wallet: '', balanceLana: 0 });
-  const [heartbeatInfo, setHeartbeatInfo] = useState<{ nextAutoSendMin: number; nextHeartbeatSec: number; pendingLanaOrders: number; pendingLanoshis: number; sendableLanaOrders: number; strandedLanaOrders: number; strandedLanoshis: number; lastAutoSendAt: string | null }>({ nextAutoSendMin: 0, nextHeartbeatSec: 60, pendingLanaOrders: 0, pendingLanoshis: 0, sendableLanaOrders: 0, strandedLanaOrders: 0, strandedLanoshis: 0, lastAutoSendAt: null });
+  const [heartbeatInfo, setHeartbeatInfo] = useState<{
+    nextAutoSendMin: number; nextHeartbeatSec: number; pendingLanaOrders: number; pendingLanoshis: number; sendableLanaOrders: number; strandedLanaOrders: number; strandedLanoshis: number; lastAutoSendAt: string | null;
+    // Since 8 Oct 2026 (server/index.ts /api/heartbeat-status): legs the financers send themselves, legs of purchases
+    // nobody has confirmed yet, legs in a signed send not yet in a block, sends unconfirmed for a day, brain calls given up.
+    financerLanaOrders?: number; financerLanoshis?: number; unownedLanaOrders?: number; unownedLanoshis?: number;
+    sendingLanaOrders?: number; sendingLanoshis?: number; lanaSendsStuck?: number; lanaSendsStuckTxids?: string[]; brainCallbacksGaveUp?: number;
+    // Since 9 Oct 2026 (server/lib/financer/heartbeatStatus.ts): calls the brain took but still not approved after
+    // 7 days, and financer purchases whose investor leg now names another investor (nobody sends those). Counts only:
+    // which ones is the admin's (GET /api/admin/brain-callbacks, adminLists below).
+    brainCallbacksWaitingOver7d?: number; ownerMismatchPurchases?: number;
+  }>({ nextAutoSendMin: 0, nextHeartbeatSec: 60, pendingLanaOrders: 0, pendingLanoshis: 0, sendableLanaOrders: 0, strandedLanaOrders: 0, strandedLanoshis: 0, lastAutoSendAt: null });
   const [countdown, setCountdown] = useState(0);
   const [hbCountdown, setHbCountdown] = useState(60);
   const [lanaObligations, setLanaObligations] = useState<{ pendingLanoshis: number; sentLanoshis: number }>({ pendingLanoshis: 0, sentLanoshis: 0 });
@@ -195,6 +286,14 @@ const AdminIncomingPayments = () => {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [exchangeRate, setExchangeRate] = useState(0);
   const [updating, setUpdating] = useState<string | null>(null);
+  // The brain call being re-sent (»Re-send to brain«), by its key.
+  const [rearming, setRearming] = useState<string | null>(null);
+  // Which brain calls and purchases the heartbeat's counts are: the given-up calls by key (each can be re-sent from
+  // here), those waiting over 7 days, the purchases nobody can send. Signed, admin only (GET
+  // /api/admin/brain-callbacks); the public heartbeat carries only the counts (recheck of 9 Oct 2026, M4).
+  const [adminLists, setAdminLists] = useState<{ gaveUpKeys: string[]; waitingOver7dKeys: string[]; ownerMismatchRefs: string[] }>({ gaveUpKeys: [], waitingOver7dKeys: [], ownerMismatchRefs: [] });
+  // The batch whose treasury receipt is being confirmed (the typed confirmation is open).
+  const [treasuryConfirm, setTreasuryConfirm] = useState<BatchGroup | null>(null);
   const [investorNames, setInvestorNames] = useState<Record<string, string>>({});
   // Sort mode: "latest"  = most recent Lana Discount activity first (default);
   //            "batchRef" = batch number descending (newest batch first);
@@ -293,24 +392,61 @@ const AdminIncomingPayments = () => {
   }, [session, isAdmin, fetchData]);
 
   // Poll heartbeat status every 30s + countdown timer
-  useEffect(() => {
-    const fetchHb = async () => {
-      try {
-        const res = await fetch('/api/heartbeat-status');
-        if (res.ok) {
-          const data = await res.json();
-          setHeartbeatInfo(data);
-          // Only update countdown if server reports > 0 minutes remaining
-          const serverSec = (data.nextAutoSendMin || 0) * 60;
-          if (serverSec > 0) setCountdown(serverSec);
-          setHbCountdown(data.nextHeartbeatSec || 60);
+  const fetchHb = useCallback(async () => {
+    try {
+      const res = await fetch('/api/heartbeat-status');
+      if (res.ok) {
+        const data = await res.json();
+        setHeartbeatInfo(data);
+        // Only update countdown if server reports > 0 minutes remaining
+        const serverSec = (data.nextAutoSendMin || 0) * 60;
+        if (serverSec > 0) setCountdown(serverSec);
+        setHbCountdown(data.nextHeartbeatSec || 60);
+        // Which ones, only while there are any.
+        if ((data.brainCallbacksGaveUp ?? 0) > 0 || (data.brainCallbacksWaitingOver7d ?? 0) > 0 || (data.ownerMismatchPurchases ?? 0) > 0) {
+          try {
+            const lr = await signedFetch('/api/admin/brain-callbacks');
+            if (lr.ok) {
+              const lists = await lr.json();
+              const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+              setAdminLists({ gaveUpKeys: strings(lists?.gaveUpKeys), waitingOver7dKeys: strings(lists?.waitingOver7dKeys), ownerMismatchRefs: strings(lists?.ownerMismatchRefs) });
+            }
+          } catch {}
+        } else {
+          setAdminLists({ gaveUpKeys: [], waitingOver7dKeys: [], ownerMismatchRefs: [] });
         }
-      } catch {}
-    };
+      }
+    } catch {}
+  }, []);
+  useEffect(() => {
     fetchHb();
     const hbTimer = setInterval(fetchHb, 30000);
     return () => clearInterval(hbTimer);
-  }, []);
+  }, [fetchHb]);
+
+  // »Re-send to brain«: a call given up after 7 days is posted again from the
+  // next heartbeat on, with a fresh 7 days (server: POST
+  // /api/admin/brain-callbacks/rearm). Nothing else changes — no batch, no
+  // owner — so it also works for a financer's batch, where Confirm Received
+  // is refused.
+  const rearmBrainCallback = async (dedupeKey: string) => {
+    setRearming(dedupeKey);
+    try {
+      const res = await signedFetch('/api/admin/brain-callbacks/rearm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dedupeKey }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(refusalText(data, `Could not re-send ${dedupeKey} (HTTP ${res.status})`));
+      toast.success(`${dedupeKey} goes to the brain again at the next heartbeat`);
+      await fetchHb();
+    } catch (err: any) {
+      toast.error(err?.message || `Could not re-send ${dedupeKey}`);
+    } finally {
+      setRearming(null);
+    }
+  };
 
   // Countdown every second — auto-refresh data when countdown reaches 0
   const fetchingRef = useRef(false);
@@ -339,25 +475,15 @@ const AdminIncomingPayments = () => {
     if (!session) return;
     setUpdating(batch.batchRef);
     try {
+      // Only the status goes. Since 8 Oct 2026 the server builds the batch from
+      // Direct.Fund's own fresh answer and ignored the payments this page used to
+      // send (lib/financer/confirm.ts). 'received' must also SAY the money is on
+      // the treasury's bank account — the typed confirmation below is where the
+      // admin says it; a financer's internal batch is confirmed on /financer.
       const res = await signedFetch(`/api/admin/incoming-batches/${encodeURIComponent(batch.batchRef)}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          status: newStatus,
-          investorHex: batch.orders[0]?.investorHex || '',
-          totalAmount: batch.totalFiat,
-          currency: batch.currency,
-          paymentCount: batch.orders.length,
-          payments: batch.orders.map(o => ({
-            ppId: o.ppId,
-            orderType: o.orderType,
-            amountFiat: o.amountFiat,
-            currency: o.currency,
-            recipientWallet: o.recipientWallet,
-            shopName: o.shopName,
-            transactionRef: o.transactionRef,
-          })),
-        }),
+        body: JSON.stringify(newStatus === 'received' ? { status: newStatus, treasuryReceived: true } : { status: newStatus }),
       });
       if (!res.ok) {
         // Say WHY. A batch too large to read (2 Oct 2026, 288 payments) and a
@@ -424,9 +550,16 @@ const AdminIncomingPayments = () => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(refusalText(data, 'Failed to send LANA'));
-      toast.success(`LANA sent! TX: ${data.tx_hash?.slice(0, 12)}... (${data.orders_count} recipients)`);
-      // Move batch to lana_sent
-      await updateBatchStatus(batch, 'lana_sent');
+      // Recorded first, then broadcast (lib/financer/sends.ts): its orders are
+      // 'sending' and become 'sent' — and the batch closes itself — only once
+      // the chain proves the transaction is in a block. So the batch is no
+      // longer ticked 'lana_sent' by hand here.
+      if (data.status === 'in_doubt') {
+        toast.warning(`TX ${data.tx_hash?.slice(0, 12)}... — the network did not answer clearly. It is kept and sent again with the same bytes; do NOT send these orders again.`);
+      } else {
+        toast.success(`LANA broadcast: TX ${data.tx_hash?.slice(0, 12)}... (${data.orders_count} recipients) — sent once it is in a block`);
+      }
+      await fetchData();
     } catch (err: any) {
       toast.error(err.message || 'Failed to send LANA');
     } finally {
@@ -565,9 +698,12 @@ const AdminIncomingPayments = () => {
     const legs = lanaOrders.filter(lo => refs.has(lo.transactionRef));
     const pending = legs.filter(lo => lo.status === 'pending');
     const sent = legs.filter(lo => lo.status === 'sent');
+    // In a signed send (a financer's or the treasury's) that is not in a block yet: owed, and nobody may send it again.
+    const sending = legs.filter(lo => lo.status === 'sending');
     return {
       total: legs.length,
       sent: sent.length,
+      sending: sending.length,
       pending: pending.length,
       pendingLanoshis: pending.reduce((s2, lo) => s2 + lo.lanaAmount, 0),
       // Nothing will pick these up: the brain never released them and the batch
@@ -576,6 +712,21 @@ const AdminIncomingPayments = () => {
       unreleased: pending.filter(lo => !lo.brainAuthorized).length,
     };
   };
+
+  /**
+   * Who sends this batch's LANA (8 Oct 2026). A financer's Lana Discount share
+   * is internal: they confirm it on /financer and send from their own wallet,
+   * so none of the treasury's buttons apply to it. The batch row says so once
+   * it is confirmed; before that its legs may already carry the purchase's owner.
+   */
+  const settlementOf = (batch: BatchGroup): { settledBy: SettledBy; ownerHex: string | null } => {
+    if (batch.localBatch?.settledBy) return { settledBy: batch.localBatch.settledBy, ownerHex: batch.localBatch.investorHex || null };
+    const refs = new Set(batch.orders.map(o => o.transactionRef).filter(Boolean));
+    const leg = lanaOrders.find(lo => refs.has(lo.transactionRef) && lo.settledBy);
+    return leg ? { settledBy: leg.settledBy ?? null, ownerHex: leg.settlementOwnerHex ?? null } : { settledBy: null, ownerHex: null };
+  };
+  const ownerName = (hex: string | null | undefined) =>
+    hex ? (investorNames[hex] || `${hex.slice(0, 8)}...${hex.slice(-6)}`) : '—';
 
   // LANA we still owe = every order the wallet has not sent yet, whatever batch
   // it belongs to and whether or not a batch was ever marked "LANA bought".
@@ -587,13 +738,32 @@ const AdminIncomingPayments = () => {
   // while the auto-sender was short of coins and retrying every 3 minutes.
   // Rounding is 2 decimals, not whole LANA: a shortfall of 0.72 LANA is enough
   // to stop a payment, and a whole-LANA tile would have hidden it.
+  //
+  // Since 8 Oct 2026 the treasury wallet pays only the purchases the TREASURY
+  // settles; a financer's legs go from the financer's own wallet and would make
+  // "Available" look short when it is not. Legs nobody has confirmed yet are
+  // left out too (they may go either way) and are counted in the strip above.
+  // A leg 'sending' is still owed until its transaction is in a block.
   const pendingLana = lanaOrders
-    .filter(lo => lo.status === 'pending')
+    .filter(lo => (lo.status === 'pending' || lo.status === 'sending') && lo.settledBy === 'treasury')
     .reduce((s, lo) => s + lo.lanaAmount, 0) / 100_000_000;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
       <AdminNav />
+      {treasuryConfirm && (
+        <TreasuryConfirmDialog
+          batch={treasuryConfirm}
+          payer={investorNames[treasuryConfirm.investorHex] || `${treasuryConfirm.investorHex.slice(0, 8)}...${treasuryConfirm.investorHex.slice(-6)}`}
+          busy={updating === treasuryConfirm.batchRef}
+          onCancel={() => setTreasuryConfirm(null)}
+          onConfirm={() => {
+            const batch = treasuryConfirm;
+            setTreasuryConfirm(null);
+            void updateBatchStatus(batch, 'received');
+          }}
+        />
+      )}
       <div className="max-w-5xl mx-auto px-4 py-6 space-y-5">
         <h1 className="text-lg font-bold">Incoming FIAT Payments</h1>
         <p className="text-sm text-muted-foreground -mt-3">
@@ -640,7 +810,7 @@ const AdminIncomingPayments = () => {
         {buybackBalance.wallet && (
           <div className="rounded-xl border bg-card p-4">
             {/* Heartbeat status */}
-            <div className="flex items-center justify-center gap-4 mb-3 pb-3 border-b text-xs">
+            <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 mb-3 pb-3 border-b text-xs">
               {heartbeatInfo.sendableLanaOrders > 0 ? (
                 <div className="flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
@@ -663,6 +833,88 @@ const AdminIncomingPayments = () => {
                   <span className="text-muted-foreground/50">|</span>
                   <span className="text-muted-foreground">
                     {heartbeatInfo.strandedLanaOrders} order{heartbeatInfo.strandedLanaOrders !== 1 ? 's' : ''} ({(heartbeatInfo.strandedLanoshis / 100_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })} LANA) not authorised — no send will pick {heartbeatInfo.strandedLanaOrders !== 1 ? 'them' : 'it'} up
+                  </span>
+                </>
+              )}
+              {/* Not the treasury's to send (8 Oct 2026): the financers send their own,
+                  and nobody sends a purchase before it is confirmed. Said apart so the
+                  amber badge keeps meaning the treasury's coins are about to move. */}
+              {(heartbeatInfo.financerLanaOrders ?? 0) > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">|</span>
+                  <span className="text-muted-foreground" data-testid="hb-financer-legs">
+                    {heartbeatInfo.financerLanaOrders} order{heartbeatInfo.financerLanaOrders !== 1 ? 's' : ''} ({((heartbeatInfo.financerLanoshis ?? 0) / 100_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })} LANA) sent by their financers
+                  </span>
+                </>
+              )}
+              {(heartbeatInfo.unownedLanaOrders ?? 0) > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">|</span>
+                  <span className="text-muted-foreground">
+                    {heartbeatInfo.unownedLanaOrders} order{heartbeatInfo.unownedLanaOrders !== 1 ? 's' : ''} of purchases nobody has confirmed yet
+                  </span>
+                </>
+              )}
+              {(heartbeatInfo.sendingLanaOrders ?? 0) > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">|</span>
+                  <span className="text-muted-foreground">
+                    {heartbeatInfo.sendingLanaOrders} order{heartbeatInfo.sendingLanaOrders !== 1 ? 's' : ''} in a signed send, waiting for a block
+                  </span>
+                </>
+              )}
+              {/* A person has to look: never released without proof, never sent twice. */}
+              {(heartbeatInfo.lanaSendsStuck ?? 0) > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">|</span>
+                  <span className="text-red-500 font-semibold" title={(heartbeatInfo.lanaSendsStuckTxids || []).join('\n')}>
+                    {heartbeatInfo.lanaSendsStuck} send{heartbeatInfo.lanaSendsStuck !== 1 ? 's' : ''} unconfirmed for over a day — look
+                  </span>
+                </>
+              )}
+              {(heartbeatInfo.brainCallbacksGaveUp ?? 0) > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">|</span>
+                  <span className="text-red-500 font-semibold" data-testid="hb-callbacks-gave-up">
+                    {heartbeatInfo.brainCallbacksGaveUp} brain callback{heartbeatInfo.brainCallbacksGaveUp !== 1 ? 's' : ''} given up after 7 days — look
+                  </span>
+                  {adminLists.gaveUpKeys.slice(0, 20).map((key) => (
+                    <span key={key} className="inline-flex items-center gap-1">
+                      <code className="font-mono text-[10px] text-red-500">{key}</code>
+                      <button
+                        type="button"
+                        aria-label={`Re-send ${key} to brain`}
+                        onClick={() => rearmBrainCallback(key)}
+                        disabled={rearming !== null}
+                        className="rounded border border-red-500/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                      >
+                        {rearming === key ? 'Re-sending…' : 'Re-send to brain'}
+                      </button>
+                    </span>
+                  ))}
+                  {adminLists.gaveUpKeys.length > 20 && (
+                    <span className="text-red-500">+{adminLists.gaveUpKeys.length - 20} more</span>
+                  )}
+                </>
+              )}
+              {/* Taken by the brain, never given up, still not approved after a week: posted
+                  hourly for good, so a person has to look (a merchant payout never made, a
+                  purchase the brain never released a leg of, one cancelled before any leg came). */}
+              {(heartbeatInfo.brainCallbacksWaitingOver7d ?? 0) > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">|</span>
+                  <span className="text-amber-500" data-testid="hb-callbacks-waiting" title={adminLists.waitingOver7dKeys.join('\n')}>
+                    {heartbeatInfo.brainCallbacksWaitingOver7d} brain call{heartbeatInfo.brainCallbacksWaitingOver7d !== 1 ? 's' : ''} accepted but still waiting for approval after 7 days
+                  </span>
+                </>
+              )}
+              {/* The brain moved the purchase's investor leg to another investor after its
+                  financer confirmed it: nobody sends it until a person sorts it out. */}
+              {(heartbeatInfo.ownerMismatchPurchases ?? 0) > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">|</span>
+                  <span className="text-red-500 font-semibold" data-testid="hb-owner-mismatch" title={adminLists.ownerMismatchRefs.join('\n')}>
+                    {heartbeatInfo.ownerMismatchPurchases} financer purchase{heartbeatInfo.ownerMismatchPurchases !== 1 ? 's now name' : ' now names'} another investor — needs a person
                   </span>
                 </>
               )}
@@ -701,7 +953,7 @@ const AdminIncomingPayments = () => {
                 })()}
               </div>
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500">Pending to Send</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500" title="Pending or in a signed send, of purchases the treasury settles. Financers send their own.">Treasury to Send</p>
                 <p className="text-lg font-bold tabular-nums text-amber-500">{pendingLana.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
               </div>
               <div>
@@ -832,6 +1084,9 @@ const AdminIncomingPayments = () => {
               const isExpanded = expandedKey === batch.batchRef;
               const types = [...new Set(batch.orders.map(o => o.orderType || 'unknown'))];
               const legs = activeTab === 'awaiting_lana' ? legsFor(batch) : null;
+              const settlement = settlementOf(batch);
+              // The treasury's buttons are for the treasury's batches only (the server refuses the rest: 409).
+              const treasuryMayAct = settlement.settledBy !== 'financer';
 
               return (
                 <div key={batch.batchRef} className="rounded-xl border overflow-hidden">
@@ -850,6 +1105,24 @@ const AdminIncomingPayments = () => {
                           })}
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-muted text-muted-foreground">{batch.currency}</span>
                           <PaymentTypeIcon type={batch.orders[0]?.paymentType} />
+                          {settlement.settledBy === 'financer' && (
+                            <span
+                              data-testid={`settled-by-${batch.batchRef}`}
+                              className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
+                              title="Internal to the financer: confirmed on /financer and sent from the financer's own Lana.Discount wallet"
+                            >
+                              Financer settles · {ownerName(settlement.ownerHex)}
+                            </span>
+                          )}
+                          {settlement.settledBy === 'treasury' && (
+                            <span
+                              data-testid={`settled-by-${batch.batchRef}`}
+                              className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 dark:bg-slate-500/10 dark:text-slate-300"
+                              title="Money confirmed on the treasury bank account; the treasury wallet sends the LANA"
+                            >
+                              Treasury
+                            </span>
+                          )}
                         </div>
 
                         {/* Investor name (who paid FIAT) */}
@@ -868,28 +1141,35 @@ const AdminIncomingPayments = () => {
                           <p className="text-xl font-bold tabular-nums">{formatFiat(batch.totalFiat, batch.currency)}</p>
                         </div>
                         {confirmReceived ? (
-                          <button
-                            onClick={e => { e.stopPropagation(); updateBatchStatus(batch, 'received'); }}
-                            disabled={updating === batch.batchRef}
-                            className="px-3 py-2 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 whitespace-nowrap"
-                          >
-                            {updating === batch.batchRef ? '...' : 'Confirm Received'}
-                          </button>
+                          treasuryMayAct ? (
+                            <button
+                              onClick={e => { e.stopPropagation(); setTreasuryConfirm(batch); }}
+                              disabled={updating === batch.batchRef}
+                              className="px-3 py-2 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 whitespace-nowrap"
+                              title="Only for money that arrived on the TREASURY bank account"
+                            >
+                              {updating === batch.batchRef ? '...' : 'Confirm Received'}
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-muted-foreground max-w-[9rem] text-right">confirmed by the financer on /financer</span>
+                          )
                         ) : legs ? (
                           <div className="text-right min-w-[7.5rem]">
                             {legs.total === 0 ? (
                               <p className="text-[11px] text-muted-foreground">no LANA legs yet</p>
-                            ) : legs.pending === 0 ? (
+                            ) : legs.pending === 0 && legs.sending === 0 ? (
                               <p className="text-[11px] text-emerald-500 font-semibold">
                                 {legs.sent}/{legs.total} sent · closing
                               </p>
                             ) : (
                               <p className="text-[11px] text-amber-500 font-semibold tabular-nums">
-                                {legs.sent}/{legs.total} sent · {formatLana(legs.pendingLanoshis)} LANA to go
+                                {legs.sent}/{legs.total} sent
+                                {legs.sending > 0 && <> · {legs.sending} sending</>}
+                                {legs.pending > 0 && <> · {formatLana(legs.pendingLanoshis)} LANA to go</>}
                               </p>
                             )}
-                            {/* Only when nothing else will move it. */}
-                            {legs.unreleased > 0 && batch.discountStatus === 'received' && (
+                            {/* Only when nothing else will move it — and only for the treasury's batches. */}
+                            {treasuryMayAct && legs.unreleased > 0 && batch.discountStatus === 'received' && (
                               <button
                                 onClick={e => { e.stopPropagation(); updateBatchStatus(batch, 'lana_bought'); }}
                                 disabled={updating === batch.batchRef}
@@ -899,7 +1179,7 @@ const AdminIncomingPayments = () => {
                                 {updating === batch.batchRef ? '...' : 'Release by hand'}
                               </button>
                             )}
-                            {batch.discountStatus === 'lana_bought' && legs.pending > 0 && (
+                            {treasuryMayAct && batch.discountStatus === 'lana_bought' && legs.pending > 0 && (
                               <button
                                 onClick={e => { e.stopPropagation(); sendBatchLana(batch); }}
                                 disabled={updating === batch.batchRef}
@@ -1003,17 +1283,34 @@ const AdminIncomingPayments = () => {
                                     <span className="font-mono text-muted-foreground truncate max-w-[180px]" title={r.toWallet}>
                                       → {shortenWallet(r.toWallet)}
                                     </span>
+                                    {/* Who sends this leg: the purchase's owner (purchase_settlement), or nobody until it is confirmed. */}
+                                    <span
+                                      data-testid={`leg-owner-${r.id}`}
+                                      className="text-[10px] text-muted-foreground whitespace-nowrap"
+                                      title={r.settlementOwnerHex || undefined}
+                                    >
+                                      {r.settledBy === 'financer' ? `by financer ${ownerName(r.settlementOwnerHex)}` : r.settledBy === 'treasury' ? 'by treasury' : 'unconfirmed'}
+                                    </span>
                                     {r.txHash && (
                                       <a href={`https://chainz.cryptoid.info/lana/tx.dws?${r.txHash}`} target="_blank" rel="noopener noreferrer" className="text-emerald-500 hover:underline font-mono text-[10px]">
                                         {r.txHash.slice(0, 8)}...
+                                      </a>
+                                    )}
+                                    {!r.txHash && r.sendTxid && (
+                                      <a href={`https://chainz.cryptoid.info/lana/tx.dws?${r.sendTxid}`} target="_blank" rel="noopener noreferrer" className="text-amber-500 hover:underline font-mono text-[10px]" title="Signed and recorded; not in a block yet">
+                                        {r.sendTxid.slice(0, 8)}...
                                       </a>
                                     )}
                                   </div>
                                   <div className="flex items-center gap-3 shrink-0">
                                     <span className="text-muted-foreground tabular-nums w-16 text-right">{formatFiat(r.fiatValue, r.currency)}</span>
                                     <span className="font-semibold text-purple-400 tabular-nums w-16 text-right">{formatLana(r.lanaAmount)}</span>
-                                    <span className={`text-[10px] w-12 text-right ${r.status === 'sent' ? 'text-emerald-500' : 'text-amber-500'}`}>
-                                      {r.status === 'sent' ? '✓ Sent' : '⏳'}
+                                    <span
+                                      data-testid={`leg-status-${r.id}`}
+                                      className={`text-[10px] w-14 text-right ${r.status === 'sent' ? 'text-emerald-500' : r.status === 'sending' ? 'text-blue-500' : r.status === 'pending' ? 'text-amber-500' : 'text-muted-foreground'}`}
+                                      title={r.status === 'sending' ? 'In a signed send, waiting for a block — nobody may send it again' : undefined}
+                                    >
+                                      {r.status === 'sent' ? '✓ Sent' : r.status === 'sending' ? 'Sending' : r.status === 'pending' ? '⏳' : r.status}
                                     </span>
                                   </div>
                                 </div>

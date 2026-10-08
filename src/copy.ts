@@ -1102,8 +1102,8 @@ export const SELLING_MOVED = {
   // The sign-in form, which stays: for sellers who are still owed, and for the administrators.
   signInTitle: 'Sign In',
   signInIntro:
-    'Signing in is only for seeing the LANA you have already sold here and what we still owe you, and for ' +
-    'the administrators of this site.',
+    'Signing in is only for seeing the LANA you have already sold here and what we still owe you, for financers ' +
+    'settling their purchases (/financer), and for the administrators of this site.',
   signInKeyIntro: 'Enter your LanaCoin WIF private key to access your account.',
   signInKeyLabel: 'WIF Private Key',
   signInKeyPlaceholder: 'Enter your WIF key...',
@@ -1112,6 +1112,602 @@ export const SELLING_MOVED = {
   signInSubmitting: 'Signing in...',
   signInKeyLocal: 'Your private key is processed locally in your browser and never sent to our servers.',
 } as const;
+
+// ─── /financer: a financer settles their own purchases ────────────────────
+// Owner, 8 Oct 2026: "Financer podpiše z WIF svoje Lana.Discount denarnice.
+// Ključ nikoli ne pride do nas" — and "Financer plača vse, tudi vračilo
+// kupcu." The Lana Discount shares of a financer's budgets are internal: they
+// pay them to themselves, confirm the batch here once it is paid on
+// Direct.Fund, and send every LANA leg of those purchases from their own
+// Lana.Discount wallet, signed in the browser (src/pages/Financer.tsx).
+//
+// English first, then its Slovenian, as the selling-closed notice has it — but
+// both here, under ONE type, so a sentence added in one language and not the
+// other does not compile (FinancerText). Placeholders are {name}, filled by
+// MandatePanel's `fill`. A financer is a company that funds purchases: these
+// words call them a financer and their money a budget, never anything the
+// list below bans. Legs are "recipients" to the reader — a leg is our word.
+
+export const FINANCER = {
+  navLink: 'Financer',
+  eyebrow: 'For financers',
+  title: 'Settle your purchases',
+  intro:
+    'The Lana Discount shares of your budgets are internal: you pay them to yourself, not to anyone else. ' +
+    'Once a batch is paid on Direct.Fund, confirm it here, then send the LANA of its purchases from your own ' +
+    'Lana.Discount wallet.',
+  keyStays: 'You sign in this browser. Your wallet’s key never leaves it: lana.discount receives only the signed transaction.',
+  refresh: 'Refresh',
+  loading: 'Reading…',
+  dashboard: 'Dashboard',
+  signOut: 'Sign Out',
+  notFinancer: 'This key is not a financer on Direct.Fund.',
+  notFinancerHint: 'This page is for financers whose budgets settle purchases on Direct.Fund. Sign in with the key you use there.',
+  openDf: 'Open Direct.Fund',
+  dfUnavailable: 'Direct.Fund could not be asked right now. Nothing was changed; try again shortly.',
+  readFailed: 'This could not be read right now; try again shortly.',
+  signature: {
+    STALE: 'Your device clock is more than a minute off, so the signature was refused. Fix the date and time on this device, then try again.',
+    MISSING: 'Your session is missing its signing key. Sign out and sign in again.',
+    REPLAYED: 'That request was already used. Try it once more.',
+    other: 'Your signature could not be verified. Sign out, sign in again and try once more.',
+  },
+
+  // ── the wallet ──
+  walletTitle: 'Your Lana.Discount wallet',
+  walletNone: 'You have not chosen your Lana.Discount wallet on Direct.Fund yet.',
+  walletNoneHint:
+    'Register an empty wallet with the LANA Registrar as type Lana.Discount (the type cannot be changed later), ' +
+    'then choose it on your Direct.Fund dashboard. Until then nothing can be sent from here.',
+  walletChoose: 'Choose it on Direct.Fund',
+  walletOk: 'The Registrar has it as yours: registered as Lana.Discount, not frozen.',
+  walletReasons: {
+    NO_WALLET: 'You have not chosen your Lana.Discount wallet on Direct.Fund yet.',
+    REGISTRAR_UNKNOWN:
+      'The Registrar does not have this wallet, or could not be asked right now. Nothing is sent from it until it does: ' +
+      'a send from an unregistered wallet freezes the wallets it pays.',
+    WALLET_FROZEN: 'The Registrar holds this wallet frozen. Nothing can be sent from it.',
+    WRONG_WALLET_TYPE: 'The Registrar has this wallet as {type}, not as Lana.Discount. Choose a Lana.Discount wallet on Direct.Fund.',
+    WRONG_OWNER: 'The Registrar has this wallet under another Nostr key, not yours.',
+  },
+  freezeReason: 'Reason: {reason}',
+  balanceLabel: 'Confirmed balance',
+  balanceUnknown: 'The balance could not be read right now.',
+  unconfirmedNote: '{amount} LANA into or out of the wallet waits for a block. The next send can be prepared once it is confirmed.',
+
+  // ── batches ──
+  batchesTitle: 'Batches to confirm',
+  batchesLead:
+    'Your Lana Discount batches on Direct.Fund. Once you have paid a batch there (»I Have Paid This Batch«), ' +
+    'confirm it here: from then on you send the LANA of its purchases.',
+  batchesNone: 'You have no Lana Discount batches on Direct.Fund.',
+  confirm: 'Confirm',
+  confirmAll: 'Confirm all ({count})',
+  confirming: 'Confirming…',
+  confirmAgain: 'Confirm again',
+  purchasesCount: 'Purchases: {count}',
+  recipientsSent: 'Recipients sent: {sent} of {total}',
+  batchState: {
+    notPaid: 'Not paid on Direct.Fund yet. Close the batch and pay it there first.',
+    canConfirm: 'Paid on Direct.Fund. Confirm it here.',
+    awaitingApproval:
+      'Confirmed. Its purchases can be sent once they are approved: when every part of a purchase is paid on ' +
+      'Direct.Fund, bank payouts to merchants included — usually about 10 minutes after that.',
+    ready: 'Confirmed. Ready to send below.',
+    sending: 'Confirmed. Its LANA is on the way.',
+    done: 'Confirmed and sent.',
+    treasury: 'Settled by the treasury: the money went to its bank account.',
+    held:
+      'Held: this batch may already have been paid to the treasury’s bank account, so Lana.Discount’s administrator ' +
+      'decides who settles it. Nothing to do here for now.',
+    other: 'Some of its purchases are settled by another financer. Ask the administrator.',
+  },
+  unclaimed:
+    'Purchases of this batch you do not send yet ({count}): {refs}. Direct.Fund did not count them when you confirmed ' +
+    'the batch (moved to another batch, for instance).',
+  cancelledPurchases: 'Purchases of this batch that were cancelled: {count}. They need nothing from you.',
+  againUnclaimed: 'If Direct.Fund counts them again now, press »{button}«: they then become yours to send.',
+  againResend:
+    'Its purchases still wait for approval, and the notice that this batch is paid is no longer being sent. ' +
+    'Press »{button}« to send it again.',
+  doneToggle: 'Settled batches ({count})',
+  confirmCodes: {
+    BAD_BATCH_REF: 'Not a batch reference.',
+    DF_UNAVAILABLE: 'Direct.Fund could not be asked right now. Nothing was changed; try again shortly.',
+    BATCH_NOT_FOUND: 'Direct.Fund has no such batch.',
+    NOT_YOUR_BATCH: 'This batch is not yours on Direct.Fund.',
+    NOT_FINANCER: 'Direct.Fund does not know this key as a financer. Sign in with the key you use there.',
+    BATCH_HELD:
+      'This batch may already have been paid to the treasury’s bank account, so Lana.Discount’s administrator decides ' +
+      'who settles it. Please contact us.',
+    NOT_LANA_DISCOUNT: 'This is not a Lana Discount batch.',
+    BATCH_NOT_PAID: 'Not paid on Direct.Fund yet: pay it there first (»I Have Paid This Batch«).',
+    NO_PAYMENTS: 'The batch has no payments.',
+    PAYMENT_NOT_YOURS: 'A payment in it belongs to another financer.',
+    PAYMENT_NOT_CONFIRMED: 'A payment in it is not confirmed on Direct.Fund yet.',
+    PAYMENT_WITHOUT_REF: 'A payment in it has no purchase attached. Ask the administrator.',
+    OWNER_CONFLICT: 'A purchase in it is already settled by the treasury or by another financer. Ask the administrator.',
+    OWNER_MISMATCH: 'A purchase in it pays its budget’s LANA to another financer. Ask the administrator.',
+    NO_TRANSACTIONS: 'Direct.Fund no longer counts any purchase of this batch (cancelled or moved elsewhere). Nothing was confirmed.',
+    other: 'Refused ({code}).',
+  },
+  confirmDone:
+    'Confirmed: {refs}. Their purchases can be sent once they are approved: when every part of a purchase is paid on ' +
+    'Direct.Fund, bank payouts to merchants included — usually about 10 minutes after that.',
+  confirmSkipped: '{ref}: {count} purchase(s) left out, because Direct.Fund no longer counts them (cancelled or moved elsewhere): {refs}.',
+  confirmAlready: 'Already confirmed: {refs}.',
+  confirmAgainDone: 'Confirmed again: {refs}.',
+  confirmRefused: 'Not confirmed — {ref}: {why}',
+
+  // ── purchases to send ──
+  sendTitle: 'Purchases to send',
+  sendLead:
+    'Everything a confirmed purchase pays in LANA — the purchase itself, the caretaker, the commissions, the customer’s ' +
+    'cashback and your own budget’s share — goes from your Lana.Discount wallet. A purchase is always sent whole.',
+  approvalNote:
+    'A purchase appears here once it is approved: when every part of it is paid on Direct.Fund, bank payouts to ' +
+    'merchants included — usually about 10 minutes after that.',
+  sendNone: 'Nothing to send right now.',
+  legTypes: {
+    investor_lana: 'Your budget wallet',
+    customer_cashback: 'Customer’s cashback',
+    merchant_commission: 'Merchant’s commission',
+    caretaker_commission: 'Caretaker',
+    lana_purchase: 'Purchase',
+  },
+  belowDust:
+    'On its own, a recipient of it would get less than 0.005 LANA, which the network does not carry. ' +
+    'It goes together with another purchase to the same wallet.',
+  mustSpend:
+    'An earlier send of this purchase was refused; the next one spends one of the same coins (the separate payments your ' +
+    'wallet received), so the two can never both go through.',
+  choose: 'Send purchase {ref}',
+  chooseAll: 'Choose all',
+  chooseNone: 'Choose none',
+  chooseFits: 'Choose what fits',
+  chosen: 'Purchases chosen',
+  walletsPaid: 'Wallets paid',
+  walletsValue: '{count} of at most {max}',
+  legsPaid: 'Payments to recipients',
+  overLimits:
+    'One send pays at most {wallets} wallets, in at most {legs} payments, and a purchase always goes whole. Untick some ' +
+    'purchases, or press »{button}« to keep only the oldest of the chosen ones that fit.',
+  toSend: 'LANA to send',
+  balance: 'Wallet balance (confirmed)',
+  shortfall: 'Missing',
+  shortfallHint:
+    'Move at least {amount} LANA more to your Lana.Discount wallet, in one or a few larger payments (not in many small ' +
+    'ones), and wait for it to confirm.',
+  enough: 'Your confirmed balance may cover this.',
+  waitingAll: 'Waiting to be sent: {count} purchases, {amount} LANA.',
+  missingAll: 'Missing for all of them: {amount} LANA.',
+  inFlightBlock: 'A send from your wallet is on its way. The next one can be prepared once it is confirmed in a block.',
+  walletBlock: 'Sending waits for your wallet (see above).',
+  pendingBlock: 'The last signed send has no answer yet: send the same transaction again below before preparing another.',
+  prepare: 'Prepare the send',
+  preparing: 'Reading your wallet…',
+
+  // ── the send, before and at the key ──
+  planTitle: 'The send',
+  planRead: 'Your wallet was read at {time}.',
+  recipients: 'Recipients',
+  paying: 'Paid to recipients',
+  fee: 'Network fee',
+  change: 'Back to your wallet',
+  left: 'Stays in your wallet',
+  inputs: 'Coins spent (payments received)',
+  inputsValue: '{count} of at most {max}',
+  skipped: 'Staking coins left out (payments the wallet received from staking): {count} ({amount} LANA). They stay in the wallet.',
+  planProblem: {
+    NOTHING: 'No purchase is chosen.',
+    UNREADABLE: 'The server’s answer could not be read. Prepare the send again.',
+    BELOW_DUST: 'A wallet would get less than 0.005 LANA in this send. Choose another purchase to the same wallet as well, or wait for one.',
+    TOO_MANY_WALLETS: 'More than {max} wallets in one send. Choose fewer purchases.',
+    INSUFFICIENT:
+      'Your wallet’s confirmed coins (the separate payments it received) do not cover this send and its fee: {amount} LANA ' +
+      'more is needed.',
+    INSUFFICIENT_MERGE:
+      'Your wallet’s confirmed LANA do not cover this send and its fee: move at least {amount} LANA more in. Your LANA ' +
+      'are also in too many small coins (separate payments the wallet received) or in staking coins, which one send cannot spend.',
+    TOO_MANY_INPUTS:
+      'This send would need {needed} of your wallet’s coins (the separate payments it received); at most {max} fit in ' +
+      'one send. Choose fewer purchases.',
+    TOO_MANY_INPUTS_MORE:
+      'Your confirmed balance covers this send, but the coins one send can spend do not: at most {max} coins (separate ' +
+      'payments the wallet received) fit in one send, and staking coins are not spent. Choose fewer purchases.',
+    AHEAD:
+      'A coin (one of the payments your wallet received) is dated a little after the server’s clock. It can be spent in a ' +
+      'few minutes; prepare the send again then.',
+    SHAPE: 'This send cannot be built as it stands. Prepare it again.',
+  },
+  mergeHow:
+    'Move LANA into this wallet in one or a few larger payments, not in many small ones. If the wallet already holds too ' +
+    'many small payments, or staking coins, ask Lana.Discount’s administrator for help.',
+  coinsUnverified:
+    'Your wallet’s coins (the payments it received) did not check out against their own transactions. Nothing was signed; ' +
+    'prepare the send again.',
+  continue: 'Continue to signing',
+  back: 'Back',
+  keyTitle: 'Sign with your wallet key',
+  keyLead:
+    'Type or scan the private key (WIF) of {wallet}. It is read and used in this browser only: the page signs the ' +
+    'transaction here and sends only the signed transaction. The key never reaches lana.discount, and the field is ' +
+    'emptied the moment you sign.',
+  keyLabel: 'Private key (WIF) of your Lana.Discount wallet',
+  show: 'Show',
+  hide: 'Hide',
+  scan: 'Scan a QR code',
+  keyStates: {
+    empty: 'Type or scan the key.',
+    opens: 'This key opens your Lana.Discount wallet.',
+    other: 'This key opens another wallet ({address}), not your Lana.Discount wallet. Nothing is signed with it.',
+    address: 'This is a wallet address, not its private key.',
+    npub: 'This is a Nostr key, not a LANA wallet key.',
+    nsec: 'This is a Nostr key, not a LANA wallet key.',
+    hex: 'This is 64 hex characters. Enter the key in its WIF form.',
+    notAKey: 'This is not a LANA wallet key.',
+    checksum: 'A character is mistyped: the key does not check out.',
+    wrongNetwork: 'This is a key of another network, not of LANA.',
+  },
+  sign: 'Sign and send',
+  signing: 'Signing…',
+  announcing: 'Sending…',
+  signFailed: 'The transaction could not be signed; nothing was sent.',
+  ownCheckFailed: 'The signed transaction did not pass this page’s own check; nothing was sent. Prepare the send again.',
+  stale: 'Your wallet was read more than half an hour ago, so it was read again. Check the send and sign again.',
+  refreshed: 'Your wallet was read again. Check the send once more.',
+  sentOk: 'Sent. It is recorded and on its way; its recipients count as paid once it is in a block.',
+  inDoubt: 'No answer came. The send may already be recorded. Send the same signed transaction again — it is never signed a second time.',
+  resend: 'Send the same transaction again',
+  sendCodes: {
+    BAD_ORDER_IDS: 'Too many payments for one send: at most {max}. Choose fewer purchases, or press »{button}«.',
+    NOT_SENDABLE: 'Some of these purchases cannot be sent now (not approved yet, cancelled, already sent or on their way). Refresh and choose again.',
+    PARTIAL_PURCHASE: 'A purchase is sent whole. Refresh and choose again.',
+    DF_UNAVAILABLE: 'Direct.Fund could not be asked right now. Nothing was changed; try again shortly.',
+    NO_WALLET: 'You have not chosen your Lana.Discount wallet on Direct.Fund yet.',
+    WALLET_REFUSED: 'The Registrar does not allow sending from your wallet now.',
+    SEND_IN_FLIGHT: 'A send from your wallet is on its way. The next one can be prepared once it is confirmed in a block.',
+    PAYS_OWN_WALLET: 'A recipient is your Lana.Discount wallet itself. On Direct.Fund your budget needs another wallet than the one you send from.',
+    CHAIN_UNKNOWN: 'The LANA network could not be read right now. Try again shortly.',
+    WALLET_UNCONFIRMED:
+      'A payment into or out of your wallet is not confirmed yet. Once it is, »Prepare the send« turns on by itself (this ' +
+      'page checks every half minute while it is open); you then prepare and sign the send.',
+    RELEASED_SEND_LIVE: 'An earlier send of these purchases is on the network after all. They wait for it.',
+    OWNER_MISMATCH:
+      'A purchase you chose now pays its LANA to another financer’s budget, so it is not yours to send; Lana.Discount’s ' +
+      'administrator settles it. Refresh and choose again.',
+    MUST_SPEND_OTHER_WALLET:
+      'These purchases were in an earlier send from wallet {wallet} that the network refused. So that they can never be ' +
+      'paid twice, they must go from that wallet again (choose it on Direct.Fund), or first move all LANA out of that ' +
+      'wallet and wait until that is confirmed. To send your other purchases now, untick the ones marked with an earlier ' +
+      'refused send.',
+    MUST_SPEND_UNMET:
+      'These purchases were in a send that was refused; a new send of them must spend one of its coins (the payments your ' +
+      'wallet received), and this one does not. Send the purchases of that earlier send on their own.',
+    BAD_TX: 'The signed transaction could not be read. Nothing was sent.',
+    CONFLICT: 'This transaction is already recorded for other purchases. Nothing was sent.',
+    COIN_UNAVAILABLE:
+      'A coin this transaction spends (one of the payments your wallet received) is no longer a confirmed coin of your ' +
+      'wallet. Prepare and sign again.',
+    LEGS_CHANGED: 'A purchase changed since the send was prepared (cancelled, redirected or sent). Nothing was sent. Prepare and sign again.',
+    TX_REFUSED: 'The server did not accept the signed transaction as the send these purchases need. Nothing was sent.',
+    PREPARE_FAILED: 'The send could not be prepared right now. Try again shortly.',
+    SENDABLE_FAILED: 'This could not be read right now; try again shortly.',
+    other: 'Refused ({code}).',
+  },
+
+  // ── sends on their way and sent ──
+  sendsTitle: 'On the way and sent',
+  sendsNone: 'No sends yet.',
+  sendState: {
+    announced: 'Recorded, going to the network',
+    mempool: 'In the network, waiting for a block',
+    confirmed: 'Confirmed',
+    released: 'Not sent: its purchases can be sent again',
+  },
+  confirmedIn: 'in block {height}',
+  releaseReason: {
+    refused: 'The network refused it.',
+    input_spent: 'A coin it spent (one of the payments your wallet received) went in another transaction.',
+  },
+  stuck: 'Unconfirmed for over a day. It is kept as it is, never sent twice; the administrator looks at it.',
+  held: 'Held: the Registrar does not allow sending from your wallet now. It goes again once it does.',
+  sendFigures: 'Paid {amount} LANA · fee {fee} LANA · purchases: {count}',
+  viewTx: 'View on the block explorer',
+  copyNote: 'In the block under another transaction id: the same payment, with its signature re-encoded in transit. You signed it as {txid}.',
+};
+
+/** The financer page's words in one language; the Slovenian below must have every one of them. */
+export type FinancerText = typeof FINANCER;
+
+export const FINANCER_SL: FinancerText = {
+  navLink: 'Financer',
+  eyebrow: 'Za financerje',
+  title: 'Poravnajte svoje nakupe',
+  intro:
+    'Deli »Lana Discount« vaših proračunov so interni: plačate jih sami sebi, nikomur drugemu. ' +
+    'Ko je paket na Direct.Fund plačan, ga potrdite tukaj, nato pa LANE njegovih nakupov pošljite iz svoje ' +
+    'Lana.Discount denarnice.',
+  keyStays: 'Podpišete v tem brskalniku. Ključ vaše denarnice ga nikoli ne zapusti: lana.discount dobi samo podpisano transakcijo.',
+  refresh: 'Osveži',
+  loading: 'Berem …',
+  dashboard: 'Nadzorna plošča',
+  signOut: 'Odjava',
+  notFinancer: 'Ta ključ na Direct.Fund ni financer.',
+  notFinancerHint: 'Ta stran je za financerje, katerih proračuni na Direct.Fund poravnavajo nakupe. Prijavite se s ključem, ki ga uporabljate tam.',
+  openDf: 'Odpri Direct.Fund',
+  dfUnavailable: 'Direct.Fund trenutno ni dosegljiv. Nič ni bilo spremenjeno; poskusite znova čez nekaj trenutkov.',
+  readFailed: 'Tega trenutno ni bilo mogoče prebrati; poskusite znova čez nekaj trenutkov.',
+  signature: {
+    STALE: 'Ura vaše naprave se razlikuje za več kot minuto, zato je bil podpis zavrnjen. Popravite datum in uro na tej napravi in poskusite znova.',
+    MISSING: 'Vaši seji manjka ključ za podpis. Odjavite se in se znova prijavite.',
+    REPLAYED: 'Ta zahteva je bila že uporabljena. Poskusite še enkrat.',
+    other: 'Vašega podpisa ni bilo mogoče preveriti. Odjavite se, znova se prijavite in poskusite še enkrat.',
+  },
+
+  walletTitle: 'Vaša Lana.Discount denarnica',
+  walletNone: 'Na Direct.Fund še niste izbrali svoje Lana.Discount denarnice.',
+  walletNoneHint:
+    'Prazno denarnico registrirajte pri Registrarju LANA kot vrsto Lana.Discount (vrste pozneje ni mogoče spremeniti), ' +
+    'nato jo izberite na svoji nadzorni plošči na Direct.Fund. Do takrat od tukaj ni mogoče poslati ničesar.',
+  walletChoose: 'Izberite jo na Direct.Fund',
+  walletOk: 'Registrar jo vodi kot vašo: registrirana kot Lana.Discount, ni zamrznjena.',
+  walletReasons: {
+    NO_WALLET: 'Na Direct.Fund še niste izbrali svoje Lana.Discount denarnice.',
+    REGISTRAR_UNKNOWN:
+      'Registrar te denarnice nima ali ga trenutno ni bilo mogoče vprašati. Dokler je nima, se iz nje ne pošlje nič: ' +
+      'pošiljanje iz neregistrirane denarnice zamrzne denarnice, ki jih plača.',
+    WALLET_FROZEN: 'Registrar to denarnico vodi kot zamrznjeno. Iz nje ni mogoče poslati ničesar.',
+    WRONG_WALLET_TYPE: 'Registrar to denarnico vodi kot {type}, ne kot Lana.Discount. Na Direct.Fund izberite denarnico vrste Lana.Discount.',
+    WRONG_OWNER: 'Registrar to denarnico vodi pod drugim ključem Nostr, ne pod vašim.',
+  },
+  freezeReason: 'Razlog: {reason}',
+  balanceLabel: 'Potrjeno stanje',
+  balanceUnknown: 'Stanja trenutno ni bilo mogoče prebrati.',
+  unconfirmedNote: '{amount} LANA v denarnico ali iz nje čaka na blok. Naslednje pošiljanje lahko pripravite, ko je potrjeno.',
+
+  batchesTitle: 'Paketi za potrditev',
+  batchesLead:
+    'Vaši paketi »Lana Discount« na Direct.Fund. Ko paket tam plačate (»I Have Paid This Batch«), ga potrdite tukaj: ' +
+    'od takrat naprej LANE njegovih nakupov pošiljate vi.',
+  batchesNone: 'Na Direct.Fund nimate paketov »Lana Discount«.',
+  confirm: 'Potrdi',
+  confirmAll: 'Potrdi vse ({count})',
+  confirming: 'Potrjujem …',
+  confirmAgain: 'Potrdi znova',
+  purchasesCount: 'Nakupi: {count}',
+  recipientsSent: 'Prejemniki, ki so dobili LANE: {sent} od {total}',
+  batchState: {
+    notPaid: 'Na Direct.Fund še ni plačan. Paket najprej tam zaprite in plačajte.',
+    canConfirm: 'Plačan na Direct.Fund. Potrdite ga tukaj.',
+    awaitingApproval:
+      'Potrjen. Njegove nakupe lahko pošljete, ko so odobreni: ko so na Direct.Fund plačani vsi deli nakupa, tudi ' +
+      'bančna izplačila trgovcem — običajno približno 10 minut po tem.',
+    ready: 'Potrjen. Pripravljen za pošiljanje spodaj.',
+    sending: 'Potrjen. Njegove LANE so na poti.',
+    done: 'Potrjen in poslan.',
+    treasury: 'Poravnala ga je zakladnica: denar je šel na njen bančni račun.',
+    held:
+      'Zadržan: ta paket je morda že plačan na bančni račun zakladnice, zato o tem, kdo ga poravna, odloči administrator ' +
+      'Lana.Discount. Tukaj zaenkrat ni treba storiti ničesar.',
+    other: 'Nekatere njegove nakupe poravnava drug financer. Vprašajte administratorja.',
+  },
+  unclaimed:
+    'Nakupi tega paketa, ki jih še ne pošiljate vi ({count}): {refs}. Ko ste paket potrdili, jih Direct.Fund ni štel ' +
+    '(na primer, ker so bili premaknjeni v drug paket).',
+  cancelledPurchases: 'Nakupi tega paketa, ki so bili preklicani: {count}. Zanje vam ni treba storiti ničesar.',
+  againUnclaimed: 'Če jih Direct.Fund zdaj spet šteje, pritisnite »{button}«: potem jih pošiljate vi.',
+  againResend:
+    'Njegovi nakupi še čakajo na odobritev, obvestilo, da je paket plačan, pa se ne pošilja več. Pritisnite »{button}«, ' +
+    'da ga pošljemo znova.',
+  doneToggle: 'Poravnani paketi ({count})',
+  confirmCodes: {
+    BAD_BATCH_REF: 'To ni oznaka paketa.',
+    DF_UNAVAILABLE: 'Direct.Fund trenutno ni dosegljiv. Nič ni bilo spremenjeno; poskusite znova čez nekaj trenutkov.',
+    BATCH_NOT_FOUND: 'Direct.Fund takega paketa nima.',
+    NOT_YOUR_BATCH: 'Ta paket na Direct.Fund ni vaš.',
+    NOT_FINANCER: 'Direct.Fund tega ključa ne pozna kot financerja. Prijavite se s ključem, ki ga uporabljate tam.',
+    BATCH_HELD:
+      'Ta paket je morda že plačan na bančni račun zakladnice, zato o tem, kdo ga poravna, odloči administrator ' +
+      'Lana.Discount. Prosimo, obrnite se na nas.',
+    NOT_LANA_DISCOUNT: 'To ni paket »Lana Discount«.',
+    BATCH_NOT_PAID: 'Na Direct.Fund še ni plačan: najprej ga plačajte tam (»I Have Paid This Batch«).',
+    NO_PAYMENTS: 'Paket nima plačil.',
+    PAYMENT_NOT_YOURS: 'Eno od plačil v njem pripada drugemu financerju.',
+    PAYMENT_NOT_CONFIRMED: 'Eno od plačil v njem na Direct.Fund še ni potrjeno.',
+    PAYMENT_WITHOUT_REF: 'Eno od plačil v njem nima pripetega nakupa. Vprašajte administratorja.',
+    OWNER_CONFLICT: 'Nakup v njem že poravnava zakladnica ali drug financer. Vprašajte administratorja.',
+    OWNER_MISMATCH: 'Nakup v njem pošilja LANE proračuna drugemu financerju. Vprašajte administratorja.',
+    NO_TRANSACTIONS: 'Direct.Fund ne šteje več nobenega nakupa tega paketa (preklicani ali premaknjeni drugam). Nič ni bilo potrjeno.',
+    other: 'Zavrnjeno ({code}).',
+  },
+  confirmDone:
+    'Potrjeno: {refs}. Njihove nakupe lahko pošljete, ko so odobreni: ko so na Direct.Fund plačani vsi deli nakupa, tudi ' +
+    'bančna izplačila trgovcem — običajno približno 10 minut po tem.',
+  confirmSkipped: '{ref}: izpuščeni nakupi ({count}), ker jih Direct.Fund ne šteje več (preklicani ali premaknjeni drugam): {refs}.',
+  confirmAlready: 'Že potrjeno: {refs}.',
+  confirmAgainDone: 'Znova potrjeno: {refs}.',
+  confirmRefused: 'Ni potrjen — {ref}: {why}',
+
+  sendTitle: 'Nakupi za pošiljanje',
+  sendLead:
+    'Vse, kar potrjen nakup plača v LANAH — sam nakup, skrbnika, provizije, vračilo kupcu in delež vašega proračuna — ' +
+    'gre iz vaše Lana.Discount denarnice. Nakup se vedno pošlje v celoti.',
+  approvalNote:
+    'Nakup se tukaj pokaže, ko je odobren: ko so na Direct.Fund plačani vsi njegovi deli, tudi bančna izplačila ' +
+    'trgovcem — običajno približno 10 minut po tem.',
+  sendNone: 'Trenutno ni ničesar za pošiljanje.',
+  legTypes: {
+    investor_lana: 'Denarnica vašega proračuna',
+    customer_cashback: 'Vračilo kupcu',
+    merchant_commission: 'Provizija trgovca',
+    caretaker_commission: 'Skrbnik',
+    lana_purchase: 'Nakup',
+  },
+  belowDust:
+    'Sam bi eden od njegovih prejemnikov dobil manj kot 0,005 LANA, česar omrežje ne prenese. ' +
+    'Gre skupaj z drugim nakupom na isto denarnico.',
+  mustSpend:
+    'Prejšnje pošiljanje tega nakupa je bilo zavrnjeno; naslednje porabi enega od istih kovancev (ločenih plačil, ki jih ' +
+    'je denarnica prejela), zato se ne moreta izvesti oba.',
+  choose: 'Pošlji nakup {ref}',
+  chooseAll: 'Izberi vse',
+  chooseNone: 'Počisti izbiro',
+  chooseFits: 'Izberi, kar gre v eno pošiljanje',
+  chosen: 'Izbrani nakupi',
+  walletsPaid: 'Plačane denarnice',
+  walletsValue: '{count} od največ {max}',
+  legsPaid: 'Plačila prejemnikom',
+  overLimits:
+    'Eno pošiljanje plača največ {wallets} denarnic z največ {legs} plačili, nakup pa gre vedno v celoti. Odznačite ' +
+    'nekaj nakupov ali pritisnite »{button}«, da med izbranimi ostanejo le najstarejši, ki gredo v eno pošiljanje.',
+  toSend: 'LANE za pošiljanje',
+  balance: 'Stanje denarnice (potrjeno)',
+  shortfall: 'Manjka',
+  shortfallHint:
+    'Na svojo Lana.Discount denarnico prenesite še vsaj {amount} LANA, v enem ali nekaj večjih plačilih (ne v veliko ' +
+    'majhnih), in počakajte, da se potrdi.',
+  enough: 'Vaše potrjeno stanje to morda pokrije.',
+  waitingAll: 'Čaka na pošiljanje: nakupi {count}, skupaj {amount} LANA.',
+  missingAll: 'Za vse manjka: {amount} LANA.',
+  inFlightBlock: 'Pošiljanje iz vaše denarnice je na poti. Naslednje lahko pripravite, ko je potrjeno v bloku.',
+  walletBlock: 'Pošiljanje čaka na vašo denarnico (glejte zgoraj).',
+  pendingBlock: 'Zadnje podpisano pošiljanje še nima odgovora: preden pripravite novo, spodaj znova pošljite isto transakcijo.',
+  prepare: 'Pripravi pošiljanje',
+  preparing: 'Berem vašo denarnico …',
+
+  planTitle: 'Pošiljanje',
+  planRead: 'Denarnica prebrana ob {time}.',
+  recipients: 'Prejemniki',
+  paying: 'Plačano prejemnikom',
+  fee: 'Omrežnina',
+  change: 'Vrnjeno v vašo denarnico',
+  left: 'Ostane v vaši denarnici',
+  inputs: 'Porabljeni kovanci (prejeta plačila)',
+  inputsValue: '{count} od največ {max}',
+  skipped: 'Izpuščeni kovanci iz stakinga (plačila, ki jih je denarnica prejela s stakingom): {count} ({amount} LANA). Ostanejo v denarnici.',
+  planProblem: {
+    NOTHING: 'Noben nakup ni izbran.',
+    UNREADABLE: 'Odgovora strežnika ni bilo mogoče prebrati. Pošiljanje pripravite znova.',
+    BELOW_DUST: 'Ena od denarnic bi v tem pošiljanju dobila manj kot 0,005 LANA. Izberite še drug nakup na isto denarnico ali počakajte nanj.',
+    TOO_MANY_WALLETS: 'Več kot {max} denarnic v enem pošiljanju. Izberite manj nakupov.',
+    INSUFFICIENT:
+      'Potrjeni kovanci vaše denarnice (ločena plačila, ki jih je prejela) ne pokrijejo tega pošiljanja in omrežnine: ' +
+      'potrebujete še {amount} LANA.',
+    INSUFFICIENT_MERGE:
+      'Potrjene LANE vaše denarnice ne pokrijejo tega pošiljanja in omrežnine: nanjo prenesite še vsaj {amount} LANA. ' +
+      'Vaše LANE so poleg tega v preveč majhnih kovancih (ločenih plačilih, ki jih je denarnica prejela) ali v kovancih ' +
+      'iz stakinga, ki jih eno pošiljanje ne more porabiti.',
+    TOO_MANY_INPUTS:
+      'To pošiljanje bi potrebovalo {needed} kovancev vaše denarnice (ločenih plačil, ki jih je prejela); v eno ' +
+      'pošiljanje jih gre največ {max}. Izberite manj nakupov.',
+    TOO_MANY_INPUTS_MORE:
+      'Vaše potrjeno stanje to pošiljanje pokrije, kovanci, ki jih eno pošiljanje lahko porabi, pa ne: v eno pošiljanje ' +
+      'gre največ {max} kovancev (ločenih plačil, ki jih je denarnica prejela), kovanci iz stakinga pa se ne porabijo. ' +
+      'Izberite manj nakupov.',
+    AHEAD:
+      'Kovanec (eno od plačil, ki jih je denarnica prejela) ima čas malo za uro strežnika. Porabiti ga bo mogoče čez ' +
+      'nekaj minut; takrat pošiljanje pripravite znova.',
+    SHAPE: 'Tega pošiljanja ni mogoče sestaviti. Pripravite ga znova.',
+  },
+  mergeHow:
+    'LANE na to denarnico prenašajte v enem ali nekaj večjih plačilih, ne v veliko majhnih. Če ima denarnica že preveč ' +
+    'majhnih plačil ali kovancev iz stakinga, za pomoč prosite administratorja Lana.Discount.',
+  coinsUnverified:
+    'Kovanci vaše denarnice (plačila, ki jih je prejela) se ne ujemajo s svojimi transakcijami. Nič ni bilo podpisano; ' +
+    'pošiljanje pripravite znova.',
+  continue: 'Naprej na podpis',
+  back: 'Nazaj',
+  keyTitle: 'Podpišite s ključem denarnice',
+  keyLead:
+    'Vpišite ali skenirajte zasebni ključ (WIF) denarnice {wallet}. Prebere in uporabi se samo v tem brskalniku: stran ' +
+    'transakcijo podpiše tukaj in pošlje samo podpisano transakcijo. Ključ nikoli ne pride do lana.discount, polje pa ' +
+    'se izprazni v trenutku podpisa.',
+  keyLabel: 'Zasebni ključ (WIF) vaše Lana.Discount denarnice',
+  show: 'Pokaži',
+  hide: 'Skrij',
+  scan: 'Skeniraj kodo QR',
+  keyStates: {
+    empty: 'Vpišite ali skenirajte ključ.',
+    opens: 'Ta ključ odpre vašo Lana.Discount denarnico.',
+    other: 'Ta ključ odpre drugo denarnico ({address}), ne vaše Lana.Discount denarnice. Z njim se nič ne podpiše.',
+    address: 'To je naslov denarnice, ne njen zasebni ključ.',
+    npub: 'To je ključ Nostr, ne ključ denarnice LANA.',
+    nsec: 'To je ključ Nostr, ne ključ denarnice LANA.',
+    hex: 'To je 64 šestnajstiških znakov. Vpišite ključ v obliki WIF.',
+    notAKey: 'To ni ključ denarnice LANA.',
+    checksum: 'En znak je napačno vpisan: ključ se ne izide.',
+    wrongNetwork: 'To je ključ drugega omrežja, ne omrežja LANA.',
+  },
+  sign: 'Podpiši in pošlji',
+  signing: 'Podpisujem …',
+  announcing: 'Pošiljam …',
+  signFailed: 'Transakcije ni bilo mogoče podpisati; nič ni bilo poslano.',
+  ownCheckFailed: 'Podpisana transakcija ni prestala preverjanja na tej strani; nič ni bilo poslano. Pošiljanje pripravite znova.',
+  stale: 'Denarnica je bila prebrana pred več kot pol ure, zato je bila prebrana znova. Preverite pošiljanje in ga znova podpišite.',
+  refreshed: 'Denarnica je bila prebrana znova. Še enkrat preverite pošiljanje.',
+  sentOk: 'Poslano. Pošiljanje je zapisano in na poti; prejemniki štejejo za plačane, ko je v bloku.',
+  inDoubt: 'Odgovora ni bilo. Pošiljanje je morda že zapisano. Znova pošljite isto podpisano transakcijo — nikoli se ne podpiše drugič.',
+  resend: 'Znova pošlji isto transakcijo',
+  sendCodes: {
+    BAD_ORDER_IDS: 'Preveč plačil za eno pošiljanje: največ {max}. Izberite manj nakupov ali pritisnite »{button}«.',
+    NOT_SENDABLE: 'Nekaterih od teh nakupov zdaj ni mogoče poslati (še niso odobreni, so preklicani, že poslani ali na poti). Osvežite in izberite znova.',
+    PARTIAL_PURCHASE: 'Nakup se pošlje v celoti. Osvežite in izberite znova.',
+    DF_UNAVAILABLE: 'Direct.Fund trenutno ni dosegljiv. Nič ni bilo spremenjeno; poskusite znova čez nekaj trenutkov.',
+    NO_WALLET: 'Na Direct.Fund še niste izbrali svoje Lana.Discount denarnice.',
+    WALLET_REFUSED: 'Registrar trenutno ne dovoli pošiljanja iz vaše denarnice.',
+    SEND_IN_FLIGHT: 'Pošiljanje iz vaše denarnice je na poti. Naslednje lahko pripravite, ko je potrjeno v bloku.',
+    PAYS_OWN_WALLET: 'Eden od prejemnikov je kar vaša Lana.Discount denarnica. Proračun na Direct.Fund potrebuje drugo denarnico od tiste, iz katere pošiljate.',
+    CHAIN_UNKNOWN: 'Omrežja LANA trenutno ni bilo mogoče prebrati. Poskusite znova čez nekaj trenutkov.',
+    WALLET_UNCONFIRMED:
+      'Plačilo v vašo denarnico ali iz nje še ni potrjeno. Ko bo potrjeno, se gumb »Pripravi pošiljanje« vklopi sam (stran ' +
+      'preveri vsake pol minute, dokler je odprta); pošiljanje nato pripravite in podpišete vi.',
+    RELEASED_SEND_LIVE: 'Prejšnje pošiljanje teh nakupov je vendarle v omrežju. Nakupi čakajo nanj.',
+    OWNER_MISMATCH:
+      'Eden od izbranih nakupov zdaj plača LANE v proračun drugega financerja, zato ga ne pošiljate vi; uredi ga ' +
+      'administrator Lana.Discount. Osvežite in izberite znova.',
+    MUST_SPEND_OTHER_WALLET:
+      'Ti nakupi so bili v prejšnjem pošiljanju iz denarnice {wallet}, ki ga je omrežje zavrnilo. Da ne bi bili plačani ' +
+      'dvakrat, morajo znova iti iz te denarnice (izberite jo na Direct.Fund), ali pa najprej vse LANE iz te denarnice ' +
+      'prenesite drugam in počakajte, da se prenos potrdi. Če želite zdaj poslati druge nakupe, odznačite tiste z oznako ' +
+      'o zavrnjenem pošiljanju.',
+    MUST_SPEND_UNMET:
+      'Ti nakupi so bili v zavrnjenem pošiljanju; novo pošiljanje mora porabiti enega od njegovih kovancev (plačil, ki jih ' +
+      'je denarnica prejela), to pa ga ne. Nakupe tistega pošiljanja pošljite posebej.',
+    BAD_TX: 'Podpisane transakcije ni bilo mogoče prebrati. Nič ni bilo poslano.',
+    CONFLICT: 'Ta transakcija je že zapisana za druge nakupe. Nič ni bilo poslano.',
+    COIN_UNAVAILABLE:
+      'Kovanec, ki ga ta transakcija porabi (eno od plačil, ki jih je denarnica prejela), ni več potrjen kovanec vaše ' +
+      'denarnice. Pripravite in podpišite znova.',
+    LEGS_CHANGED: 'Nakup se je spremenil, odkar je bilo pošiljanje pripravljeno (preklican, preusmerjen ali poslan). Nič ni bilo poslano. Pripravite in podpišite znova.',
+    TX_REFUSED: 'Strežnik podpisane transakcije ni sprejel kot pošiljanja, ki ga ti nakupi potrebujejo. Nič ni bilo poslano.',
+    PREPARE_FAILED: 'Pošiljanja trenutno ni bilo mogoče pripraviti. Poskusite znova čez nekaj trenutkov.',
+    SENDABLE_FAILED: 'Tega trenutno ni bilo mogoče prebrati; poskusite znova čez nekaj trenutkov.',
+    other: 'Zavrnjeno ({code}).',
+  },
+
+  sendsTitle: 'Na poti in poslano',
+  sendsNone: 'Pošiljanj še ni.',
+  sendState: {
+    announced: 'Zapisano, gre v omrežje',
+    mempool: 'V omrežju, čaka na blok',
+    confirmed: 'Potrjeno',
+    released: 'Ni poslano: njegove nakupe lahko pošljete znova',
+  },
+  confirmedIn: 'v bloku {height}',
+  releaseReason: {
+    refused: 'Omrežje ga je zavrnilo.',
+    input_spent: 'Kovanec, ki ga je porabilo (eno od plačil, ki jih je denarnica prejela), je šel v drugo transakcijo.',
+  },
+  stuck: 'Več kot dan nepotrjeno. Ostane, kot je, in se nikoli ne pošlje dvakrat; pogleda ga administrator.',
+  held: 'Zadržano: Registrar trenutno ne dovoli pošiljanja iz vaše denarnice. Ko ga bo, gre znova.',
+  sendFigures: 'Plačano {amount} LANA · omrežnina {fee} LANA · nakupi: {count}',
+  viewTx: 'Poglej v pregledovalniku blokov',
+  copyNote: 'V bloku je pod drugo oznako transakcije: isto plačilo, le podpis je bil na poti zapisan drugače. Podpisali ste ga kot {txid}.',
+};
+
+/** The two languages of /financer, keyed as the selling-closed notice keys its own (NoticeLang). */
+export const FINANCER_TEXT: Record<'sl' | 'en', FinancerText> = { sl: FINANCER_SL, en: FINANCER };
 
 // ─── words that must never reach a counterparty ───────────────────────────
 // Enforced by src/copy.test.ts across the public and counterparty surfaces.

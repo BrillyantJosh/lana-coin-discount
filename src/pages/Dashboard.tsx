@@ -12,6 +12,8 @@ import { formatFiat, formatLana } from '@/lib/money';
 import { describeDecisionReason } from '@/lib/offerErrors';
 import { SellingMovedNotice } from '@/components/SellingMovedNotice';
 import { SELLING_CLOSED } from '@/lib/sellingClosed';
+import { FinancerNavLink } from '@/components/financer/FinancerNavLink';
+import { FINANCER } from '@/copy';
 
 /**
  * The counterparty's own view: what they have offered us, and what we have
@@ -345,6 +347,8 @@ const Dashboard = () => {
             <span className="truncate">Lana<span className="text-gold">.Discount</span></span>
           </a>
           <div className="flex shrink-0 items-center gap-2 sm:gap-4">
+            {/* Only when Direct.Fund says this key is a financer (8 Oct 2026). */}
+            <FinancerNavLink label={FINANCER.navLink} />
             {isAdmin && (
               <Link
                 to="/admin"

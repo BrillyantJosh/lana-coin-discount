@@ -9,6 +9,7 @@ import {
   stuckTransfers,
 } from './roundMandateSchema.js';
 import { WALLET_CONSOLIDATION_SCHEMA_SQL } from '../lib/consolidation.js';
+import { migrateFinancerSchema, logFinancerMigration } from './financerSchema.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -310,6 +311,13 @@ db.exec(WALLET_CONSOLIDATION_SCHEMA_SQL);
 for (const sql of ROUND_MANDATE_OFFER_COLUMNS) addColumnIfMissing(db, sql);
 addColumnIfMissing(db, OFFER_DECISION_REASON_STATUS_COLUMN);
 addColumnIfMissing(db, KIND_38888_SPLIT_ENDS_AT_COLUMN);
+
+// --- Financer self-settlement (8 Oct 2026) ---------------------------------
+// Who settles each purchase, the LANA sends we record, the brain callbacks we
+// owe. brain_lana_orders is created in routes/api.ts, so on a fresh database
+// its half waits for the second call there; the migration is idempotent and
+// stops the boot on anything but "duplicate column". See db/financerSchema.ts.
+logFinancerMigration(migrateFinancerSchema(db));
 
 // The stored half of the 10 Sept rename, and the one thing that says out loud
 // which sellers our own code is refusing. Both idempotent, both quiet when

@@ -22,6 +22,14 @@ import { LAST_SYNC_SETTING_KEY } from '../db/roundMandateSchema.js';
 import { WALLET_CLASSES } from '../lib/treasuryMandate.js';
 import { SELLING_CLOSED, refuseSelling } from '../lib/sellingClosed.js';
 import { buyingDealers } from '../lib/buyingDealersShared.js';
+import { migrateFinancerSchema, logFinancerMigration } from '../db/financerSchema.js';
+import { fetchBatchByRef, dfHttpStatus, isBatchRef } from '../lib/financer/dfClient.js';
+import { recordTreasuryReceived, treasuryMayTick } from '../lib/financer/confirm.js';
+import { rearmCallback, outboxHealth } from '../lib/financer/brainOutbox.js';
+import { financerAdminLists } from '../lib/financer/heartbeatStatus.js';
+// The treasury's manual send records its transaction before broadcasting it,
+// in the same machine as the auto-sender and the financers (8 Oct 2026).
+import { defaultSends, sendsHealth } from '../lib/financer/sends.js';
 
 // The registrar's freeze answer is read through check.lanapays.us — the same
 // public proxy the mobile app uses, so both refuse on identical evidence.
@@ -510,7 +518,7 @@ router.get('/admin/analytics', (req: Request, res: Response) => {
 
     // ── LANA OUT: brain orchestrator orders ─────────────────
     // lana_amount is in lanoshis (1 LANA = 100,000,000 lanoshis).
-    // Filter out cancelled and pending (not yet broadcast).
+    // Filter out cancelled, pending and sending (not yet confirmed out).
     const lanaOutByType = db.prepare(`
       SELECT order_type,
              COUNT(*) as order_count,
@@ -518,7 +526,7 @@ router.get('/admin/analytics', (req: Request, res: Response) => {
              COALESCE(SUM(fiat_value), 0) as total_fiat_at_time,
              currency
       FROM brain_lana_orders
-      WHERE status NOT IN ('cancelled', 'pending') ${sinceClause}
+      WHERE status NOT IN ('cancelled', 'pending', 'sending') ${sinceClause}
       GROUP BY order_type, currency
       ORDER BY order_type, currency
     `).all() as any[];
@@ -1780,6 +1788,12 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
     // Cancelled orders are excluded — they were revoked at brain side
     // before any LANA was bought back, so they're noise in this view.
     const lanaOrders = db.prepare(`SELECT * FROM brain_lana_orders WHERE status != 'cancelled' ORDER BY created_at DESC`).all() as any[];
+    // Who sends each purchase's LANA (db/financerSchema.ts): the treasury, its
+    // financer, or nobody yet. The page shows it; the senders decide by it.
+    const settlementByRef = new Map<string, { settled_by: string; owner_hex: string }>();
+    for (const r of db.prepare('SELECT transaction_ref, settled_by, owner_hex FROM purchase_settlement').all() as any[]) {
+      settlementByRef.set(r.transaction_ref, r);
+    }
 
     // Buyback wallet balance for overview (cached to avoid Electrum spam)
     let buybackBalance = {
@@ -1809,8 +1823,9 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
     }
 
     // LANA obligation summary (raw DB rows = snake_case)
+    // 'sending' is still owed: signed, not yet confirmed on chain.
     const pendingLanoshis = lanaOrders
-      .filter((o: any) => o.status === 'pending')
+      .filter((o: any) => o.status === 'pending' || o.status === 'sending')
       .reduce((s: number, o: any) => s + (o.lana_amount || 0), 0);
     const sentLanoshis = lanaOrders
       .filter((o: any) => o.status === 'sent')
@@ -1841,6 +1856,11 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
         brainAuthorized: o.brain_authorized === 1,
         batchRef: o.batch_ref || null,
         createdAt: o.created_at,
+        // 'treasury' | 'financer' | null (nobody has confirmed the purchase yet).
+        settledBy: settlementByRef.get(o.transaction_ref)?.settled_by ?? null,
+        settlementOwnerHex: settlementByRef.get(o.transaction_ref)?.owner_hex ?? null,
+        // The signed send it is in while 'sending'.
+        sendTxid: o.send_txid || null,
       })),
       localBatches: localBatches.map((b: any) => ({
         id: b.id,
@@ -1856,6 +1876,8 @@ router.get('/admin/incoming-payments', async (req: Request, res: Response) => {
         lanaTxHash: b.lana_tx_hash,
         notes: b.notes,
         createdAt: b.created_at,
+        // 'treasury' | 'financer'; null on every batch confirmed before 8 Oct 2026.
+        settledBy: b.settled_by || null,
       })),
     });
   } catch (error: any) {
@@ -2109,99 +2131,115 @@ router.get('/pending-verification', (_req: Request, res: Response) => {
 });
 
 // Update incoming batch status (received → lana_bought → lana_sent)
-router.put('/admin/incoming-batches/:batchRef/status', (req: Request, res: Response) => {
+//
+// Since 8 Oct 2026 this is the TREASURY's door only (lib/financer/confirm.ts).
+// A financer's "Lana Discount" share is internal — they confirm it on
+// /financer and send its LANA from their own wallet. So:
+//   - 'received' means "the money is on the TREASURY's bank account", and must
+//     say so ({treasuryReceived: true}); the batch is built from Direct.Fund's
+//     own fresh answer, never from this body (which the page still sends, and
+//     which is ignored), and it is refused when a financer settles any of it;
+//   - 'lana_bought' releases legs to the auto-sender, so it, 'lana_sent' and
+//     'incoming' are only for a batch the treasury settles;
+//   - the brain's fiat-received goes through the outbox, written in the same
+//     transaction, retried until the legs are authorised.
+router.put('/admin/incoming-batches/:batchRef/status', async (req: Request, res: Response) => {
   const adminHex = requireAdmin(req, res);
   if (!adminHex) return;
 
-  const { batchRef } = req.params;
-  const { status, notes, lanaTxHash } = req.body;
+  const batchRef = String(req.params.batchRef || '');
+  const { status, notes, lanaTxHash, treasuryReceived } = req.body || {};
 
   const validStatuses = ['incoming', 'received', 'lana_bought', 'lana_sent'];
   if (!validStatuses.includes(status)) {
     return res.status(400).json({ error: `Status must be one of: ${validStatuses.join(', ')}` });
   }
-
-  // Upsert the batch
-  let batch = db.prepare('SELECT * FROM incoming_batches WHERE batch_ref = ?').get(batchRef) as any;
-  if (!batch) {
-    // Create from request body
-    const { investorHex, totalAmount, currency, paymentCount, payments } = req.body;
-    db.prepare(`
-      INSERT INTO incoming_batches (batch_ref, investor_hex, total_amount, currency, payment_count, status)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(batchRef, investorHex || '', totalAmount || 0, currency || '', paymentCount || 0, status);
-    batch = db.prepare('SELECT * FROM incoming_batches WHERE batch_ref = ?').get(batchRef) as any;
-
-    // Insert individual payments
-    if (Array.isArray(payments)) {
-      const insertPmt = db.prepare(`
-        INSERT INTO incoming_batch_payments (batch_id, pp_id, order_type, amount_fiat, currency, recipient_wallet, shop_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const p of payments) {
-        insertPmt.run(batch.id, p.ppId || 0, p.orderType || null, p.amountFiat || 0, p.currency || '', p.recipientWallet || null, p.shopName || null);
-      }
-    }
+  if (!isBatchRef(batchRef)) {
+    return res.status(400).json({ error: 'Not a batch reference', code: 'BAD_BATCH_REF' });
   }
+  const cleanNotes = typeof notes === 'string' && notes.trim() ? notes.slice(0, 2000) : null;
 
-  // Update status + timestamps
-  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  const updates: string[] = [`status = '${status}'`, `updated_at = '${now}'`];
-  if (status === 'received') updates.push(`received_at = '${now}'`);
-  if (status === 'lana_bought') updates.push(`lana_bought_at = '${now}'`);
-  if (status === 'lana_sent') updates.push(`lana_sent_at = '${now}'`);
-  if (notes) updates.push(`notes = '${notes.replace(/'/g, "''")}'`);
-  if (lanaTxHash) updates.push(`lana_tx_hash = '${lanaTxHash}'`);
-
-  db.prepare(`UPDATE incoming_batches SET ${updates.join(', ')} WHERE batch_ref = ?`).run(batchRef);
-
-  // When batch moves to received, notify Brain so it can authorize LANA send
   if (status === 'received') {
-    const brainUrl = process.env.BRAIN_CALLBACK_URL;
-    const brainKey = process.env.BRAIN_CALLBACK_KEY;
-    if (brainUrl && brainKey) {
-      const { payments } = req.body;
-      const txRefs = Array.isArray(payments)
-        ? [...new Set(payments.map((p: any) => p.transactionRef).filter(Boolean))]
-        : [];
-      fetch(`${brainUrl}/api/callbacks/fiat-received`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-callback-key': brainKey },
-        body: JSON.stringify({ batch_ref: batchRef, transaction_refs: txRefs }),
-      }).then(r => {
-        if (r.ok) console.log(`[lana-discount] Brain callback fiat-received: ${batchRef}`);
-        else console.warn(`[lana-discount] Brain callback fiat-received failed: HTTP ${r.status}`);
-      }).catch(err => console.warn('[lana-discount] Brain callback error:', err.message));
+    if (treasuryReceived !== true) {
+      return res.status(400).json({
+        error: 'Confirm only money that arrived on the TREASURY bank account, and say so (treasuryReceived: true). A financer confirms their own internal batches on /financer.',
+        code: 'TREASURY_FLAG_REQUIRED',
+      });
     }
+    let df;
+    try {
+      df = await fetchBatchByRef(batchRef);
+    } catch (err: any) {
+      console.warn(`[lana-discount] Treasury confirm of ${batchRef}: Direct.Fund not asked — ${err?.message || err}`);
+      return res.status(dfHttpStatus(err)).json({
+        error: dfHttpStatus(err) === 404 ? 'Direct.Fund has no batch with this reference.' : 'Direct.Fund could not be asked about this batch right now. Nothing was changed; try again shortly.',
+        code: dfHttpStatus(err) === 404 ? 'BATCH_NOT_FOUND' : 'DF_UNAVAILABLE',
+      });
+    }
+    const r = recordTreasuryReceived(db, df, adminHex, { notes: cleanNotes });
+    if (r.ok === false) {
+      return res.status(r.httpStatus).json({ error: r.error, code: r.code, refs: r.refs });
+    }
+    console.log(`[lana-discount] Batch ${batchRef} confirmed RECEIVED on the treasury account by ${adminHex.slice(0, 12)}… (${r.transactionRefs.length} purchases; fiat-received queued)`);
+    const updated = db.prepare('SELECT * FROM incoming_batches WHERE batch_ref = ?').get(batchRef);
+    return res.json({ success: true, batch: updated });
   }
 
-  // Link the batch to its LANA orders. This used to happen only at
-  // 'lana_bought', which meant a batch the operator confirmed but never ticked
-  // again had no link at all — and with no link, nothing could later prove its
-  // LANA had gone out. Doing it at 'received' costs nothing and changes no
-  // money: auto-send eligibility reads `ib.status = 'lana_bought'`, which a
-  // 'received' batch still is not. It only writes down which orders belong to
-  // which batch, so batchSettlement.ts can close the batch from the evidence.
-  if (status === 'received' || status === 'lana_bought') {
-    const { payments } = req.body;
-    if (Array.isArray(payments)) {
-      const txRefs = [...new Set(payments.map((p: any) => p.transactionRef).filter(Boolean))];
-      if (txRefs.length > 0) {
-        const updateBatchRef = db.prepare(`UPDATE brain_lana_orders SET batch_ref = ? WHERE transaction_ref = ? AND batch_ref IS NULL`);
-        let updated_count = 0;
-        for (const ref of txRefs) {
-          const r = updateBatchRef.run(batchRef, ref);
-          updated_count += r.changes;
-        }
-        if (updated_count > 0) {
-          console.log(`[lana-discount] Backfilled batch_ref=${batchRef} on ${updated_count} brain_lana_orders`);
-        }
-      }
-    }
+  // 'incoming', 'lana_bought', 'lana_sent': bookkeeping on a treasury batch.
+  const may = treasuryMayTick(db, batchRef);
+  if (may.ok === false) {
+    return res.status(may.httpStatus).json({ error: may.error, code: may.code });
   }
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const txHash = typeof lanaTxHash === 'string' && /^[0-9a-fA-F]{64}$/.test(lanaTxHash) ? lanaTxHash : null;
+  db.prepare(`
+    UPDATE incoming_batches SET
+      status = ?, updated_at = ?,
+      lana_bought_at = CASE WHEN ? = 'lana_bought' THEN ? ELSE lana_bought_at END,
+      lana_sent_at = CASE WHEN ? = 'lana_sent' THEN ? ELSE lana_sent_at END,
+      notes = COALESCE(?, notes),
+      lana_tx_hash = COALESCE(?, lana_tx_hash)
+    WHERE batch_ref = ?
+  `).run(status, now, status, now, status, now, cleanNotes, txHash, batchRef);
 
   const updated = db.prepare('SELECT * FROM incoming_batches WHERE batch_ref = ?').get(batchRef);
   res.json({ success: true, batch: updated });
+});
+
+// GET /api/admin/brain-callbacks → { gaveUpKeys, waitingOver7dKeys, ownerMismatchRefs }
+//
+// WHICH brain calls gave up or still wait after 7 days, and which financer
+// purchases nobody can send (their investor leg names another investor) — the
+// keys »Re-send to brain« takes, and batch and purchase references. Public
+// /api/heartbeat-status carries only their counts (recheck of 9. 10. 2026, M4);
+// the admin page asks here, signed, when a count is above 0.
+// lib/financer/heartbeatStatus.ts financerAdminLists.
+router.get('/admin/brain-callbacks', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+  return res.json(financerAdminLists(outboxHealth(db), sendsHealth(db)));
+});
+
+// POST /api/admin/brain-callbacks/rearm  {dedupeKey} — »Re-send to brain«.
+//
+// A call to the brain that GAVE UP after 7 days (a wrong callback key for a
+// week, say) is posted again from now on with a fresh 7 days; so is one still
+// waiting or retrying. A delivered one only when it is a fiat-received and a
+// purchase it names still waits for approval here. Nothing else changes — no
+// batch, no owner, no leg — so it works for a financer's batch too, which the
+// treasury's "received" refuses (review N9). lib/financer/brainOutbox.ts
+// rearmCallback; 404 UNKNOWN_CALLBACK, 409 NOTHING_TO_REARM.
+router.post('/admin/brain-callbacks/rearm', (req: Request, res: Response) => {
+  const adminHex = requireAdmin(req, res);
+  if (!adminHex) return;
+  const dedupeKey = (req.body || {}).dedupeKey;
+  if (typeof dedupeKey !== 'string' || !dedupeKey.trim() || dedupeKey.length > 200) {
+    return res.status(400).json({ error: 'dedupeKey must be the key of a brain call.', code: 'BAD_DEDUPE_KEY' });
+  }
+  const r = rearmCallback(db, dedupeKey);
+  if (r.ok === false) return res.status(r.status).json({ error: r.error, code: r.code });
+  console.log(`[lana-discount] Brain callback ${r.dedupeKey} re-armed by ${adminHex.slice(0, 12)}… (was: ${r.reopened ? 'delivered' : r.was ?? 'queued'})`);
+  return res.json({ ok: true, dedupeKey: r.dedupeKey, kind: r.kind, reopened: r.reopened });
 });
 
 // ---------------------------------------------------------------------------
@@ -2413,6 +2451,10 @@ try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN batch_ref TEXT"); } catc
 try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN brain_authorized INTEGER DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN brain_authorized_at TEXT"); } catch {}
 try { db.exec("ALTER TABLE brain_lana_orders ADD COLUMN cancel_reason TEXT"); } catch {}
+// The financer self-settlement columns and tables, now that the table above
+// exists (db/index.ts ran it once already; on a fresh database it could not
+// reach this table yet). Idempotent; see db/financerSchema.ts.
+logFinancerMigration(migrateFinancerSchema(db));
 
 /**
  * POST /api/brain/authorize-send
@@ -2622,7 +2664,12 @@ router.get('/brain/lana-order/:id', (req: Request, res: Response) => {
   }
 
   return res.json({
-    status: order.status,
+    // 'sending' is ours alone (a signed send recorded, not yet confirmed on
+    // chain — the financer's or the treasury's). The brain's vocabulary is
+    // pending | sent | confirmed | cancelled, and anything it does not know it
+    // must read as "wait"; it is told 'pending', which is exactly that, until
+    // the chain has it and the leg is 'sent'.
+    status: order.status === 'sending' ? 'pending' : order.status,
     order_id: order.id,
     tx_hash: order.tx_hash,
     lana_amount: order.lana_amount,
@@ -2665,7 +2712,8 @@ router.post('/brain/lana-order/:id/cancel', (req: Request, res: Response) => {
   }
 
   // Anything past 'sent_to_discount' (i.e. 'sent' or 'confirmed') means
-  // LANA already on the blockchain → not cancellable.
+  // LANA already on the blockchain → not cancellable. 'sending' is refused the
+  // same way: a signed transaction paying this leg exists and may confirm.
   const SAFE_TO_CANCEL = new Set(['pending', 'queued', 'received', 'sent_to_discount']);
   if (!SAFE_TO_CANCEL.has(order.status)) {
     return res.status(409).json({
@@ -2741,7 +2789,8 @@ router.post('/brain/lana-order/:id/redirect', async (req: Request, res: Response
   }
 
   // Only re-point while NOT yet broadcast. 'sent'/'confirmed' = LANA already
-  // on-chain to the old recipient → too late, refuse.
+  // on-chain to the old recipient → too late, refuse. So is 'sending': a signed
+  // transaction to the old recipient exists and may still confirm.
   const SAFE_TO_REDIRECT = new Set(['pending', 'queued', 'received', 'sent_to_discount']);
   if (!SAFE_TO_REDIRECT.has(order.status)) {
     return res.status(409).json({
@@ -2812,28 +2861,6 @@ router.get('/brain/buyback-balance', async (req: Request, res: Response) => {
 });
 
 /**
- * Report a broadcast to the brain: the transaction refs it touched, the hash,
- * and the exact order ids that were IN it. The brain stamps only those ids, so
- * a purchase whose other legs go out in a later broadcast keeps a correct hash
- * per leg. Fire-and-forget: the brain's heartbeat poll is the fallback.
- */
-function notifyBrainLanaSent(orders: Array<{ id: string; transaction_ref?: string | null }>, txHash: string): void {
-  const refs = [...new Set(orders.map(o => o.transaction_ref).filter(Boolean))];
-  if (refs.length === 0) return;
-  const brainUrl = process.env.BRAIN_CALLBACK_URL || process.env.BRAIN_API_URL;
-  const brainKey = process.env.BRAIN_CALLBACK_KEY || process.env.LANA_DISCOUNT_API_KEY;
-  if (!brainUrl) return;
-  fetch(`${brainUrl}/api/callbacks/lana-sent`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-callback-key': brainKey || '' },
-    body: JSON.stringify({ transaction_refs: refs, tx_hash: txHash, order_ids: orders.map(o => o.id) }),
-  }).then(r => {
-    if (r.ok) console.log(`[lana-discount] Brain callback lana-sent (manual batch): ${refs.length} txs, ${orders.length} orders`);
-    else console.warn(`[lana-discount] Brain callback failed (manual batch): HTTP ${r.status}`);
-  }).catch(err => console.warn('[lana-discount] Brain callback error (manual batch):', err.message));
-}
-
-/**
  * POST /api/admin/send-batch-lana
  * Send LANA from buyback wallet to all recipients in pending brain_lana_orders
  * for a given set of transaction_refs (linked to a Direct.Fund batch)
@@ -2870,10 +2897,17 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
 
     // Find all pending lana orders for these transaction refs, each with the
     // auto-sender's authorisation (brain_authorized, or batch at 'lana_bought').
-    const { pending: orders, unauthorised } = selectManualSendOrders(db, transaction_refs);
+    const { pending: orders, unauthorised, notTreasury } = selectManualSendOrders(db, transaction_refs);
 
     if (orders.length === 0) {
       return res.status(400).json({ error: 'No pending LANA orders found for these transactions' });
+    }
+    // The treasury pays only the purchases it settles (lib/autoSendSelection.ts
+    // TREASURY_LEG_JOIN): a financer pays their own, and an unconfirmed one is
+    // nobody's yet. Asked BEFORE authorisation, because it is the stronger no.
+    if (notTreasury > 0) {
+      console.warn(`[lana-discount] send-batch-lana refused for ${adminHex.slice(0, 12)}…: ${notTreasury} of ${orders.length} orders are not the treasury's to send — nothing sent`);
+      return res.status(409).json({ error: `${notTreasury} of these LANA orders belong to purchases the treasury does not settle (their financer sends them, or nobody has confirmed them yet) — nothing was sent`, code: 'NOT_TREASURY' });
     }
     if (unauthorised > 0) {
       console.warn(`[lana-discount] send-batch-lana refused for ${adminHex.slice(0, 12)}…: ${unauthorised} of ${orders.length} orders not authorised — nothing sent`);
@@ -2923,14 +2957,32 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No UTXOs available in buyback wallet' });
     }
 
+    // The treasury's own sends on their way, and what a leg released from a
+    // refused send demands (lib/financer/sends.ts): a purchase whose refused
+    // send turned up on the chain after all waits for it.
+    const sends = defaultSends();
+    const coinRules = await sends.treasuryCoinRules(useAddress, orders);
+    if (coinRules.ok === false) return res.status(coinRules.status).json({ error: coinRules.error, code: coinRules.code });
+    const { inFlight, forced, blockedOrderIds } = coinRules.rules;
+    if (blockedOrderIds.length) {
+      return res.status(409).json({ error: `${blockedOrderIds.length} of these LANA orders wait for an earlier send of theirs that is on the chain after all — nothing was sent`, code: 'RELEASED_SEND_LIVE', orderIds: blockedOrderIds });
+    }
+
     // Only spend CONFIRMED UTXOs (height > 0). Spending the unconfirmed change of a
     // recent send makes the node reject the TX with code -22 ("TX rejected") until
-    // the parent confirms. See the auto-send path in server/index.ts for details.
-    const confirmedUtxos = utxos.filter((u: any) => (u.height || 0) > 0);
+    // the parent confirms. See lib/treasuryAutoSend.ts for details. Nor a coin a
+    // treasury send on its way already spends (8 Oct 2026).
+    const confirmedUtxos = utxos.filter((u: any) => (u.height || 0) > 0 && !inFlight.has(`${u.tx_hash}:${u.tx_pos}`));
     if (confirmedUtxos.length === 0) {
       return res.status(409).json({ error: 'Buyback wallet UTXOs are still unconfirmed (recent send not yet mined). Try again in a few minutes.' });
     }
-    utxos = confirmedUtxos;
+    // A coin a released leg MUST spend goes first: it is what keeps the refused
+    // send and this one from both confirming.
+    const forcedUtxos = forced.map(key => confirmedUtxos.find((u: any) => `${u.tx_hash}:${u.tx_pos}` === key)).filter(Boolean);
+    if (forcedUtxos.length !== forced.length) {
+      return res.status(409).json({ error: 'A coin an earlier refused send of these orders spent is not listed now — try again in a few minutes.', code: 'MUST_SPEND_UNMET' });
+    }
+    utxos = confirmedUtxos.filter((u: any) => !forcedUtxos.includes(u));
 
     // Build recipient list
     const txRecipients = recipients.map((r: any) => ({
@@ -2940,7 +2992,7 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
 
     // UTXO selection
     const actualOutputCount = txRecipients.length + 1;
-    const sortedUtxos = [...utxos].sort((a: any, b: any) => b.value - a.value);
+    const sortedUtxos = [...forcedUtxos, ...[...utxos].sort((a: any, b: any) => b.value - a.value)];
 
     let selectedUTXOs: any[] = [];
     let totalSelected = 0;
@@ -2952,7 +3004,7 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
       totalSelected += utxo.value;
       const baseFee = (selectedUTXOs.length * 180 + actualOutputCount * 34 + 10) * 100;
       fee = Math.floor(baseFee * 1.5);
-      if (totalSelected >= totalLanoshis + fee) break;
+      if (selectedUTXOs.length >= forcedUtxos.length && totalSelected >= totalLanoshis + fee) break;
     }
 
     if (totalSelected < totalLanoshis + fee) {
@@ -2974,29 +3026,45 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
       useCompressed
     );
 
-    // Broadcast
-    const txHash = await electrumCall('blockchain.transaction.broadcast', [txHex], electrumServers);
-
-    if (!txHash || typeof txHash !== 'string' || txHash.length !== 64) {
-      return res.status(500).json({ error: 'Broadcast failed', response: txHash });
+    // RECORDED before it is broadcast (lib/financer/sends.ts): every order moves
+    // 'pending' → 'sending' with this txid in one database transaction, exactly
+    // one row each, or nothing is sent. Until 8 Oct 2026 a broadcast whose
+    // answer did not come left the orders 'pending' — and a second click paid
+    // the same recipients again with other coins.
+    const recorded = await sends.recordTreasurySend({ rawTx: txHex, wallet: useAddress, orders, feeLanoshis: fee });
+    if (recorded.ok === false) {
+      return res.status(recorded.status).json({ error: `${recorded.error} Nothing was sent.`, code: recorded.code });
     }
+    const txHash = recorded.txid;
+    const outcome = await sends.broadcastRecorded(txHash);
+    const went = !!outcome && (outcome.kind === 'accepted' || outcome.kind === 'known');
+    const detail = outcome && 'detail' in outcome ? outcome.detail : null;
 
-    console.log(`[lana-discount] Batch LANA sent: ${txHash} (${orders.length} recipients, ${totalLana} LANA)`);
-
-    // Update all orders
-    const updateOrder = db.prepare(`
-      UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, completed_at = datetime('now') WHERE id = ? AND status = 'pending'
-    `);
-    for (const o of orders) {
-      if (updateOrder.run(txHash, o.id).changes !== 1) {
-        console.error(`[lana-discount] send-batch-lana: order ${o.id} (${o.transaction_ref}) was paid in ${txHash} but is no longer pending — needs a look`);
+    if (!went) {
+      const releasedNow = sends.view(txHash)?.state === 'released';
+      if (releasedNow) {
+        // Refused by every server and held by none: it did not go, and its
+        // orders are pending again (a new send of them must spend one of its coins).
+        return res.status(500).json({ error: 'Broadcast failed', response: detail, tx_hash: txHash, code: 'BROADCAST_REFUSED' });
       }
+      // In doubt: the network may have taken it. Kept, its orders 'sending'; the
+      // send round sends the SAME bytes again and marks them sent once it confirms.
+      console.warn(`[lana-discount] send-batch-lana by ${adminHex.slice(0, 12)}…: ${txHash} in doubt (${outcome?.kind ?? 'not sent'}${detail ? ` — ${detail}` : ''}) — kept, sent again by the round`);
+      return res.status(202).json({
+        status: 'in_doubt',
+        tx_hash: txHash,
+        orders_count: orders.length,
+        total_lana: totalLana,
+        from_address: useAddress,
+        message: 'The network did not answer clearly. The transaction is kept and sent again with the same bytes; its orders are marked sent once it confirms. Do not send them again.',
+      });
     }
 
-    // Tell the brain which orders went out under this hash — the same callback
-    // the auto-sender makes. Until 2026-09-03 this route told the brain nothing
-    // and left it to a later poll, and the poll only fills an EMPTY hash.
-    notifyBrainLanaSent(orders, txHash);
+    console.log(`[lana-discount] Batch LANA sent: ${txHash} (${orders.length} recipients, ${totalLana} LANA) — its orders are 'sending' until the chain confirms it`);
+
+    // The orders are 'sent', and the brain is told which orders went out under
+    // this hash (lana-sent, through the outbox), by the send round once the
+    // chain proves the transaction is in a block — the same as the auto-sender.
 
     return res.json({
       status: 'sent',
@@ -3073,7 +3141,16 @@ router.post('/admin/fix-wallet', async (req: Request, res: Response) => {
   if (!before) {
     return res.status(404).json({ error: 'Row not found', table, idColumn: conf.idColumn, id });
   }
-  const result = db.prepare(`UPDATE ${table} SET ${field} = ? WHERE ${conf.idColumn} = ?`).run(new_value, id);
+  // A LANA leg's wallet may be repaired only while nothing has been signed for
+  // it: once it is 'sending' a transaction to the old address exists, and once
+  // it is 'sent' the LANA is there. Until 8 Oct 2026 this route did not look.
+  // The guard is in the UPDATE itself, so a send recorded meanwhile wins.
+  const statusGuard = table === 'brain_lana_orders' ? " AND status = 'pending'" : '';
+  const result = db.prepare(`UPDATE ${table} SET ${field} = ? WHERE ${conf.idColumn} = ?${statusGuard}`).run(new_value, id);
+  if (statusGuard && result.changes !== 1) {
+    const fresh = db.prepare('SELECT status FROM brain_lana_orders WHERE id = ?').get(id) as { status?: string } | undefined;
+    return res.status(409).json({ error: `LANA order is ${fresh?.status || 'unknown'} — only a pending order's wallet can be fixed`, code: 'NOT_PENDING', status: fresh?.status || null });
+  }
   console.log(`[lana-discount] fix-wallet by ${adminHex.slice(0,8)}…: ${table}.${field} on ${conf.idColumn}=${id}: "${before.v}" → "${new_value}" (changes=${result.changes})`);
 
   return res.json({

@@ -7,7 +7,9 @@
  * order of the refs it was handed, whether or not the money behind them had
  * arrived. These tests mount the real router (db/index.ts replaced by an
  * in-memory SQLite, the chain by a stand-in) and pin both gates: a signed
- * admin, then the auto-sender's authorisation for EVERY requested order.
+ * admin, then the auto-sender's authorisation for EVERY requested order —
+ * and, since 8 Oct 2026, that every requested purchase is the TREASURY's
+ * (purchase_settlement), not a financer's and not unconfirmed.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import http from 'http';
@@ -68,9 +70,13 @@ afterAll(() => new Promise<void>(r => {
 }));
 
 beforeEach(() => {
-  for (const t of ['brain_lana_orders', 'incoming_batches', 'admin_users']) db.prepare(`DELETE FROM ${t}`).run();
+  for (const t of ['brain_lana_orders', 'incoming_batches', 'admin_users', 'purchase_settlement']) db.prepare(`DELETE FROM ${t}`).run();
   db.prepare("INSERT INTO admin_users (hex_id, label) VALUES (?, 'test')").run(admin.hex);
-  db.prepare("INSERT INTO incoming_batches (batch_ref, status) VALUES ('B-BOUGHT', 'lana_bought'), ('B-RECEIVED', 'received')").run();
+  db.prepare(`INSERT INTO incoming_batches (batch_ref, investor_hex, total_amount, currency, status)
+              VALUES ('B-BOUGHT', '', 0, 'EUR', 'lana_bought'), ('B-RECEIVED', '', 0, 'EUR', 'received')`).run();
+  // Both purchases are the treasury's, as every purchase was before 8 Oct 2026.
+  db.prepare(`INSERT INTO purchase_settlement (transaction_ref, owner_hex, settled_by, confirmed_by)
+              VALUES ('T-PAID', '', 'treasury', 'test'), ('T-UNPAID', '', 'treasury', 'test')`).run();
   let n = 0;
   const order = (txRef: string, batchRef: string) => db.prepare(`
     INSERT INTO brain_lana_orders (id, transaction_ref, order_type, to_wallet, to_hex, lana_amount, fiat_value, currency, exchange_rate, batch_ref)
@@ -139,6 +145,26 @@ describe('POST /api/admin/send-batch-lana', () => {
     const r = await send(['T-PAID', 'T-UNPAID'], signed(admin, ['T-PAID']));
     expect(r.status).toBe(403);
     expect(r.body.reason).toBe('PAYLOAD_MISMATCH');
+    expect(chain.calls).toEqual([]);
+  });
+
+  it("a financer's purchase is refused whole, authorised or not — the financer sends it", async () => {
+    db.prepare("UPDATE purchase_settlement SET settled_by = 'financer', owner_hex = 'f1' WHERE transaction_ref = 'T-PAID'").run();
+    db.prepare("UPDATE brain_lana_orders SET brain_authorized = 1").run();
+    const r = await send(['T-PAID'], signed(admin, ['T-PAID']));
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('NOT_TREASURY');
+    expect(chain.calls).toEqual([]);
+    expect(pendingCount()).toBe(3);
+    expect(sendLockHolder()).toBeNull();
+  });
+
+  it('a purchase nobody has confirmed is refused, and takes the treasury purchase beside it down with it', async () => {
+    db.prepare("DELETE FROM purchase_settlement WHERE transaction_ref = 'T-UNPAID'").run();
+    db.prepare("UPDATE brain_lana_orders SET brain_authorized = 1").run();
+    const r = await send(['T-PAID', 'T-UNPAID'], signed(admin, ['T-PAID', 'T-UNPAID']));
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('NOT_TREASURY');
     expect(chain.calls).toEqual([]);
   });
 });

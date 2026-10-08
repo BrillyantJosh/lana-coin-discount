@@ -28,6 +28,11 @@ import ApiDocs from "./pages/ApiDocs";
 import Obligations from "./pages/Obligations";
 import PayoutHistory from "./pages/PayoutHistory";
 import NotFound from "./pages/NotFound";
+import { lazy, Suspense } from "react";
+
+// A financer's own page (8 Oct 2026). Loaded only when opened: it carries the
+// LANA transaction signer (two secp256k1 libraries) that no other page needs.
+const Financer = lazy(() => import("./pages/Financer"));
 
 const queryClient = new QueryClient();
 
@@ -52,6 +57,9 @@ const App = () => (
                 on a 404 — the page they point at no longer exists. */}
             <Route path="/sell" element={<Navigate to="/offer" replace />} />
             <Route path="/docs/api" element={<ApiDocs />} />
+            {/* A financer confirms their internal batches and sends their
+                purchases' LANA from their own wallet, signed in the browser. */}
+            <Route path="/financer" element={<Suspense fallback={null}><Financer /></Suspense>} />
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/admin/offers" element={<AdminOffers />} />
             <Route path="/admin/accepted-offers" element={<AdminAcceptedOffers />} />
