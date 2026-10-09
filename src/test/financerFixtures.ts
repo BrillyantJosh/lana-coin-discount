@@ -25,14 +25,23 @@ export function wifOf(privateKey: Uint8Array, compressed: boolean): string {
 
 export const LIMITS = { maxWallets: 98, maxLegs: 400, maxInputs: 20, dustLanoshis: '500000', stepLanoshis: '1' };
 
+/**
+ * GET /api/financer/me: the signer with one wallet, listed as their EUR wallet (owner, 9 Oct 2026: one per currency) —
+ * or with the list `over.wallets` gives.
+ */
 export function meOf(wallet: string | null, over: Partial<FinancerMe> = {}): FinancerMe {
-  return {
+  const me: FinancerMe = {
     hexId: SIGNER,
     isFinancer: true,
     lanaDiscountWallet: wallet,
     lanaDiscountWalletSetAt: wallet ? '2026-10-08 10:00:00' : null,
     walletCheck: wallet ? { ok: true, walletType: 'Lana.Discount', frozen: false } : { ok: false, reason: 'NO_WALLET' },
     ...over,
+  };
+  return {
+    wallets: me.lanaDiscountWallet ? [{ currency: 'EUR', walletId: me.lanaDiscountWallet, walletCheck: me.walletCheck }] : [],
+    unknownCurrencyRefs: [],
+    ...me,
   };
 }
 
@@ -83,6 +92,7 @@ export function purchaseOf(transactionRef: string, legs: Array<{ id: string; typ
 export function sendableOf(wallet: string | null, purchases: SendablePurchase[], confirmed: bigint, over: Partial<SendableAnswer> = {}): SendableAnswer {
   const total = purchases.reduce((s, p) => s + BigInt(p.lanoshis), 0n);
   return {
+    currency: 'EUR',
     wallet,
     walletProblem: wallet ? null : 'NO_WALLET',
     balance: wallet ? { confirmed: confirmed.toString(), unconfirmed: '0' } : null,
@@ -116,6 +126,7 @@ export function prepareOf(wallet: ThrowawayWallet, purchases: SendablePurchase[]
   const paying = legs.reduce((s, l) => s + BigInt(l.lanoshis), 0n);
   const balance = coinValues.reduce((s, v) => s + v, 0n);
   return {
+    currency: 'EUR',
     wallet: wallet.address,
     nowSec: NOW_SEC,
     balance: { confirmed: balance.toString(), unconfirmed: '0' },

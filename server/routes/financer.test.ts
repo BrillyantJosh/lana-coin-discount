@@ -49,7 +49,8 @@ interface FakePayment {
 }
 const dfWorld = {
   batches: new Map<string, { batch: Record<string, unknown>; payments: FakePayment[] }>(),
-  financers: new Map<string, { isInvestor: boolean; lanaDiscountWallet: string | null }>(),
+  /** `wallets`: Direct.Fund's wallets per currency (9 Oct 2026); absent, a Direct.Fund before them. */
+  financers: new Map<string, { isInvestor: boolean; lanaDiscountWallet: string | null; wallets?: Record<string, { walletId: string; setAt: string | null }> }>(),
   hits: [] as string[],
   auth: [] as Array<string | undefined>,
   down: false,
@@ -83,8 +84,11 @@ function dfBatch(ref: string, investor: TestSigner | string, over: Record<string
 // ─── the app ──────────────────────────────────────────────────────────────
 
 let registrar: (walletId: string) => unknown;
+/** The wallets the Registrar was asked about, in order. */
+let registrarAsks: string[] = [];
 const walletFetch = (async (_url: any, init: any) => {
   const { wallet_id } = JSON.parse(String(init.body));
+  registrarAsks.push(wallet_id);
   return new Response(JSON.stringify(registrar(wallet_id)), { status: 200, headers: { 'content-type': 'application/json' } });
 }) as typeof fetch;
 
@@ -165,6 +169,7 @@ beforeEach(() => {
   dfWorld.unpaidStatus = 200;
   dfWorld.unpaidAsks = [];
   registrar = () => ({ registered: true, frozen: false, wallet_type: 'Lana.Discount', nostr_hex_id: me.hex });
+  registrarAsks = [];
 });
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -539,6 +544,56 @@ describe('GET /api/financer/me', () => {
     expect(r.body).toEqual({
       hexId: me.hex, isFinancer: true, lanaDiscountWallet: WALLET, lanaDiscountWalletSetAt: '2026-10-08',
       walletCheck: { ok: true, walletType: 'Lana.Discount', frozen: false },
+      // A Direct.Fund before wallets per currency, and nothing to send yet: no currency known.
+      wallets: [], unknownCurrencyRefs: [],
+    });
+  });
+
+  it('one wallet per currency (owner, 9 Oct 2026): each currency with a wallet or a purchase to send, its wallet and the Registrar\'s word on it — one question per wallet', async () => {
+    const GBP_WALLET = 'LGbpWa11etXXXXXXXXXXXXXXXXXXXXXXXX';
+    dfWorld.financers.set(me.hex, { isInvestor: true, lanaDiscountWallet: WALLET, wallets: {
+      EUR: { walletId: WALLET, setAt: '2026-10-08 10:00:00' }, GBP: { walletId: GBP_WALLET, setAt: '2026-10-09 08:00:00' }, CHF: { walletId: WALLET, setAt: null },
+    } });
+    registrar = w => (w === GBP_WALLET
+      ? { registered: true, frozen: true, freeze_reason: 'frozen_unreg_Lanas', wallet_type: 'Lana.Discount', nostr_hex_id: me.hex }
+      : { registered: true, frozen: false, wallet_type: 'Lana.Discount', nostr_hex_id: me.hex });
+    // A USD purchase of theirs still to send (not approved yet), and one whose legs carry two currencies.
+    db.prepare("INSERT INTO purchase_settlement (transaction_ref, owner_hex, settled_by, confirmed_by) VALUES ('U1', ?, 'financer', ?), ('X1', ?, 'financer', ?)").run(me.hex, me.hex, me.hex, me.hex);
+    leg('U1');
+    db.prepare("UPDATE brain_lana_orders SET currency = 'USD' WHERE transaction_ref = 'U1'").run();
+    leg('X1');
+    leg('X1');
+    db.prepare("UPDATE brain_lana_orders SET currency = 'GBP' WHERE rowid = (SELECT MAX(rowid) FROM brain_lana_orders WHERE transaction_ref = 'X1')").run();
+    const r = await call(me, 'GET', '/me');
+    expect(r.status).toBe(200);
+    expect(r.body.wallets).toEqual([
+      { currency: 'CHF', walletId: WALLET, walletCheck: { ok: true, walletType: 'Lana.Discount', frozen: false } },
+      { currency: 'EUR', walletId: WALLET, walletCheck: { ok: true, walletType: 'Lana.Discount', frozen: false } },
+      { currency: 'GBP', walletId: GBP_WALLET, walletCheck: { ok: false, reason: 'WALLET_FROZEN', walletType: 'Lana.Discount', frozen: true, freezeReason: 'frozen_unreg_Lanas' } },
+      { currency: 'USD', walletId: null, walletCheck: { ok: false, reason: 'NO_WALLET' } },
+    ]);
+    expect(r.body.unknownCurrencyRefs).toEqual(['X1']);
+    // A page from before: the first currency's wallet.
+    expect(r.body).toMatchObject({ lanaDiscountWallet: WALLET, lanaDiscountWalletSetAt: '2026-10-08', walletCheck: { ok: true } });
+    // The wallet chosen for CHF and EUR was asked about once.
+    expect(registrarAsks.sort()).toEqual([GBP_WALLET, WALLET].sort());
+  });
+
+  it('wallets per currency, none chosen: every currency with a purchase to send says NO_WALLET, and the old single wallet is not used for any', async () => {
+    dfWorld.financers.set(me.hex, { isInvestor: true, lanaDiscountWallet: WALLET, wallets: {} });
+    db.prepare("INSERT INTO purchase_settlement (transaction_ref, owner_hex, settled_by, confirmed_by) VALUES ('G1', ?, 'financer', ?)").run(me.hex, me.hex);
+    leg('G1');
+    db.prepare("UPDATE brain_lana_orders SET currency = 'GBP' WHERE transaction_ref = 'G1'").run();
+    const r = await call(me, 'GET', '/me');
+    expect(r.body).toMatchObject({
+      wallets: [{ currency: 'GBP', walletId: null, walletCheck: { ok: false, reason: 'NO_WALLET' } }],
+      lanaDiscountWallet: null, lanaDiscountWalletSetAt: null, walletCheck: { ok: false, reason: 'NO_WALLET' },
+    });
+    expect(registrarAsks).toEqual([]);
+    // A Direct.Fund before wallets per currency: its one wallet, for that currency too.
+    dfWorld.financers.set(me.hex, { isInvestor: true, lanaDiscountWallet: WALLET });
+    expect((await call(me, 'GET', '/me')).body).toMatchObject({
+      wallets: [{ currency: 'GBP', walletId: WALLET, walletCheck: { ok: true } }], lanaDiscountWallet: WALLET,
     });
   });
 

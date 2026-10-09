@@ -1,9 +1,18 @@
 /**
  * /api/financer — a financer settles their own purchases (owner, 8 Oct 2026).
  *
- *   GET  /me                → { hexId, isFinancer, lanaDiscountWallet, walletCheck }
+ *   GET  /me                → { hexId, isFinancer, wallets: [{currency, walletId, walletCheck}],
+ *                               unknownCurrencyRefs, lanaDiscountWallet, walletCheck }
  *        Who Direct.Fund says the signer is, the Lana.Discount wallet they chose
- *        there, and whether the Registrar would let it pay (fail closed).
+ *        there for each currency (owner, 9 Oct 2026: one per currency — the
+ *        LANA of a purchase go from the wallet of its currency), and whether the
+ *        Registrar would let each pay (fail closed). Listed: every currency
+ *        they have a wallet for or a purchase still to send in (walletId null
+ *        and NO_WALLET when none is chosen for it). unknownCurrencyRefs: their
+ *        purchases whose currency is not known, sent from no wallet.
+ *        lanaDiscountWallet / walletCheck: for a page from before (the old
+ *        single wallet), the wallet its /sendable without a currency sends
+ *        from (sends.ts legacyCurrency).
  *
  *   GET  /batches           → { batches: [...] }
  *        Their lana_discount batches on Direct.Fund, each with what we have
@@ -28,9 +37,12 @@
  *        403 NOT_FINANCER when Direct.Fund does not know the signer as a
  *        financer; only the signer's own batches are read from Direct.Fund.
  *
- *   GET  /sendable          → the signer's legs that may go now, by purchase,
- *        with their wallet's balance and what it lacks.
- *   POST /sends/prepare     { orderIds } → the coins (each with the raw
+ *   GET  /sendable?currency=EUR → the signer's legs of that currency that may
+ *        go now, by purchase, with that currency's wallet's balance and what it
+ *        lacks. Without ?currency: the one currency their purchases to send or
+ *        on their way are in (400 CURRENCY_REQUIRED, with them, when several).
+ *   POST /sends/prepare     { orderIds } → (one currency's purchases, from its
+ *        wallet: MIXED_CURRENCY, NO_WALLET) the coins (each with the raw
  *        transaction that made it), the legs merged per wallet, the server's
  *        clock: everything the browser signs from. Reserves nothing.
  *   POST /sends             { orderIds, rawTx } → the send, recorded with its
@@ -51,12 +63,12 @@ import { requireSigner } from '../lib/financer/requireSigner.js';
 import {
   fetchBatchByRef, fetchFinancer, fetchFinancerBatches, fetchFinancerUnpaidParts, dfHttpStatus, isBatchRef, isUnpaidRef,
   MAX_UNPAID_REFS, MAX_UNPAID_REFS_CHARS,
-  type DfClientOptions, type DfFinancerBatch, type DfUnpaidPart,
+  type DfClientOptions, type DfFinancer, type DfFinancerBatch, type DfUnpaidPart,
 } from '../lib/financer/dfClient.js';
 import { checkFinancerWallet, type FinancerWalletCheck } from '../lib/financer/registrarWallet.js';
 import { confirmFinancerBatches, heldBatches } from '../lib/financer/confirm.js';
 import { fiatReceivedToRearm } from '../lib/financer/brainOutbox.js';
-import { defaultSends, foreignInvestorSql, noteUnownedMismatch, type Sends, type SendRefusal } from '../lib/financer/sends.js';
+import { defaultSends, financerCurrencies, foreignInvestorSql, legacyCurrency, noteUnownedMismatch, type Sends, type SendRefusal } from '../lib/financer/sends.js';
 
 export { requireSigner };
 
@@ -125,21 +137,40 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
   router.get('/me', async (req: Request, res: Response) => {
     const hex = requireSigner(req, res);
     if (!hex) return;
+    let f: DfFinancer;
     try {
-      const f = await fetchFinancer(hex, df);
-      const walletCheck: FinancerWalletCheck = f.lanaDiscountWallet
-        ? await checkFinancerWallet(f.lanaDiscountWallet, hex, { checkBaseUrl: deps.walletCheckBaseUrl, fetch: deps.walletFetch })
-        : { ok: false, reason: 'NO_WALLET' };
-      return res.json({
-        hexId: hex,
-        isFinancer: f.isInvestor,
-        lanaDiscountWallet: f.lanaDiscountWallet,
-        lanaDiscountWalletSetAt: f.lanaDiscountWalletSetAt,
-        walletCheck,
-      });
+      f = await fetchFinancer(hex, df);
     } catch (err) {
       return dfRefusal(res, err);
     }
+    // Every currency they chose a wallet for on Direct.Fund, or have a purchase still to send in here.
+    const db = dbOf();
+    const local = financerCurrencies(db, hex);
+    const currencies = [...new Set([...Object.keys(f.wallets), ...local.currencies])].sort();
+    // One Registrar question per wallet, however many currencies share it.
+    const checks = new Map<string, Promise<FinancerWalletCheck>>();
+    const checkOf = (walletId: string | null): Promise<FinancerWalletCheck> => {
+      if (!walletId) return Promise.resolve({ ok: false, reason: 'NO_WALLET' });
+      if (!checks.has(walletId)) checks.set(walletId, checkFinancerWallet(walletId, hex, { checkBaseUrl: deps.walletCheckBaseUrl, fetch: deps.walletFetch }));
+      return checks.get(walletId) as Promise<FinancerWalletCheck>;
+    };
+    const wallets = await Promise.all(currencies.map(async currency => {
+      const walletId = f.walletFor(currency);
+      return { currency, walletId, walletCheck: await checkOf(walletId) };
+    }));
+    // A page from before wallets per currency reads one wallet: the one its GET /sendable (no currency) and the prepare
+    // after it send from — the same rule, sends.ts legacyCurrency — or it would show one wallet and send from another.
+    // With none known: walletFor(null), which only a Direct.Fund before them answers.
+    const first = f.walletFor((await legacyCurrency(db, hex, async () => Object.keys(f.wallets))).currency);
+    return res.json({
+      hexId: hex,
+      isFinancer: f.isInvestor,
+      wallets,
+      unknownCurrencyRefs: local.unknownRefs.slice(0, MAX_UNCLAIMED_REFS),
+      lanaDiscountWallet: first,
+      lanaDiscountWalletSetAt: first && first === f.lanaDiscountWallet ? f.lanaDiscountWalletSetAt : null,
+      walletCheck: await checkOf(first),
+    });
   });
 
   router.get('/batches', async (req: Request, res: Response) => {
@@ -342,7 +373,10 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
     const hex = requireSigner(req, res);
     if (!hex) return;
     try {
-      return res.json(await sendsOf().sendable(hex));
+      // ?currency=EUR: that currency's purchases and wallet. Read by the machine, which refuses one that is not (BAD_CURRENCY).
+      const r = await sendsOf().sendable(hex, req.query.currency);
+      if (r.ok === false) return refuse(res, r);
+      return res.json(r.body);
     } catch (err: any) {
       console.error(`[financer] sendable for ${hex.slice(0, 12)}… failed: ${err?.message || err}`);
       return res.status(500).json({ error: 'Your legs could not be read right now.', code: 'SENDABLE_FAILED' });

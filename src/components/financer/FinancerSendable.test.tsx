@@ -21,6 +21,9 @@ import { feeFor } from '../../../server/shared/lana-tx/fee.ts';
 import { LANA, LIMITS, purchaseOf, sendableOf, throwawayAddress } from '@/test/financerFixtures';
 import type { SendableAnswer } from '@/lib/financer/financerApi';
 
+// Hundreds of purchases drawn and searched by role: about 5 s each alone, more while the whole suite runs.
+vi.setConfig({ testTimeout: 30_000 });
+
 const t = FINANCER;
 
 /**

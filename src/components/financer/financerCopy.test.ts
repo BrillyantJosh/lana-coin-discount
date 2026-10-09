@@ -82,8 +82,9 @@ describe('the financer page in Slovenian and English', () => {
   });
 
   it('the page fills every placeholder of a refusal: a send refusal names only what the page knows', () => {
-    // src/pages/Financer.tsx sendRefusal fills {wallet} (from the refusal), {max} (limits.maxLegs) and {button}.
-    const filled = new Set(['wallet', 'max', 'button', 'code']);
+    // src/pages/Financer.tsx sendRefusal fills {wallet} (from the refusal), {max} (limits.maxLegs), {button} and
+    // {currency} (the refusal's — NO_WALLET names the currency without a wallet — or the part's own).
+    const filled = new Set(['wallet', 'max', 'button', 'code', 'currency']);
     for (const tree of [FINANCER, FINANCER_SL]) {
       const unknown = Object.entries(tree.sendCodes).filter(([, text]) => placeholders(text).some((p) => !filled.has(p)));
       expect(unknown.map(([code]) => code)).toEqual([]);

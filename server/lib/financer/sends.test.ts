@@ -23,13 +23,14 @@ vi.mock('../../db/index.js', async () => {
 
 import { createMandateTestDb } from '../roundMandateTestKit';
 import {
-  createSends, judgeMustSpend, nextMustSpend, sendsHealth, unmetMustSpend, mergedAllocations, isCopyOf, ownerMismatchPurchases, proofWalletOf,
+  createSends, judgeMustSpend, nextMustSpend, sendsHealth, unmetMustSpend, mergedAllocations, isCopyOf, ownerMismatchPurchases, proofWalletOf, financerCurrencies,
   noteUnownedMismatch, forgetUnownedMismatches,
-  REFUSALS_TO_RELEASE, REBROADCAST_FOR_S, MAX_ORDER_IDS, OWNER_MISMATCH_LISTED, MIN_SPENDER_DEPTH, type PrepareAnswer, type Sends, type SendsDeps,
+  REFUSALS_TO_RELEASE, REBROADCAST_FOR_S, MAX_ORDER_IDS, OWNER_MISMATCH_LISTED, MIN_SPENDER_DEPTH, type PrepareAnswer, type SendableAnswer, type Sends, type SendsDeps,
 } from './sends';
 import type { BroadcastOutcome, ListedOutput, PayoutChain } from './payoutChain';
 import type { PaymentRead, PaymentReader } from './chainPayment';
 import type { FinancerWalletCheck } from './registrarWallet';
+import { parseFinancer } from './dfClient';
 import { tryAcquireSendLock, releaseSendLock } from '../sendLock';
 import { LANA, parentPaying, throwawayAddress, throwawayWallet, type ThrowawayWallet } from '../../shared/lana-tx/fixtures/wallets';
 import { verifiedCoins, type ListedCoin } from '../../shared/lana-tx/select';
@@ -170,6 +171,8 @@ let clock: number;
 let key: ThrowawayWallet;
 let registrar: (wallet: string, owner: string) => FinancerWalletCheck;
 let dfWallet: string | null;
+/** Direct.Fund's wallets per currency; null: a Direct.Fund before them (the field absent). */
+let dfWallets: Record<string, { walletId: string; setAt: string | null }> | null;
 let sends: Sends;
 const logs: string[] = [];
 const wallets = { investor: '', merchant: '', cashback: '', caretaker: '' };
@@ -180,7 +183,8 @@ const make = (over: Partial<SendsDeps> = {}): Sends => createSends({
   db,
   chain: net.chain,
   payments: proof.payments,
-  financer: async hex => ({ hexId: hex, isInvestor: true, lanaDiscountWallet: dfWallet, lanaDiscountWalletSetAt: null }),
+  // Direct.Fund before wallets per currency (no `wallets`): its one wallet for every currency — or, set, per currency.
+  financer: async hex => parseFinancer({ hexId: hex, isInvestor: true, lanaDiscountWallet: dfWallet, lanaDiscountWalletSetAt: null, ...(dfWallets ? { wallets: dfWallets } : {}) }, hex),
   checkWallet: async (w, o) => registrar(w, o),
   now: () => clock,
   log: line => void logs.push(line),
@@ -194,6 +198,7 @@ beforeEach(() => {
   clock = Date.now();
   key = throwawayWallet(true);
   dfWallet = key.address;
+  dfWallets = null;
   registrar = () => ({ ok: true, walletType: 'Lana.Discount', frozen: false });
   for (const k of Object.keys(wallets) as Array<keyof typeof wallets>) wallets[k] = throwawayAddress();
   logs.length = 0;
@@ -202,25 +207,25 @@ beforeEach(() => {
 
 const own = (ref: string, owner = OWNER, settledBy: 'financer' | 'treasury' = 'financer') =>
   db.prepare("INSERT INTO purchase_settlement (transaction_ref, owner_hex, settled_by, batch_ref, confirmed_by) VALUES (?, ?, ?, 'B1', ?)").run(ref, owner, settledBy, owner);
-const leg = (ref: string, type: keyof typeof wallets, o: { id?: string; lanoshis?: number; status?: string; auth?: 0 | 1; wallet?: string } = {}) => {
+const leg = (ref: string, type: keyof typeof wallets, o: { id?: string; lanoshis?: number; status?: string; auth?: 0 | 1; wallet?: string; currency?: string } = {}) => {
   const id = o.id ?? `${ref}-${type}`;
   db.prepare(`INSERT INTO brain_lana_orders (id, transaction_ref, order_type, to_wallet, to_hex, lana_amount, fiat_value, currency, exchange_rate, status, brain_authorized, batch_ref, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, 1, 'EUR', 1, ?, ?, 'B1', ?)`)
+              VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, 'B1', ?)`)
     .run(id, ref, type === 'investor' ? 'investor_lana' : `${type}_commission`, o.wallet ?? wallets[type], type === 'investor' ? OWNER : 'c3'.repeat(32),
-      o.lanoshis ?? AMOUNT[type], o.status ?? 'pending', o.auth ?? 1, `2026-10-08 10:00:${String(++seq).padStart(2, '0')}`);
+      o.lanoshis ?? AMOUNT[type], o.currency ?? 'EUR', o.status ?? 'pending', o.auth ?? 1, `2026-10-08 10:00:${String(++seq).padStart(2, '0')}`);
   return id;
 };
-/** A purchase of the financer's with its four legs, confirmed and authorised; the leg ids. */
-const purchase = (ref = 'T1', owner = OWNER): string[] => {
+/** A purchase of the financer's with its four legs (in EUR unless said), confirmed and authorised; the leg ids. */
+const purchase = (ref = 'T1', owner = OWNER, currency = 'EUR'): string[] => {
   own(ref, owner);
-  return (['investor', 'merchant', 'cashback', 'caretaker'] as const).map(t => leg(ref, t));
+  return (['investor', 'merchant', 'cashback', 'caretaker'] as const).map(t => leg(ref, t, { currency }));
 };
 const legRow = (id: string) => db.prepare('SELECT * FROM brain_lana_orders WHERE id = ?').get(id) as any;
 const sendRow = (txid: string) => db.prepare('SELECT * FROM lana_sends WHERE txid = ?').get(txid) as any;
 const outbox = () => db.prepare('SELECT kind, dedupe_key, body_json FROM brain_callback_outbox ORDER BY id').all() as any[];
 
-/** Sign what a prepare answered, as the browser does — or from exactly `only` of the wallet's coins. */
-async function sign(prepared: PrepareAnswer, only?: string[]): Promise<string> {
+/** Sign what a prepare answered, as the browser does — or from exactly `only` of the wallet's coins; with `signer`'s key. */
+async function sign(prepared: PrepareAnswer, only?: string[], signer: ThrowawayWallet = key): Promise<string> {
   const listed: ListedCoin[] = only
     ? only.map(k => {
       const c = net.coins.get(k) as ListedOutput;
@@ -231,9 +236,16 @@ async function sign(prepared: PrepareAnswer, only?: string[]): Promise<string> {
   if (coins.ok === false) throw new Error(coins.problems.join('; '));
   const plan = planPayout({ from: prepared.wallet, coins: coins.coins, allocations: prepared.allocations.map(a => ({ address: a.wallet, lanoshis: BigInt(a.lanoshis) })), nowSec: prepared.nowSec, step: LEG_LANOSHI_STEP });
   if (plan.ok === false) throw new Error(`${plan.code}: ${plan.detail}`);
-  const signed = await signPayoutTx({ from: prepared.wallet, pay: plan.pay, coins: plan.coins, nowSec: prepared.nowSec, privateKey: key.privateKey, compressed: key.compressed });
+  const signed = await signPayoutTx({ from: prepared.wallet, pay: plan.pay, coins: plan.coins, nowSec: prepared.nowSec, privateKey: signer.privateKey, compressed: signer.compressed });
   if (signed.ok === false) throw new Error(`${signed.code}: ${signed.detail}`);
   return signed.rawTx;
+}
+
+/** What GET /sendable answers (one currency's, or the only one's), or the refusal thrown. */
+async function sendableNow(currency?: string): Promise<SendableAnswer> {
+  const r = await sends.sendable(OWNER, currency);
+  if (r.ok === false) throw new Error(`${r.code}: ${r.error}`);
+  return r.body;
 }
 
 async function prepared(ids: string[], s = sends): Promise<PrepareAnswer> {
@@ -520,7 +532,7 @@ describe('the round', () => {
     expect((db.prepare("SELECT status, lana_tx_hash FROM incoming_batches WHERE batch_ref = 'B1'").get() as any)).toEqual({ status: 'lana_sent', lana_tx_hash: copyId });
     expect(sends.view(r.txid)).toMatchObject({ state: 'confirmed', chainTxid: copyId });
     // Nothing of it can go again.
-    expect((await sends.sendable(OWNER)).purchases).toEqual([]);
+    expect((await sendableNow()).purchases).toEqual([]);
     expect(await sends.prepare(OWNER, ids)).toMatchObject({ status: 409, code: 'NOT_SENDABLE' });
   });
 
@@ -1086,7 +1098,7 @@ describe('sendable and prepare', () => {
     leg('T3', 'merchant', { lanoshis: 400_000 }); // alone under 0.005 LANA
     leg('T3', 'cashback', { auth: 0 }); // not authorised yet
     net.fund(key.address, [100n * LANA], nowSec() - 86_400);
-    const s = await sends.sendable(OWNER);
+    const s = await sendableNow();
     expect(s.purchases.map(p => [p.transactionRef, p.legs.length, p.belowDustAlone])).toEqual([['T1', 4, false], ['T3', 1, true]]);
     expect(s.legCount).toBe(5);
     expect(s.wallet).toBe(key.address);
@@ -1097,14 +1109,14 @@ describe('sendable and prepare', () => {
     expect(s.limits).toEqual({ maxWallets: 98, maxLegs: 400, maxInputs: 20, dustLanoshis: '500000', stepLanoshis: '1' });
     expect(s.limits.maxLegs).toBe(MAX_ORDER_IDS);
     dfWallet = null;
-    expect((await sends.sendable(OWNER)).walletProblem).toBe('NO_WALLET');
+    expect((await sendableNow()).walletProblem).toBe('NO_WALLET');
   });
 
   it('the legs one send may name: the limit the page is told is the one prepare holds to', async () => {
     own('T1');
     const many = Array.from({ length: MAX_ORDER_IDS + 1 }, (_, i) => leg('T1', 'caretaker', { id: `T1-c${i}`, lanoshis: 600_000 }));
     net.fund(key.address, [300n * LANA], nowSec() - 86_400);
-    const s = await sends.sendable(OWNER);
+    const s = await sendableNow();
     expect(s.legCount).toBe(MAX_ORDER_IDS + 1);
     expect(s.limits.maxLegs).toBe(MAX_ORDER_IDS);
     expect(await sends.prepare(OWNER, many)).toMatchObject({ status: 400, code: 'BAD_ORDER_IDS' });
@@ -1120,7 +1132,7 @@ describe('sendable and prepare', () => {
     const rawTx = await sign(await prepared(mine));
     // The brain's redirect: the investor_lana leg now names another financer and their wallet.
     db.prepare('UPDATE brain_lana_orders SET to_hex = ?, to_wallet = ? WHERE id = ?').run(OTHER, throwawayAddress(), moved[0]);
-    expect((await sends.sendable(OWNER)).purchases.map(p => p.transactionRef)).toEqual(['T1']);
+    expect((await sendableNow()).purchases.map(p => p.transactionRef)).toEqual(['T1']);
     expect(await sends.prepare(OWNER, moved)).toMatchObject({ ok: false, status: 409, code: 'OWNER_MISMATCH', orderIds: moved });
     expect(await sends.prepare(OWNER, [...mine, ...moved])).toMatchObject({ ok: false, status: 409, code: 'OWNER_MISMATCH', orderIds: moved });
     expect(await sends.announce(OWNER, { orderIds: moved, rawTx })).toMatchObject({ ok: false, status: 409, code: 'OWNER_MISMATCH' });
@@ -1128,10 +1140,10 @@ describe('sendable and prepare', () => {
     for (const id of moved) expect(legRow(id)).toMatchObject({ status: 'pending', send_txid: null });
     // The same hex in capitals is the signer's own.
     db.prepare('UPDATE brain_lana_orders SET to_hex = ? WHERE id = ?').run(OWNER.toUpperCase(), moved[0]);
-    expect((await sends.sendable(OWNER)).purchases.map(p => p.transactionRef)).toEqual(['T1', 'T2']);
+    expect((await sendableNow()).purchases.map(p => p.transactionRef)).toEqual(['T1', 'T2']);
     // A cancelled investor leg naming another: not the purchase's live leg — the rest of it stays the signer's.
     db.prepare("UPDATE brain_lana_orders SET to_hex = ?, status = 'cancelled' WHERE id = ?").run(OTHER, moved[0]);
-    expect((await sends.sendable(OWNER)).purchases.map(p => [p.transactionRef, p.legs.length])).toEqual([['T1', 4], ['T2', 3]]);
+    expect((await sendableNow()).purchases.map(p => [p.transactionRef, p.legs.length])).toEqual([['T1', 4], ['T2', 3]]);
   });
 
   it('a financer-owned purchase whose live investor leg now pays another financer, with a leg still pending, is counted and named for heartbeat-status — nobody else can send it (recheck of 9 Oct 2026)', () => {
@@ -1229,5 +1241,166 @@ describe('sendable and prepare', () => {
     expect(p.mustSpend).toEqual([]);
     // It reserves nothing.
     for (const id of ids) expect(legRow(id)).toMatchObject({ status: 'pending', send_txid: null });
+  });
+});
+
+// ─── one wallet per currency ──────────────────────────────────────────────
+
+describe('one Lana.Discount wallet per currency (owner, 9 Oct 2026): a purchase\'s LANA go from the wallet of its currency', () => {
+  /** The financer's GBP wallet; `key` is their EUR one. */
+  let gbp: ThrowawayWallet;
+  beforeEach(() => {
+    gbp = throwawayWallet(true);
+    dfWallets = { EUR: { walletId: key.address, setAt: '2026-10-08 10:00:00' }, GBP: { walletId: gbp.address, setAt: '2026-10-09 08:00:00' } };
+  });
+  const sends0 = () => (db.prepare('SELECT COUNT(*) c FROM lana_sends').get() as { c: number }).c;
+
+  it('sendable: one currency\'s purchases against that currency\'s wallet — its balance, what it lacks, its sends on their way', async () => {
+    purchase('T1');
+    purchase('T2', OWNER, 'GBP');
+    net.fund(key.address, [200n * LANA], nowSec() - 86_400);
+    net.fund(gbp.address, [7n * LANA], nowSec() - 86_400);
+    const eur = await sendableNow('EUR');
+    expect(eur).toMatchObject({ currency: 'EUR', wallet: key.address, walletProblem: null, legCount: 4, balance: { confirmed: (200n * LANA).toString(), unconfirmed: '0' } });
+    expect(eur.purchases.map(p => p.transactionRef)).toEqual(['T1']);
+    const total = BigInt(Object.values(AMOUNT).reduce((a, b) => a + b, 0));
+    expect(BigInt(eur.shortfallLanoshis)).toBe(0n);
+    const gb = await sendableNow('gbp');
+    expect(gb).toMatchObject({ currency: 'GBP', wallet: gbp.address, walletProblem: null, legCount: 4, balance: { confirmed: (7n * LANA).toString(), unconfirmed: '0' } });
+    expect(gb.purchases.map(p => p.transactionRef)).toEqual(['T2']);
+    // What the GBP wallet lacks for the GBP purchase — never covered by the EUR wallet's balance.
+    expect(BigInt(gb.shortfallLanoshis)).toBeGreaterThan(total - 7n * LANA);
+    // A currency with no wallet chosen: its purchases (none here) and NO_WALLET.
+    expect(await sendableNow('USD')).toMatchObject({ currency: 'USD', wallet: null, walletProblem: 'NO_WALLET', purchases: [], balance: null });
+  });
+
+  it('sendable without a currency: the one their purchases are in — in two, CURRENCY_REQUIRED with both; none to send, the first of their currencies; a code that is none, BAD_CURRENCY', async () => {
+    const eurIds = purchase('T1');
+    const gbpIds = purchase('T2', OWNER, 'GBP');
+    expect(await sends.sendable(OWNER)).toMatchObject({ ok: false, status: 400, code: 'CURRENCY_REQUIRED', currencies: ['EUR', 'GBP'] });
+    for (const bad of ['EURO', 'E1R', 7, ['EUR']]) expect(await sends.sendable(OWNER, bad), JSON.stringify(bad)).toMatchObject({ ok: false, status: 400, code: 'BAD_CURRENCY' });
+    // The EUR purchase on its way (sending) still counts: it is no single currency yet.
+    net.fund(key.address, [300n * LANA], nowSec() - 86_400);
+    const r = await sends.announce(OWNER, { orderIds: eurIds, rawTx: await sign(await prepared(eurIds)) });
+    expect(r.ok).toBe(true);
+    expect(await sends.sendable(OWNER)).toMatchObject({ ok: false, code: 'CURRENCY_REQUIRED', currencies: ['EUR', 'GBP'] });
+    // Only GBP left anywhere: the page from before wallets per currency gets it.
+    db.prepare("UPDATE brain_lana_orders SET status = 'sent' WHERE transaction_ref = 'T1'").run();
+    db.prepare("UPDATE lana_sends SET state = 'confirmed'").run();
+    expect(await sendableNow()).toMatchObject({ currency: 'GBP', wallet: gbp.address, legCount: 4 });
+    // Nothing to send or on its way: the first of the financer's currencies (EUR), its wallet and balance.
+    db.prepare("UPDATE brain_lana_orders SET status = 'cancelled' WHERE id IN (" + gbpIds.map(() => '?').join(',') + ')').run(...gbpIds);
+    expect(await sendableNow()).toMatchObject({ currency: 'EUR', wallet: key.address, purchases: [], walletProblem: null });
+    // No wallet anywhere, Direct.Fund per currency: none — never the old single wallet.
+    dfWallets = {};
+    expect(await sendableNow()).toMatchObject({ currency: null, wallet: null, walletProblem: 'NO_WALLET', purchases: [] });
+    // A Direct.Fund before wallets per currency: its one wallet.
+    dfWallets = null;
+    expect(await sendableNow()).toMatchObject({ currency: null, wallet: key.address, walletProblem: null });
+  });
+
+  it('a send carries ONE currency, from the wallet of that currency: MIXED_CURRENCY, NO_WALLET {currency} and CURRENCY_UNKNOWN refused at prepare and at announce — nothing written, nothing sent', async () => {
+    const eurIds = purchase('T1');
+    const gbpIds = purchase('T2', OWNER, 'GBP');
+    net.fund(key.address, [300n * LANA], nowSec() - 86_400);
+    net.fund(gbp.address, [300n * LANA], nowSec() - 86_400);
+    const eurTx = await sign(await prepared(eurIds));
+    expect(await sends.prepare(OWNER, [...eurIds, ...gbpIds])).toMatchObject({ ok: false, status: 409, code: 'MIXED_CURRENCY', currencies: ['EUR', 'GBP'] });
+    expect(await sends.announce(OWNER, { orderIds: [...eurIds, ...gbpIds], rawTx: eurTx })).toMatchObject({ ok: false, status: 409, code: 'MIXED_CURRENCY', currencies: ['EUR', 'GBP'] });
+    // No GBP wallet chosen: the GBP purchase is sent from none — not from the EUR one.
+    dfWallets = { EUR: dfWallets.EUR };
+    expect(await sends.prepare(OWNER, gbpIds)).toMatchObject({ ok: false, status: 409, code: 'NO_WALLET', currency: 'GBP' });
+    expect(await sends.announce(OWNER, { orderIds: gbpIds, rawTx: eurTx })).toMatchObject({ ok: false, status: 409, code: 'NO_WALLET', currency: 'GBP' });
+    // A purchase whose legs do not carry one and the same currency: no wallet sends it, and no currency's list has it.
+    const odd = purchase('T3');
+    db.prepare("UPDATE brain_lana_orders SET currency = 'GBP' WHERE id = ?").run(odd[1]);
+    expect(await sends.prepare(OWNER, odd)).toMatchObject({ ok: false, status: 409, code: 'CURRENCY_UNKNOWN', orderIds: odd, transactionRefs: ['T3'] });
+    expect(await sends.prepare(OWNER, [...eurIds, ...odd])).toMatchObject({ ok: false, code: 'CURRENCY_UNKNOWN', orderIds: odd });
+    expect(await sends.announce(OWNER, { orderIds: odd, rawTx: eurTx })).toMatchObject({ ok: false, code: 'CURRENCY_UNKNOWN' });
+    db.prepare("UPDATE brain_lana_orders SET currency = '' WHERE id = ?").run(odd[1]);
+    expect(await sends.prepare(OWNER, odd)).toMatchObject({ ok: false, code: 'CURRENCY_UNKNOWN' });
+    expect((await sendableNow('EUR')).purchases.map(p => p.transactionRef)).toEqual(['T1']);
+    expect((await sendableNow('GBP')).purchases.map(p => p.transactionRef)).toEqual(['T2']);
+    expect(net.broadcasts).toEqual([]);
+    expect(sends0()).toBe(0);
+    for (const id of [...eurIds, ...gbpIds, ...odd]) expect(legRow(id)).toMatchObject({ status: 'pending', send_txid: null });
+    // The legs carry their currency in any case: a lower-case one is the same currency.
+    db.prepare("UPDATE brain_lana_orders SET currency = ' eur ' WHERE id = ?").run(eurIds[2]);
+    expect((await prepared(eurIds)).currency).toBe('EUR');
+  });
+
+  it('a GBP purchase is never announced from the EUR wallet — signed with the EUR key it is refused, nothing sent — and goes from the GBP wallet, beside an EUR send from the EUR one', async () => {
+    const eurIds = purchase('T1');
+    const gbpIds = purchase('T2', OWNER, 'GBP');
+    net.fund(key.address, [300n * LANA], nowSec() - 86_400);
+    net.fund(gbp.address, [300n * LANA], nowSec() - 86_400);
+    const pe = await prepared(eurIds);
+    const pg = await prepared(gbpIds);
+    expect([pe.currency, pe.wallet, pg.currency, pg.wallet]).toEqual(['EUR', key.address, 'GBP', gbp.address]);
+    // The GBP legs paid from the EUR wallet's coins, signed with the EUR key: a well-formed send, from the wrong wallet.
+    const fromEur = await sign({ ...pe, allocations: pg.allocations });
+    expect(decodeTx(fromEur).outputs.slice(0, 4).map(o => o.value)).toEqual(pg.allocations.map(a => BigInt(a.lanoshis)));
+    expect(await sends.announce(OWNER, { orderIds: gbpIds, rawTx: fromEur })).toMatchObject({ ok: false, status: 409, code: 'COIN_UNAVAILABLE' });
+    expect(net.broadcasts).toEqual([]);
+    expect(sends0()).toBe(0);
+    for (const id of gbpIds) expect(legRow(id)).toMatchObject({ status: 'pending', send_txid: null });
+
+    // From the GBP wallet, with its own key: sent. The EUR purchase goes from the EUR wallet at the same time.
+    const g = await sends.announce(OWNER, { orderIds: gbpIds, rawTx: await sign(pg, undefined, gbp) });
+    const e = await sends.announce(OWNER, { orderIds: eurIds, rawTx: await sign(pe) });
+    if (g.ok === false || e.ok === false) throw new Error('not sent');
+    expect([g.send.wallet, e.send.wallet]).toEqual([gbp.address, key.address]);
+    expect(sendRow(g.send.txid)).toMatchObject({ wallet_id: gbp.address, state: 'mempool' });
+    for (const id of gbpIds) expect(legRow(id)).toMatchObject({ status: 'sending', send_txid: g.send.txid });
+    // Each currency sees the send of its own wallet on its way.
+    expect((await sendableNow('GBP')).inFlight.map(x => x.txid)).toEqual([g.send.txid]);
+    expect((await sendableNow('EUR')).inFlight.map(x => x.txid)).toEqual([e.send.txid]);
+    // The round finishes each from its own recorded wallet.
+    proof.reads.set(g.send.txid, inBlock(1_067_710));
+    proof.reads.set(e.send.txid, inBlock(1_067_711));
+    expect((await sends.round()).confirmed.sort()).toEqual([g.send.txid, e.send.txid].sort());
+    for (const id of gbpIds) expect(legRow(id)).toMatchObject({ status: 'sent', tx_hash: g.send.txid });
+    for (const id of eurIds) expect(legRow(id)).toMatchObject({ status: 'sent', tx_hash: e.send.txid });
+  });
+
+  it('a purchase whose currency is not known is in no currency\'s list — not even the answer of no currency at all', async () => {
+    const odd = purchase('T3');
+    db.prepare("UPDATE brain_lana_orders SET currency = 'GBP' WHERE id = ?").run(odd[1]);
+    dfWallets = {};
+    expect(await sendableNow()).toMatchObject({ currency: null, wallet: null, purchases: [], legCount: 0 });
+    // A Direct.Fund before wallets per currency: its one wallet is read, and still nothing of no known currency is listed.
+    dfWallets = null;
+    expect(await sendableNow()).toMatchObject({ currency: null, wallet: key.address, purchases: [], legCount: 0 });
+    expect(financerCurrencies(db, OWNER)).toEqual({ currencies: [], unknownRefs: ['T3'] });
+  });
+
+  it('one wallet chosen for two currencies (allowed): each purchase goes from it, one send of the wallet at a time', async () => {
+    dfWallets = { EUR: dfWallets.EUR, GBP: { walletId: key.address, setAt: null } };
+    const eurIds = purchase('T1');
+    const gbpIds = purchase('T2', OWNER, 'GBP');
+    net.fund(key.address, [300n * LANA, 200n * LANA], nowSec() - 86_400);
+    const pg = await prepared(gbpIds);
+    expect([pg.currency, pg.wallet]).toEqual(['GBP', key.address]);
+    const g = await sends.announce(OWNER, { orderIds: gbpIds, rawTx: await sign(pg) });
+    if (g.ok === false) throw new Error(g.code);
+    expect(await sends.prepare(OWNER, eurIds)).toMatchObject({ ok: false, code: 'SEND_IN_FLIGHT', txid: g.send.txid });
+    expect((await sendableNow('EUR')).inFlight.map(x => x.txid)).toEqual([g.send.txid]);
+  });
+
+  it('the financer\'s currencies: those of their purchases with a leg to send or on its way (approved or not), and the purchases whose currency is not known', () => {
+    purchase('T1');
+    purchase('T2', OWNER, 'GBP');
+    own('T3');
+    leg('T3', 'merchant', { auth: 0, currency: 'usd' }); // not approved yet: still theirs to send
+    own('T4');
+    leg('T4', 'merchant', { status: 'sent', currency: 'CHF' }); // all sent: nothing to send
+    own('T5');
+    leg('T5', 'merchant', { currency: 'EUR' });
+    leg('T5', 'cashback', { currency: 'GBP' }); // two currencies: not known
+    purchase('T6', OTHER, 'SEK'); // another financer's
+    expect(financerCurrencies(db, OWNER)).toEqual({ currencies: ['EUR', 'GBP', 'USD'], unknownRefs: ['T5'] });
+    db.prepare("UPDATE brain_lana_orders SET status = 'sending' WHERE transaction_ref = 'T2'").run();
+    db.prepare("UPDATE brain_lana_orders SET status = 'cancelled' WHERE transaction_ref = 'T3'").run();
+    expect(financerCurrencies(db, OWNER)).toEqual({ currencies: ['EUR', 'GBP'], unknownRefs: ['T5'] });
   });
 });

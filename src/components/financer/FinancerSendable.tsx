@@ -8,7 +8,9 @@
  * own budget's investor_lana. The server lists only legs that may go now —
  * theirs, approved by the brain, pending, in no send (GET /api/financer/
  * sendable) — so a purchase appears here about ten minutes after its batch is
- * confirmed, and the page says so.
+ * confirmed, and the page says so. One list per currency (owner, 9 Oct 2026):
+ * a purchase's LANA go from the financer's wallet of its currency, so the page
+ * draws this once for each, titled with it (`answer.currency`).
  *
  * A purchase is chosen WHOLE (the server refuses part of one: PARTIAL_PURCHASE),
  * so the boxes are per purchase, and all are chosen until the financer says
@@ -145,7 +147,7 @@ export function FinancerSendable(props: {
 
   return (
     <section data-testid="financer-sendable" className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6">
-      <h2 className="text-lg font-bold text-foreground">{t.sendTitle}</h2>
+      <h2 className="text-lg font-bold text-foreground">{answer.currency ? fill(t.sendTitleCurrency, { currency: answer.currency }) : t.sendTitle}</h2>
       <p className="mt-2 text-sm text-muted-foreground leading-relaxed">{t.sendLead}</p>
       <p className="mt-1 text-xs text-muted-foreground">{t.approvalNote}</p>
 

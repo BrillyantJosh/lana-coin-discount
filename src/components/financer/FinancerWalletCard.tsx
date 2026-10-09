@@ -10,29 +10,39 @@
  * the same verdict before anyone types a key, and why, so a financer whose
  * wallet would be refused learns it here and not at the last step.
  *
- * The wallet is chosen on Direct.Fund (one place of truth: investors.
- * lana_discount_wallet there), so the card links there and never edits it.
+ * The wallet is chosen on Direct.Fund (one place of truth there), so the card
+ * links there and never edits it. Owner, 9 Oct 2026: ONE PER CURRENCY — a
+ * purchase's LANA go from the wallet of its currency — so the page draws one
+ * card per currency, titled with it (`currency`); null: the single wallet of a
+ * server or Direct.Fund from before wallets per currency.
  */
 import type { FinancerText } from '@/copy';
-import type { FinancerMe, SendableAnswer } from '@/lib/financer/financerApi';
+import type { SendableAnswer, WalletCheck } from '@/lib/financer/financerApi';
 import { DIRECT_FUND_URL } from '@/lib/financer/financerApi';
 import { readLanoshis } from '@/lib/financer/payoutView';
 import { codeText, fill, lanaText } from './financerText';
 
-export function FinancerWalletCard(props: { t: FinancerText; me: FinancerMe; balance: SendableAnswer['balance'] | undefined }) {
-  const { t, me, balance } = props;
-  const wallet = me.lanaDiscountWallet;
-  const check = me.walletCheck;
+export function FinancerWalletCard(props: {
+  t: FinancerText;
+  /** The currency this wallet sends; null: the one wallet of a page from before wallets per currency. */
+  currency: string | null;
+  walletId: string | null;
+  walletCheck: WalletCheck;
+  balance: SendableAnswer['balance'] | undefined;
+}) {
+  const { t, currency, balance } = props;
+  const wallet = props.walletId;
+  const check = props.walletCheck;
   const unconfirmed = balance ? readLanoshis(balance.unconfirmed.replace(/^-/, '')) : null;
   const moving = balance && balance.unconfirmed !== '0' && unconfirmed !== null;
 
   return (
-    <section data-testid="financer-wallet" className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6">
-      <h2 className="text-lg font-bold text-foreground">{t.walletTitle}</h2>
+    <section data-testid="financer-wallet" data-currency={currency ?? undefined} className="rounded-2xl border-2 border-border bg-card p-5 sm:p-6">
+      <h2 className="text-lg font-bold text-foreground">{currency ? fill(t.walletTitleCurrency, { currency }) : t.walletTitle}</h2>
       {!wallet ? (
         <div className="mt-3 space-y-3">
-          <p className="text-sm font-medium text-amber-700 dark:text-amber-400">{t.walletNone}</p>
-          <p className="text-sm text-muted-foreground leading-relaxed">{t.walletNoneHint}</p>
+          <p className="text-sm font-medium text-amber-700 dark:text-amber-400">{currency ? fill(t.walletNoneCurrency, { currency }) : t.walletNone}</p>
+          <p className="text-sm text-muted-foreground leading-relaxed">{currency ? fill(t.walletNoneHintCurrency, { currency }) : t.walletNoneHint}</p>
           <a
             href={DIRECT_FUND_URL}
             rel="noopener"

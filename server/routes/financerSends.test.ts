@@ -107,6 +107,8 @@ const distinctBroadcasts = () => [...new Set(chain.broadcasts ?? [])];
 const df = {
   batches: new Map<string, unknown>(),
   financers: new Map<string, string | null>(),
+  /** A financer's wallets per currency (9 Oct 2026); none set: a Direct.Fund before them (the field absent). */
+  wallets: new Map<string, Record<string, { walletId: string; setAt: string | null }>>(),
 };
 const dfServer = http.createServer((req, res) => {
   const url = String(req.url);
@@ -128,15 +130,16 @@ const dfServer = http.createServer((req, res) => {
   m = /^\/api\/admin\/financers\/([0-9a-f]{64})$/.exec(url);
   if (m) {
     const wallet = df.financers.get(m[1]) ?? null;
-    res.end(JSON.stringify({ hexId: m[1], isInvestor: df.financers.has(m[1]), lanaDiscountWallet: wallet, lanaDiscountWalletSetAt: wallet ? '2026-10-08' : null }));
+    const perCurrency = df.wallets.get(m[1]);
+    res.end(JSON.stringify({ hexId: m[1], isInvestor: df.financers.has(m[1]), lanaDiscountWallet: wallet, lanaDiscountWalletSetAt: wallet ? '2026-10-08' : null, ...(perCurrency ? { wallets: perCurrency } : {}) }));
     return;
   }
   res.statusCode = 404;
   res.end('{}');
 });
-const dfBatch = (batchRef: string, refs: string[], investor = me.hex) => df.batches.set(batchRef, {
-  batch: { batchRef, investorHex: investor, totalAmount: 10 * refs.length, currency: 'EUR', paymentCount: refs.length, confirmedCount: refs.length, status: 'paid', destinationType: 'lana_discount', fundSettingId: 7, createdAt: '2026-10-08 09:00:00', paidAt: '2026-10-08 10:00:00' },
-  payments: refs.map((ref, i) => ({ ppId: i + 1, amount: 10, currency: 'EUR', confirmed: true, transactionRef: ref, investorHex: investor, destinationType: 'lana_discount', orderStatus: 'DirectPaid', live: true, orderType: 'cash' })),
+const dfBatch = (batchRef: string, refs: string[], investor = me.hex, currency = 'EUR') => df.batches.set(batchRef, {
+  batch: { batchRef, investorHex: investor, totalAmount: 10 * refs.length, currency, paymentCount: refs.length, confirmedCount: refs.length, status: 'paid', destinationType: 'lana_discount', fundSettingId: 7, createdAt: '2026-10-08 09:00:00', paidAt: '2026-10-08 10:00:00' },
+  payments: refs.map((ref, i) => ({ ppId: i + 1, amount: 10, currency, confirmed: true, transactionRef: ref, investorHex: investor, destinationType: 'lana_discount', orderStatus: 'DirectPaid', live: true, orderType: 'cash' })),
 });
 
 // ─── the brain ─────────────────────────────────────────────────────────────
@@ -234,6 +237,7 @@ beforeEach(() => {
   wallet = throwawayWallet(true);
   df.financers.clear();
   df.financers.set(me.hex, wallet.address);
+  df.wallets.clear();
   df.batches.clear();
   registrar.owner = w => (w === wallet.address ? me.hex : null);
   fund(wallet.address, [300n * LANA, 50n * LANA]);
@@ -264,26 +268,28 @@ const legRow = (id: string) => db.prepare('SELECT * FROM brain_lana_orders WHERE
 const outbox = (kind: string) => db.prepare('SELECT * FROM brain_callback_outbox WHERE kind = ? ORDER BY id').all(kind) as any[];
 
 /** The brain's legs of one purchase (each to its own throwaway wallet; the investor leg pays the financer's budget wallet). */
-async function brainOrders(ref: string, types = Object.keys(AMOUNTS) as Array<keyof typeof AMOUNTS>): Promise<string[]> {
+async function brainOrders(ref: string, types = Object.keys(AMOUNTS) as Array<keyof typeof AMOUNTS>, currency = 'EUR'): Promise<string[]> {
   const ids: string[] = [];
   for (const type of types) {
     const id = `${ref}-${type}`;
     const r = await brain('POST', '/api/brain/lana-order', {
       order_id: id, tx_ref: ref, order_type: type, to_wallet: throwawayAddress(), to_hex: type === 'investor_lana' ? me.hex : 'c3'.repeat(32),
-      lana_amount: AMOUNTS[type], fiat_value: 1, currency: 'EUR', exchange_rate: 0.128,
+      lana_amount: AMOUNTS[type], fiat_value: 1, currency, exchange_rate: 0.128,
     });
     expect(r.status).toBe(201);
     ids.push(id);
   }
-  // In the order lana.discount sends a purchase's legs: oldest first, then by purchase and id — these arrive in one second.
-  return ids.sort();
+  // In the order lana.discount sends a purchase's legs: oldest first, then by purchase and id (sends.ts LEG_ORDER) — read
+  // back, not assumed: on a busy machine the four posts can straddle a second.
+  return (db.prepare('SELECT id FROM brain_lana_orders WHERE transaction_ref = ? ORDER BY created_at, transaction_ref, id').all(ref) as Array<{ id: string }>)
+    .map(r => r.id).filter(id => ids.includes(id));
 }
 const amountOf = (id: string) => AMOUNTS[id.slice(id.indexOf('-') + 1) as keyof typeof AMOUNTS];
 
 /** Paid on Direct.Fund, confirmed here by the financer, fiat-received delivered, authorised by the brain. */
-async function confirmedPurchase(ref: string, batchRef: string): Promise<string[]> {
-  const ids = await brainOrders(ref);
-  dfBatch(batchRef, [ref]);
+async function confirmedPurchase(ref: string, batchRef: string, currency = 'EUR'): Promise<string[]> {
+  const ids = await brainOrders(ref, undefined, currency);
+  dfBatch(batchRef, [ref], me.hex, currency);
   const c = await call(me, 'POST', '/batches/confirm', { batchRefs: [batchRef] });
   expect(c.body.results).toEqual([{ batchRef, ok: true, alreadyConfirmed: false, transactionRefs: [ref] }]);
   const delivered = await deliverToBrain();
@@ -501,6 +507,114 @@ describe('a financer sends their purchases\' LANA from their own wallet', () => 
     mine(txid);
     expect((await restarted.round()).confirmed).toEqual([txid]);
     for (const id of ids) expect(legRow(id)).toMatchObject({ status: 'sent', tx_hash: txid });
+  });
+});
+
+// ─── one wallet per currency ───────────────────────────────────────────────
+
+describe('one Lana.Discount wallet per currency (owner, 9 Oct 2026): EUR and GBP purchases, each from its own wallet, the whole way', () => {
+  it('confirm both → /me lists both wallets → each currency read and sent from its wallet; a GBP send signed from the EUR wallet is refused, nothing broadcast; both in a block → every leg sent, both batches settled', async () => {
+    // The financer chose a GBP wallet beside the EUR one on Direct.Fund; both registered to them, both funded.
+    const gbpWallet = throwawayWallet(true);
+    df.wallets.set(me.hex, { EUR: { walletId: wallet.address, setAt: '2026-10-08 10:00:00' }, GBP: { walletId: gbpWallet.address, setAt: '2026-10-09 08:00:00' } });
+    registrar.owner = w => (w === wallet.address || w === gbpWallet.address ? me.hex : null);
+    fund(gbpWallet.address, [300n * LANA]);
+    const eurIds = await confirmedPurchase('TE1', 'BE1');
+    const gbpIds = await confirmedPurchase('TG1', 'BG1', 'GBP');
+
+    const who = await call(me, 'GET', '/me');
+    expect(who.body.wallets).toEqual([
+      { currency: 'EUR', walletId: wallet.address, walletCheck: { ok: true, walletType: 'Lana.Discount', frozen: false } },
+      { currency: 'GBP', walletId: gbpWallet.address, walletCheck: { ok: true, walletType: 'Lana.Discount', frozen: false } },
+    ]);
+
+    // Without a currency there is no one answer; with one, its purchases and its wallet.
+    expect(await call(me, 'GET', '/sendable')).toMatchObject({ status: 400, body: { code: 'CURRENCY_REQUIRED', currencies: ['EUR', 'GBP'] } });
+    expect(await call(me, 'GET', '/sendable?currency=EURO')).toMatchObject({ status: 400, body: { code: 'BAD_CURRENCY' } });
+    const sg = await call(me, 'GET', '/sendable?currency=GBP');
+    expect(sg.body).toMatchObject({ currency: 'GBP', wallet: gbpWallet.address, legCount: 4, balance: { confirmed: (300n * LANA).toString(), unconfirmed: '0' } });
+    expect(sg.body.purchases.map((p: any) => p.transactionRef)).toEqual(['TG1']);
+    const se = await call(me, 'GET', '/sendable?currency=EUR');
+    expect(se.body).toMatchObject({ currency: 'EUR', wallet: wallet.address, legCount: 4, balance: { confirmed: (350n * LANA).toString(), unconfirmed: '0' } });
+
+    // One send, one currency.
+    expect(await call(me, 'POST', '/sends/prepare', { orderIds: [...eurIds, ...gbpIds] })).toMatchObject({ status: 409, body: { code: 'MIXED_CURRENCY', currencies: ['EUR', 'GBP'] } });
+
+    // The GBP purchase's legs, planned on the EUR wallet's coins and signed in the browser with the EUR key.
+    const pe = (await call(me, 'POST', '/sends/prepare', { orderIds: eurIds })).body as PrepareAnswer;
+    const pg = (await call(me, 'POST', '/sends/prepare', { orderIds: gbpIds })).body as PrepareAnswer;
+    expect([pe.currency, pe.wallet, pg.currency, pg.wallet]).toEqual(['EUR', wallet.address, 'GBP', gbpWallet.address]);
+    const fromEur = await browserSigns({ ...pe, allocations: pg.allocations, legs: pg.legs, payingLanoshis: pg.payingLanoshis }, Date.now(), wifOf(wallet));
+    const refused = await call(me, 'POST', '/sends', { orderIds: gbpIds, rawTx: fromEur });
+    expect(refused).toMatchObject({ status: 409, body: { code: 'COIN_UNAVAILABLE' } });
+    expect(chain.raws.has(txidOfRaw(fromEur))).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) c FROM lana_sends').get()).toEqual({ c: 0 });
+    for (const id of gbpIds) expect(legRow(id)).toMatchObject({ status: 'pending', send_txid: null });
+    // The GBP wallet's key does not open the EUR wallet's send either: the browser refuses to sign it.
+    await expect(browserSigns(pe, Date.now(), wifOf(gbpWallet))).rejects.toThrow(/not signed/);
+
+    // Each from its own wallet, with its own key — both on their way at once.
+    const gbpTx = await browserSigns(pg, Date.now(), wifOf(gbpWallet));
+    const eurTx = await browserSigns(pe, Date.now(), wifOf(wallet));
+    const g = await call(me, 'POST', '/sends', { orderIds: gbpIds, rawTx: gbpTx });
+    const e = await call(me, 'POST', '/sends', { orderIds: eurIds, rawTx: eurTx });
+    expect(g.body.send).toMatchObject({ txid: txidOfRaw(gbpTx), state: 'mempool', wallet: gbpWallet.address, transactionRefs: ['TG1'] });
+    expect(e.body.send).toMatchObject({ txid: txidOfRaw(eurTx), state: 'mempool', wallet: wallet.address, transactionRefs: ['TE1'] });
+    // The GBP send spends only the GBP wallet's coins, and its change goes back there.
+    const gbpCoins = new Set(pg.coins.map(c => `${c.txid}:${c.vout}`));
+    expect(decodeTx(gbpTx).inputs.every(i => gbpCoins.has(`${i.prevTxid}:${i.vout}`))).toBe(true);
+    expect(decodeTx(gbpTx).outputs.at(-1)!.scriptPubKeyHex).toBe(scriptOfAddress(gbpWallet.address));
+    expect((await call(me, 'GET', '/sendable?currency=GBP')).body.inFlight.map((x: any) => x.txid)).toEqual([txidOfRaw(gbpTx)]);
+    expect((await call(me, 'GET', '/sendable?currency=EUR')).body.inFlight.map((x: any) => x.txid)).toEqual([txidOfRaw(eurTx)]);
+
+    mine(txidOfRaw(gbpTx));
+    mine(txidOfRaw(eurTx));
+    expect((await sends.round()).confirmed.sort()).toEqual([txidOfRaw(gbpTx), txidOfRaw(eurTx)].sort());
+    for (const id of gbpIds) expect(legRow(id)).toMatchObject({ status: 'sent', tx_hash: txidOfRaw(gbpTx) });
+    for (const id of eurIds) expect(legRow(id)).toMatchObject({ status: 'sent', tx_hash: txidOfRaw(eurTx) });
+    expect(db.prepare("SELECT batch_ref, status, lana_tx_hash FROM incoming_batches WHERE batch_ref IN ('BE1', 'BG1') ORDER BY batch_ref").all()).toEqual([
+      { batch_ref: 'BE1', status: 'lana_sent', lana_tx_hash: txidOfRaw(eurTx) },
+      { batch_ref: 'BG1', status: 'lana_sent', lana_tx_hash: txidOfRaw(gbpTx) },
+    ]);
+    expect(outbox('lana-sent').map(r => JSON.parse(r.body_json)).sort((a, b) => a.transaction_refs[0].localeCompare(b.transaction_refs[0]))).toEqual([
+      { transaction_refs: ['TE1'], tx_hash: txidOfRaw(eurTx), order_ids: eurIds },
+      { transaction_refs: ['TG1'], tx_hash: txidOfRaw(gbpTx), order_ids: gbpIds },
+    ]);
+    // Of every transaction ever broadcast, exactly one pays the GBP purchase's wallets: the GBP wallet's.
+    const scripts = new Set(gbpIds.map(id => scriptOfAddress(legRow(id).to_wallet)));
+    expect(distinctBroadcasts().filter(r => decodeTx(r).outputs.some(o => scripts.has(o.scriptPubKeyHex)))).toEqual([gbpTx]);
+  });
+
+  it('a GBP purchase with no GBP wallet chosen is listed with NO_WALLET and refused NO_WALLET — never sent from the EUR wallet', async () => {
+    df.wallets.set(me.hex, { EUR: { walletId: wallet.address, setAt: null } });
+    const gbpIds = await confirmedPurchase('TG2', 'BG2', 'GBP');
+    expect((await call(me, 'GET', '/me')).body.wallets).toEqual([
+      { currency: 'EUR', walletId: wallet.address, walletCheck: { ok: true, walletType: 'Lana.Discount', frozen: false } },
+      { currency: 'GBP', walletId: null, walletCheck: { ok: false, reason: 'NO_WALLET' } },
+    ]);
+    // A page from before wallets per currency asks without one: the only currency to send is GBP, and it has no wallet.
+    expect((await call(me, 'GET', '/sendable')).body).toMatchObject({ currency: 'GBP', wallet: null, walletProblem: 'NO_WALLET', legCount: 4 });
+    // Its one wallet says so too — not the EUR wallet, whose key would only be refused.
+    expect((await call(me, 'GET', '/me')).body).toMatchObject({ lanaDiscountWallet: null, walletCheck: { ok: false, reason: 'NO_WALLET' } });
+    expect(await call(me, 'POST', '/sends/prepare', { orderIds: gbpIds })).toMatchObject({ status: 409, body: { code: 'NO_WALLET', currency: 'GBP' } });
+    for (const id of gbpIds) expect(legRow(id)).toMatchObject({ status: 'pending', send_txid: null });
+  });
+
+  it("a page from before wallets per currency: /me's one wallet is the one its /sendable and prepare send from — GBP, the only currency to send, not EUR, the first chosen", async () => {
+    const gbpWallet = throwawayWallet(true);
+    df.wallets.set(me.hex, { EUR: { walletId: wallet.address, setAt: '2026-10-08 10:00:00' }, GBP: { walletId: gbpWallet.address, setAt: '2026-10-09 08:00:00' } });
+    registrar.owner = w => (w === wallet.address || w === gbpWallet.address ? me.hex : null);
+    fund(gbpWallet.address, [300n * LANA]);
+    const gbpIds = await confirmedPurchase('TG3', 'BG3', 'GBP');
+
+    // What the old page draws: the card from /me, the balance and the legs from /sendable, the plan from prepare.
+    const who = (await call(me, 'GET', '/me')).body;
+    expect([who.lanaDiscountWallet, who.walletCheck]).toEqual([gbpWallet.address, { ok: true, walletType: 'Lana.Discount', frozen: false }]);
+    expect((await call(me, 'GET', '/sendable')).body).toMatchObject({ currency: 'GBP', wallet: gbpWallet.address, legCount: 4 });
+    expect((await call(me, 'POST', '/sends/prepare', { orderIds: gbpIds })).body).toMatchObject({ currency: 'GBP', wallet: gbpWallet.address });
+
+    // The new page lists both, as before.
+    expect(who.wallets.map((w: any) => [w.currency, w.walletId])).toEqual([['EUR', wallet.address], ['GBP', gbpWallet.address]]);
   });
 });
 

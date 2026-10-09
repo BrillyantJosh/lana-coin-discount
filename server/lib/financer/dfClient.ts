@@ -15,7 +15,7 @@
  * Peer calls, authenticated with this server's own key (lib/fundPeer.ts), to
  * four read-only routes DF admits for its peer:
  *   GET /api/admin/batch-by-ref/:batchRef
- *   GET /api/admin/financers/:hexId
+ *   GET /api/admin/financers/:hexId                        (9 Oct 2026: + wallets, one per currency)
  *   GET /api/admin/financers/:hexId/lana-discount-batches
  *   GET /api/admin/financers/:hexId/unpaid-parts?refs=…   (9 Oct 2026: only words a page, decides nothing)
  */
@@ -91,8 +91,22 @@ export interface DfBatchByRef {
 export interface DfFinancer {
   hexId: string;
   isInvestor: boolean;
+  /** investors.lana_discount_wallet — the one wallet of a Direct.Fund before wallets per currency. */
   lanaDiscountWallet: string | null;
   lanaDiscountWalletSetAt: string | null;
+  /**
+   * The Lana.Discount wallet chosen for each currency (owner, 9 Oct 2026: one per currency — the LANA of a purchase go
+   * from the wallet of its currency), keyed by the upper-case code: only the currencies that have one. Empty from a
+   * Direct.Fund before them (`perCurrency` false): walletFor answers lanaDiscountWallet for every currency then.
+   */
+  wallets: Record<string, string>;
+  /** Direct.Fund sent its wallets per currency (the field was there). */
+  perCurrency: boolean;
+  /**
+   * The wallet a purchase in this currency is sent from, or null: none chosen for it. A Direct.Fund before wallets per
+   * currency: its one wallet, for every currency (null too, when the currency is not known).
+   */
+  walletFor(currency: string | null | undefined): string | null;
 }
 
 export interface DfFinancerBatch {
@@ -219,19 +233,61 @@ export async function fetchBatchByRef(batchRef: string, opts: DfClientOptions = 
   return parseBatchByRef(await getJson(`/api/admin/batch-by-ref/${encodeURIComponent(batchRef)}`, opts), batchRef);
 }
 
-/** Is this hex a financer on DF, and which Lana.Discount wallet did they choose. Throws DfError. */
-export async function fetchFinancer(hexId: string, opts: DfClientOptions = {}): Promise<DfFinancer> {
-  const h = hex(hexId);
-  if (!HEX_RE.test(h)) throw new DfError('DF_NOT_FOUND', 'Not a hex id');
-  const d = await getJson(`/api/admin/financers/${h}`, opts);
+const CURRENCY_RE = /^[A-Z]{3}$/;
+
+/** A currency as Direct.Fund and the brain write it: three letters, upper case. null: not one. */
+export function currencyCode(v: unknown): string | null {
+  const c = typeof v === 'string' ? v.trim().toUpperCase() : '';
+  return CURRENCY_RE.test(c) ? c : null;
+}
+
+/**
+ * Pure: DF's financer answer, checked. Exported for tests.
+ *
+ * `wallets` (Record<currency, {walletId, setAt}>, only the currencies that have one) is read strictly where it could
+ * send LANA from a wrong wallet, and as "none" where it can only hold a send back: ABSENT — a Direct.Fund before
+ * wallets per currency — every currency falls back to lanaDiscountWallet; present and empty ({}), no currency has a
+ * wallet (never the fallback); not an object at all, DF_BAD_RESPONSE. An entry whose key is no upper-case
+ * three-letter code, or whose walletId is empty or not text, is no wallet — as Direct.Fund's own gate counts a row
+ * without one.
+ */
+export function parseFinancer(d: any, askedHex: string): DfFinancer {
+  const h = hex(askedHex);
   if (!d || typeof d !== 'object' || hex(d.hexId) !== h) throw new DfError('DF_BAD_RESPONSE', 'Direct.Fund financer answer is for somebody else');
   if (typeof d.isInvestor !== 'boolean') throw new DfError('DF_BAD_RESPONSE', 'Direct.Fund financer answer has no isInvestor');
+  const lanaDiscountWallet = str(d.lanaDiscountWallet);
+  const perCurrency = d.wallets !== undefined;
+  if (perCurrency && (d.wallets === null || typeof d.wallets !== 'object' || Array.isArray(d.wallets))) {
+    throw new DfError('DF_BAD_RESPONSE', 'Direct.Fund financer answer has wallets that are not a list by currency');
+  }
+  const wallets: Record<string, string> = {};
+  if (perCurrency) {
+    for (const [key, v] of Object.entries(d.wallets as Record<string, unknown>)) {
+      if (!CURRENCY_RE.test(key)) continue;
+      const walletId = str(typeof v === 'string' ? v : (v as { walletId?: unknown } | null)?.walletId);
+      if (walletId) wallets[key] = walletId;
+    }
+  }
   return {
     hexId: h,
     isInvestor: d.isInvestor,
-    lanaDiscountWallet: str(d.lanaDiscountWallet),
+    lanaDiscountWallet,
     lanaDiscountWalletSetAt: str(d.lanaDiscountWalletSetAt),
+    wallets,
+    perCurrency,
+    walletFor(currency) {
+      if (!perCurrency) return lanaDiscountWallet;
+      const c = currencyCode(currency);
+      return c ? wallets[c] ?? null : null;
+    },
   };
+}
+
+/** Is this hex a financer on DF, and which Lana.Discount wallet did they choose for each currency. Throws DfError. */
+export async function fetchFinancer(hexId: string, opts: DfClientOptions = {}): Promise<DfFinancer> {
+  const h = hex(hexId);
+  if (!HEX_RE.test(h)) throw new DfError('DF_NOT_FOUND', 'Not a hex id');
+  return parseFinancer(await getJson(`/api/admin/financers/${h}`, opts), h);
 }
 
 /** The financer's lana_discount batches on DF, newest first (DF caps at 500). Throws DfError. */

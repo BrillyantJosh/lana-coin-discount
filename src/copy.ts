@@ -1153,12 +1153,26 @@ export const FINANCER = {
     other: 'Your signature could not be verified. Sign out, sign in again and try once more.',
   },
 
-  // ── the wallet ──
+  // ── the wallet — one per currency (owner, 9 Oct 2026) ──
+  walletsPerCurrency:
+    'One Lana.Discount wallet per currency: the LANA of a purchase are sent from your wallet of its currency (a ' +
+    'purchase in pounds from your GBP wallet, one in euros from your EUR wallet). You choose them on Direct.Fund.',
   walletTitle: 'Your Lana.Discount wallet',
+  walletTitleCurrency: 'Your Lana.Discount wallet ({currency})',
   walletNone: 'You have not chosen your Lana.Discount wallet on Direct.Fund yet.',
+  walletNoneCurrency:
+    'You have not chosen your Lana.Discount wallet for {currency} on Direct.Fund yet. Purchases in {currency} cannot be ' +
+    'sent until you do.',
   walletNoneHint:
     'Register an empty wallet with the LANA Registrar as type Lana.Discount (the type cannot be changed later), ' +
-    'then choose it on your Direct.Fund dashboard. Until then nothing can be sent from here.',
+    'then choose it on your Direct.Fund dashboard — one for each currency of your budgets. Until then nothing can be ' +
+    'sent from here.',
+  walletNoneHintCurrency:
+    'Register an empty wallet with the LANA Registrar as type Lana.Discount (the type cannot be changed later), ' +
+    'then choose it for {currency} on your Direct.Fund dashboard.',
+  unknownCurrency:
+    'Purchases whose currency is not known ({count}): {refs}. They cannot be sent from any wallet; Lana.Discount’s ' +
+    'administrator looks at them.',
   walletChoose: 'Choose it on Direct.Fund',
   walletOk: 'The Registrar has it as yours: registered as Lana.Discount, not frozen.',
   walletReasons: {
@@ -1265,6 +1279,7 @@ export const FINANCER = {
 
   // ── purchases to send ──
   sendTitle: 'Purchases to send',
+  sendTitleCurrency: 'Purchases to send ({currency})',
   sendLead:
     'Everything a confirmed purchase pays in LANA — the purchase itself, the caretaker, the commissions, the customer’s ' +
     'cashback and your own budget’s share — goes from your Lana.Discount wallet. A purchase is always sent whole.',
@@ -1308,6 +1323,7 @@ export const FINANCER = {
   inFlightBlock: 'A send from your wallet is on its way. The next one can be prepared once it is confirmed in a block.',
   walletBlock: 'Sending waits for your wallet (see above).',
   pendingBlock: 'The last signed send has no answer yet: send the same transaction again below before preparing another.',
+  otherSendOpen: 'One send at a time: first finish the {currency} send on this page.',
   prepare: 'Prepare the send',
   preparing: 'Reading your wallet…',
 
@@ -1388,7 +1404,15 @@ export const FINANCER = {
     NOT_SENDABLE: 'Some of these purchases cannot be sent now (not approved yet, cancelled, already sent or on their way). Refresh and choose again.',
     PARTIAL_PURCHASE: 'A purchase is sent whole. Refresh and choose again.',
     DF_UNAVAILABLE: 'Direct.Fund could not be asked right now. Nothing was changed; try again shortly.',
-    NO_WALLET: 'You have not chosen your Lana.Discount wallet on Direct.Fund yet.',
+    NO_WALLET: 'You have not chosen your Lana.Discount wallet for {currency} on Direct.Fund yet.',
+    MIXED_CURRENCY:
+      'The purchases chosen are in more than one currency. Each currency is sent from its own wallet, in a send of its ' +
+      'own: choose the purchases of one currency.',
+    CURRENCY_UNKNOWN:
+      'The currency of a purchase you chose is not known, so there is no wallet to send it from. Lana.Discount’s ' +
+      'administrator looks at it; untick it and send the others.',
+    CURRENCY_REQUIRED: 'Your purchases are in more than one currency. Refresh the page: each currency has its own part.',
+    BAD_CURRENCY: 'That is not a currency. Refresh the page.',
     WALLET_REFUSED: 'The Registrar does not allow sending from your wallet now.',
     SEND_IN_FLIGHT: 'A send from your wallet is on its way. The next one can be prepared once it is confirmed in a block.',
     PAYS_OWN_WALLET: 'A recipient is your Lana.Discount wallet itself. On Direct.Fund your budget needs another wallet than the one you send from.',
@@ -1469,11 +1493,25 @@ export const FINANCER_SL: FinancerText = {
     other: 'Vašega podpisa ni bilo mogoče preveriti. Odjavite se, znova se prijavite in poskusite še enkrat.',
   },
 
+  walletsPerCurrency:
+    'Za vsako valuto ena Lana.Discount denarnica: LANE nakupa se pošljejo iz vaše denarnice njegove valute (nakup v ' +
+    'funtih iz denarnice za GBP, nakup v evrih iz denarnice za EUR). Izberete jih na Direct.Fund.',
   walletTitle: 'Vaša Lana.Discount denarnica',
+  walletTitleCurrency: 'Vaša Lana.Discount denarnica ({currency})',
   walletNone: 'Na Direct.Fund še niste izbrali svoje Lana.Discount denarnice.',
+  walletNoneCurrency:
+    'Na Direct.Fund še niste izbrali svoje Lana.Discount denarnice za {currency}. Dokler je ne izberete, nakupov v ' +
+    '{currency} ni mogoče poslati.',
   walletNoneHint:
     'Prazno denarnico registrirajte pri Registrarju LANA kot vrsto Lana.Discount (vrste pozneje ni mogoče spremeniti), ' +
-    'nato jo izberite na svoji nadzorni plošči na Direct.Fund. Do takrat od tukaj ni mogoče poslati ničesar.',
+    'nato jo izberite na svoji nadzorni plošči na Direct.Fund — po eno za vsako valuto vaših proračunov. Do takrat od ' +
+    'tukaj ni mogoče poslati ničesar.',
+  walletNoneHintCurrency:
+    'Prazno denarnico registrirajte pri Registrarju LANA kot vrsto Lana.Discount (vrste pozneje ni mogoče spremeniti), ' +
+    'nato jo na svoji nadzorni plošči na Direct.Fund izberite za {currency}.',
+  unknownCurrency:
+    'Nakupi, katerih valuta ni znana ({count}): {refs}. Ni jih mogoče poslati iz nobene denarnice; pogleda jih ' +
+    'administrator Lana.Discount.',
   walletChoose: 'Izberite jo na Direct.Fund',
   walletOk: 'Registrar jo vodi kot vašo: registrirana kot Lana.Discount, ni zamrznjena.',
   walletReasons: {
@@ -1574,6 +1612,7 @@ export const FINANCER_SL: FinancerText = {
   confirmRefused: 'Ni potrjen — {ref}: {why}',
 
   sendTitle: 'Nakupi za pošiljanje',
+  sendTitleCurrency: 'Nakupi za pošiljanje ({currency})',
   sendLead:
     'Vse, kar potrjen nakup plača v LANAH — sam nakup, skrbnika, provizije, vračilo kupcu in delež vašega proračuna — ' +
     'gre iz vaše Lana.Discount denarnice. Nakup se vedno pošlje v celoti.',
@@ -1617,6 +1656,7 @@ export const FINANCER_SL: FinancerText = {
   inFlightBlock: 'Pošiljanje iz vaše denarnice je na poti. Naslednje lahko pripravite, ko je potrjeno v bloku.',
   walletBlock: 'Pošiljanje čaka na vašo denarnico (glejte zgoraj).',
   pendingBlock: 'Zadnje podpisano pošiljanje še nima odgovora: preden pripravite novo, spodaj znova pošljite isto transakcijo.',
+  otherSendOpen: 'Pošiljanja gredo eno za drugim: najprej na tej strani dokončajte pošiljanje v valuti {currency}.',
   prepare: 'Pripravi pošiljanje',
   preparing: 'Berem vašo denarnico …',
 
@@ -1698,7 +1738,15 @@ export const FINANCER_SL: FinancerText = {
     NOT_SENDABLE: 'Nekaterih od teh nakupov zdaj ni mogoče poslati (še niso odobreni, so preklicani, že poslani ali na poti). Osvežite in izberite znova.',
     PARTIAL_PURCHASE: 'Nakup se pošlje v celoti. Osvežite in izberite znova.',
     DF_UNAVAILABLE: 'Direct.Fund trenutno ni dosegljiv. Nič ni bilo spremenjeno; poskusite znova čez nekaj trenutkov.',
-    NO_WALLET: 'Na Direct.Fund še niste izbrali svoje Lana.Discount denarnice.',
+    NO_WALLET: 'Na Direct.Fund še niste izbrali svoje Lana.Discount denarnice za {currency}.',
+    MIXED_CURRENCY:
+      'Izbrani nakupi so v več valutah. Vsaka valuta gre iz svoje denarnice, v svojem pošiljanju: izberite nakupe ene ' +
+      'valute.',
+    CURRENCY_UNKNOWN:
+      'Valuta enega od izbranih nakupov ni znana, zato ni denarnice, iz katere bi ga poslali. Pogleda ga administrator ' +
+      'Lana.Discount; odznačite ga in pošljite druge.',
+    CURRENCY_REQUIRED: 'Vaši nakupi so v več valutah. Osvežite stran: vsaka valuta ima svoj del.',
+    BAD_CURRENCY: 'To ni valuta. Osvežite stran.',
     WALLET_REFUSED: 'Registrar trenutno ne dovoli pošiljanja iz vaše denarnice.',
     SEND_IN_FLIGHT: 'Pošiljanje iz vaše denarnice je na poti. Naslednje lahko pripravite, ko je potrjeno v bloku.',
     PAYS_OWN_WALLET: 'Eden od prejemnikov je kar vaša Lana.Discount denarnica. Proračun na Direct.Fund potrebuje drugo denarnico od tiste, iz katere pošiljate.',

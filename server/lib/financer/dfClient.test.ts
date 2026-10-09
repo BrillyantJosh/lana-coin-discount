@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'http';
 import type { AddressInfo } from 'net';
-import { fetchBatchByRef, fetchFinancer, fetchFinancerBatches, fetchFinancerUnpaidParts, DfError, parseBatchByRef, MAX_UNPAID_REFS } from './dfClient';
+import { fetchBatchByRef, fetchFinancer, fetchFinancerBatches, fetchFinancerUnpaidParts, DfError, parseBatchByRef, parseFinancer, currencyCode, MAX_UNPAID_REFS } from './dfClient';
 
 const HEX = 'c'.repeat(64);
 let base = '';
@@ -91,12 +91,48 @@ describe('fetchBatchByRef', () => {
 describe('fetchFinancer / fetchFinancerBatches', () => {
   it('the financer, checked to be the one asked about', async () => {
     reply = () => ({ status: 200, body: { hexId: HEX, isInvestor: true, lanaDiscountWallet: 'LWallet', lanaDiscountWalletSetAt: '2026-10-08' } });
-    expect(await fetchFinancer(HEX, opts())).toEqual({ hexId: HEX, isInvestor: true, lanaDiscountWallet: 'LWallet', lanaDiscountWalletSetAt: '2026-10-08' });
+    expect(await fetchFinancer(HEX, opts())).toMatchObject({ hexId: HEX, isInvestor: true, lanaDiscountWallet: 'LWallet', lanaDiscountWalletSetAt: '2026-10-08', wallets: {}, perCurrency: false });
     expect(seen[0].url).toBe(`/api/admin/financers/${HEX}`);
     reply = () => ({ status: 200, body: { hexId: 'd'.repeat(64), isInvestor: true } });
     await expect(fetchFinancer(HEX, opts())).rejects.toMatchObject({ code: 'DF_BAD_RESPONSE' });
     reply = () => ({ status: 200, body: { hexId: HEX } });
     await expect(fetchFinancer(HEX, opts())).rejects.toMatchObject({ code: 'DF_BAD_RESPONSE' });
+  });
+
+  it('wallets per currency (owner, 9 Oct 2026): each currency its own, read from the peer route', async () => {
+    reply = () => ({ status: 200, body: {
+      hexId: HEX, isInvestor: true, lanaDiscountWallet: 'LOld', lanaDiscountWalletSetAt: '2026-10-08',
+      wallets: { EUR: { walletId: 'LEur', setAt: '2026-10-08 10:00:00' }, GBP: { walletId: 'LGbp', setAt: '2026-10-09 08:00:00' } },
+    } });
+    const f = await fetchFinancer(HEX, opts());
+    expect(f).toMatchObject({ wallets: { EUR: 'LEur', GBP: 'LGbp' }, perCurrency: true, lanaDiscountWallet: 'LOld' });
+    expect([f.walletFor('EUR'), f.walletFor('GBP'), f.walletFor(' gbp '), f.walletFor('USD'), f.walletFor(null), f.walletFor('EURO')])
+      .toEqual(['LEur', 'LGbp', 'LGbp', null, null, null]);
+  });
+
+  it('a Direct.Fund before wallets per currency (the field ABSENT): every currency falls back to its one wallet; an EMPTY list ({}) means none, never the fallback', () => {
+    const old = parseFinancer({ hexId: HEX, isInvestor: true, lanaDiscountWallet: 'LOld', lanaDiscountWalletSetAt: null }, HEX);
+    expect(old.perCurrency).toBe(false);
+    expect([old.walletFor('EUR'), old.walletFor('GBP'), old.walletFor(null)]).toEqual(['LOld', 'LOld', 'LOld']);
+    const none = parseFinancer({ hexId: HEX, isInvestor: true, lanaDiscountWallet: 'LOld', lanaDiscountWalletSetAt: null, wallets: {} }, HEX);
+    expect(none.perCurrency).toBe(true);
+    expect([none.walletFor('EUR'), none.walletFor('GBP'), none.walletFor(null)]).toEqual([null, null, null]);
+    // Neither wallet: nothing for any currency, either way.
+    const nothing = parseFinancer({ hexId: HEX, isInvestor: true, lanaDiscountWallet: null }, HEX);
+    expect(nothing.walletFor('EUR')).toBeNull();
+  });
+
+  it('an entry that is no currency or names no wallet is no wallet (as Direct.Fund counts it); wallets that are not a list by currency fail the answer', () => {
+    const f = parseFinancer({ hexId: HEX, isInvestor: true, lanaDiscountWallet: 'LOld', wallets: {
+      EUR: { walletId: 'LEur' }, gbp: { walletId: 'LLower' }, USD: { walletId: '' }, CHF: { walletId: 7 }, JPY: null, EURO: { walletId: 'LLong' }, SEK: 'LBare',
+    } }, HEX);
+    expect(f.wallets).toEqual({ EUR: 'LEur', SEK: 'LBare' });
+    expect([f.walletFor('GBP'), f.walletFor('USD'), f.walletFor('CHF'), f.walletFor('JPY')]).toEqual([null, null, null, null]);
+    for (const wallets of [null, [], 'LEur', 5]) {
+      expect(() => parseFinancer({ hexId: HEX, isInvestor: true, lanaDiscountWallet: 'LOld', wallets }, HEX), JSON.stringify(wallets)).toThrow(DfError);
+    }
+    expect(currencyCode(' eur ')).toBe('EUR');
+    expect([currencyCode('EURO'), currencyCode(''), currencyCode(null), currencyCode(978)]).toEqual([null, null, null, null]);
   });
 
   it('the batches, with their purchases deduplicated and blanks dropped', async () => {

@@ -17,12 +17,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import Financer, { CONFIRM_CHUNK } from './Financer';
+import Financer, { CONFIRM_CHUNK, sectionsOf } from './Financer';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { FINANCER, FINANCER_SL } from '@/copy';
 import { fill } from '@/components/financer/financerText';
 import { FinancerBatches, batchStateOf } from '@/components/financer/FinancerBatches';
+import { FinancerWalletCard } from '@/components/financer/FinancerWalletCard';
 import type { FinancerBatch, WaitingPart } from '@/lib/financer/financerApi';
 import { POLL_MS } from '@/lib/financer/payoutView';
 import { bytesToHex } from '../../server/shared/lana-tx/bytes.ts';
@@ -92,7 +93,7 @@ describe('the key never leaves the browser', () => {
     routes = {
       'GET /api/financer/me': () => ok(meOf(wallet.address)),
       'GET /api/financer/batches': () => ok({ batches: [] }),
-      'GET /api/financer/sendable': () => ok(sendableOf(wallet.address, purchases, 103n * LANA)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf(wallet.address, purchases, 103n * LANA)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/sends/prepare': (b) => {
         expect(b).toEqual({ orderIds: ['leg-1', 'leg-2'] });
@@ -145,7 +146,7 @@ describe('the key never leaves the browser', () => {
     routes = {
       'GET /api/financer/me': () => ok(meOf(wallet.address)),
       'GET /api/financer/batches': () => ok({ batches: [] }),
-      'GET /api/financer/sendable': () => ok(sendableOf(wallet.address, purchases, 103n * LANA)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf(wallet.address, purchases, 103n * LANA)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/sends/prepare': () => ok(prepareOf(wallet, purchases)),
       'POST /api/financer/sends': (b) => {
@@ -176,6 +177,199 @@ describe('the key never leaves the browser', () => {
   });
 });
 
+describe('one Lana.Discount wallet per currency (owner, 9 Oct 2026)', () => {
+  const okCheck = { ok: true, walletType: 'Lana.Discount', frozen: false };
+
+  it('one part per currency: each wallet card with the Registrar\'s word and its balance, each list read for its currency, and a GBP purchase signed with the GBP wallet\'s key — the EUR key named as another wallet\'s', async () => {
+    const eur = throwawayWallet(true);
+    const gbp = throwawayWallet(true);
+    const [buyerE, buyerG] = [throwawayAddress(), throwawayAddress()];
+    const eurList = [purchaseOf('TX-E', [{ id: 'e-1', type: 'customer_cashback', to: buyerE, lanoshis: 1_004_492_188n }])];
+    const gbpList = [purchaseOf('TX-G', [{ id: 'g-1', type: 'customer_cashback', to: buyerG, lanoshis: 3_446_289_063n }])];
+    let announced: any = null;
+    let prepared: any = null;
+    routes = {
+      'GET /api/financer/me': () => ok(meOf(eur.address, { wallets: [
+        { currency: 'EUR', walletId: eur.address, walletCheck: okCheck },
+        { currency: 'GBP', walletId: gbp.address, walletCheck: okCheck },
+      ] })),
+      'GET /api/financer/batches': () => ok({ batches: [] }),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf(eur.address, eurList, 103n * LANA)),
+      'GET /api/financer/sendable?currency=GBP': () => ok(sendableOf(gbp.address, gbpList, 7n * LANA, { currency: 'GBP' })),
+      'GET /api/financer/sends': () => ok({ sends: [] }),
+      'POST /api/financer/sends/prepare': (b) => {
+        prepared = b;
+        return ok({ ...prepareOf(gbp, gbpList, [100n * LANA]), currency: 'GBP' });
+      },
+      'POST /api/financer/sends': (b) => {
+        announced = b;
+        return ok({ send: sendViewOf(txidOfRaw(b.rawTx), { wallet: gbp.address }), already: false });
+      },
+    };
+    draw();
+
+    const part = await screen.findByTestId('financer-part-GBP');
+    const cards = screen.getAllByTestId('financer-wallet');
+    expect(cards.map((c) => c.getAttribute('data-currency'))).toEqual(['EUR', 'GBP']);
+    expect(within(cards[0]).getByText(fill(t.walletTitleCurrency, { currency: 'EUR' }))).toBeInTheDocument();
+    expect(within(cards[1]).getByText(fill(t.walletTitleCurrency, { currency: 'GBP' }))).toBeInTheDocument();
+    expect(within(cards[1]).getByTestId('financer-wallet-id').textContent).toBe(gbp.address);
+    expect(within(cards[1]).getByText(`✓ ${t.walletOk}`)).toBeInTheDocument();
+    await waitFor(() => expect(within(cards[1]).getByTestId('financer-balance').textContent).toContain('7'));
+    expect(within(cards[0]).getByTestId('financer-balance').textContent).toContain('103');
+    // Each currency's own list.
+    expect(within(part).getByText(fill(t.sendTitleCurrency, { currency: 'GBP' }))).toBeInTheDocument();
+    expect(within(part).getByRole('checkbox', { name: /TX-G/ })).toBeInTheDocument();
+    expect(within(part).queryByRole('checkbox', { name: /TX-E/ })).toBeNull();
+    const eurPart = screen.getByTestId('financer-part-EUR');
+    expect(within(eurPart).getByRole('checkbox', { name: /TX-E/ })).toBeInTheDocument();
+    expect(calls.filter((c) => c.url.startsWith('/api/financer/sendable')).map((c) => c.url).sort()).toEqual([
+      '/api/financer/sendable?currency=EUR', '/api/financer/sendable?currency=GBP',
+    ]);
+
+    // Prepare in GBP: only its purchases; the plan opens in its part, and the EUR part waits for it.
+    fireEvent.click(within(part).getByRole('button', { name: t.prepare }));
+    fireEvent.click(await within(part).findByRole('button', { name: t.continue }));
+    expect(prepared).toEqual({ orderIds: ['g-1'] });
+    expect(within(eurPart).queryByRole('button', { name: t.prepare })).toBeNull();
+    expect(within(eurPart).getByText(fill(t.otherSendOpen, { currency: 'GBP' }))).toBeInTheDocument();
+
+    // The EUR wallet's key does not open the GBP wallet: named, nothing signed.
+    const field = within(part).getByLabelText(t.keyLabel) as HTMLInputElement;
+    fireEvent.change(field, { target: { value: wifOf(eur.privateKey, true) } });
+    expect(within(part).getByTestId('financer-key-check').textContent).toContain(eur.address);
+    expect(within(part).getByRole('button', { name: t.sign })).toBeDisabled();
+    // The GBP wallet's key: signed with it, sent.
+    fireEvent.change(field, { target: { value: wifOf(gbp.privateKey, true) } });
+    expect(within(part).getByTestId('financer-key-check').textContent).toContain(t.keyStates.opens);
+    fireEvent.click(within(part).getByRole('button', { name: t.sign }));
+    expect(await within(part).findByText(t.sentOk, {}, { timeout: 30_000 })).toBeInTheDocument();
+    expect(announced.orderIds).toEqual(['g-1']);
+    const tx = decodeTx(announced.rawTx);
+    expect(verifyTxSignedBy(announced.rawTx, tx.inputs.map(() => ({ scriptPubKeyHex: scriptOfAddress(gbp.address) })), gbp.address)).toEqual([]);
+    expect(addressOfScript(tx.outputs[0].scriptPubKeyHex)).toBe(buyerG);
+    expect(within(eurPart).queryByTestId('financer-send-notice')).toBeNull();
+  });
+
+  it('a currency without a wallet says so in its own card and its purchases wait; a refusal names the currency (NO_WALLET), and purchases of no known currency are named', async () => {
+    const eur = throwawayWallet(true);
+    const gbpWallet = throwawayAddress();
+    const gbpList = [purchaseOf('TX-G', [{ id: 'g-1', type: 'customer_cashback', to: throwawayAddress(), lanoshis: 3_446_289_063n }])];
+    let gbpChosen = false;
+    routes = {
+      'GET /api/financer/me': () => ok(meOf(eur.address, {
+        wallets: [
+          { currency: 'EUR', walletId: eur.address, walletCheck: okCheck },
+          { currency: 'GBP', walletId: gbpChosen ? gbpWallet : null, walletCheck: gbpChosen ? okCheck : { ok: false, reason: 'NO_WALLET' } },
+          { currency: 'USD', walletId: null, walletCheck: { ok: false, reason: 'NO_WALLET' } },
+        ],
+        unknownCurrencyRefs: ['TX-9'],
+      })),
+      'GET /api/financer/batches': () => ok({ batches: [] }),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf(eur.address, [], 103n * LANA)),
+      'GET /api/financer/sendable?currency=GBP': () => ok(sendableOf(gbpChosen ? gbpWallet : null, gbpList, 50n * LANA, { currency: 'GBP' })),
+      'GET /api/financer/sendable?currency=USD': () => ok(sendableOf(null, [], 0n, { currency: 'USD' })),
+      'GET /api/financer/sends': () => ok({ sends: [] }),
+      // Direct.Fund lost the GBP wallet between the page's read and the prepare.
+      'POST /api/financer/sends/prepare': () => ({ status: 409, body: { code: 'NO_WALLET', currency: 'GBP', error: 'x' } }),
+    };
+    draw();
+    const gbpCard = (await screen.findAllByTestId('financer-wallet')).find((c) => c.getAttribute('data-currency') === 'GBP') as HTMLElement;
+    expect(within(gbpCard).getByText(fill(t.walletNoneCurrency, { currency: 'GBP' }))).toBeInTheDocument();
+    expect(within(gbpCard).getByRole('link', { name: t.walletChoose })).toHaveAttribute('href', 'https://direct.lana.fund');
+    const part = screen.getByTestId('financer-part-GBP');
+    expect(await within(part).findByRole('button', { name: t.prepare })).toBeDisabled();
+    expect(within(part).getByText(t.walletBlock)).toBeInTheDocument();
+    expect(screen.getByTestId('financer-part-USD')).toBeInTheDocument();
+    expect(screen.getByTestId('financer-unknown-currency').textContent).toBe(fill(t.unknownCurrency, { count: 1, refs: 'TX-9' }));
+    expect(screen.getByText(t.walletsPerCurrency)).toBeInTheDocument();
+
+    // Chosen on Direct.Fund, »Refresh«: the part may prepare; the server's NO_WALLET names the currency, no placeholder left.
+    gbpChosen = true;
+    fireEvent.click(screen.getByRole('button', { name: t.refresh }));
+    const prepare = await within(screen.getByTestId('financer-part-GBP')).findByRole('button', { name: t.prepare });
+    await waitFor(() => expect(prepare).toBeEnabled());
+    fireEvent.click(prepare);
+    const notice = await within(screen.getByTestId('financer-part-GBP')).findByTestId('financer-send-notice');
+    expect(notice.textContent).toBe(fill(t.sendCodes.NO_WALLET, { currency: 'GBP' }));
+    expect(notice.textContent).not.toMatch(/\{\w+\}/);
+    expect(within(screen.getByTestId('financer-part-EUR')).queryByTestId('financer-send-notice')).toBeNull();
+  });
+
+  it('a server before wallets per currency (no list): one part as before — the single wallet, /sendable asked without a currency', async () => {
+    const wallet = throwawayWallet(true);
+    routes = {
+      'GET /api/financer/me': () => ok(meOf(wallet.address, { wallets: undefined, unknownCurrencyRefs: undefined })),
+      'GET /api/financer/batches': () => ok({ batches: [] }),
+      'GET /api/financer/sendable': () => ok(sendableOf(wallet.address, [], 5n * LANA, { currency: undefined })),
+      'GET /api/financer/sends': () => ok({ sends: [] }),
+    };
+    draw();
+    const card = await screen.findByTestId('financer-wallet');
+    expect(within(card).getByText(t.walletTitle)).toBeInTheDocument();
+    expect(await screen.findByText(t.sendTitle)).toBeInTheDocument();
+    expect(screen.getByTestId('financer-part-one')).toBeInTheDocument();
+    expect(calls.map((c) => c.url)).toContain('/api/financer/sendable');
+    expect(sectionsOf(meOf(null, { wallets: [] }))).toEqual([{ key: '', currency: null, walletId: null, walletCheck: { ok: false, reason: 'NO_WALLET' } }]);
+  });
+
+  it('a financer with no wallet yet and nothing confirmed: the one card names no currency, so its hint speaks of none — and a currency\'s card names its own', async () => {
+    routes = {
+      'GET /api/financer/me': () => ok(meOf(null, { wallets: [] })),
+      'GET /api/financer/batches': () => ok({ batches: [] }),
+      'GET /api/financer/sendable': () => ok(sendableOf(null, [], 0n, { currency: null })),
+      'GET /api/financer/sends': () => ok({ sends: [] }),
+    };
+    draw();
+    const card = await screen.findByTestId('financer-wallet');
+    expect(card.getAttribute('data-currency')).toBeNull();
+    expect(within(card).getByText(t.walletNone)).toBeInTheDocument();
+    expect(within(card).getByText(t.walletNoneHint)).toBeInTheDocument();
+    expect(card.textContent).toContain('nothing can be sent from here');
+    expect(card.textContent).not.toMatch(/that currency/);
+
+    // The same card in Slovenian, and a currency's card in both: it names the currency, the single one names none.
+    const none = { ok: false, reason: 'NO_WALLET' } as const;
+    for (const [tt, lang] of [[FINANCER, 'en'], [FINANCER_SL, 'sl']] as const) {
+      const single = render(<FinancerWalletCard t={tt} currency={null} walletId={null} walletCheck={none} balance={undefined} />);
+      expect(single.container.textContent).not.toMatch(/that currency|tej valuti|\{\w+\}/);
+      expect(single.container.textContent).toContain(lang === 'en' ? 'Until then nothing can be sent from here.' : 'Do takrat od tukaj ni mogoče poslati ničesar.');
+      single.unmount();
+      const gbp = render(<FinancerWalletCard t={tt} currency="GBP" walletId={null} walletCheck={none} balance={undefined} />);
+      expect(within(gbp.container).getByText(fill(tt.walletNoneHintCurrency, { currency: 'GBP' }))).toBeInTheDocument();
+      expect(fill(tt.walletNoneHintCurrency, { currency: 'GBP' })).toContain('GBP');
+      expect(gbp.container.textContent).not.toMatch(/that currency|tej valuti|\{\w+\}/);
+      gbp.unmount();
+    }
+  });
+
+  it('a batch confirmed in a new currency: /me is read again, and that currency\'s part appears with its purchases', async () => {
+    const eur = throwawayWallet(true);
+    let confirmed = false;
+    const gbpList = [purchaseOf('TX-G', [{ id: 'g-1', type: 'customer_cashback', to: throwawayAddress(), lanoshis: 3_446_289_063n }])];
+    routes = {
+      'GET /api/financer/me': () => ok(meOf(eur.address, { wallets: [
+        { currency: 'EUR', walletId: eur.address, walletCheck: okCheck },
+        ...(confirmed ? [{ currency: 'GBP', walletId: null, walletCheck: { ok: false, reason: 'NO_WALLET' } }] : []),
+      ] })),
+      'GET /api/financer/batches': () => ok({ batches: [batchOf('2026002500', { currency: 'GBP' })] }),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf(eur.address, [], 103n * LANA)),
+      'GET /api/financer/sendable?currency=GBP': () => ok(sendableOf(null, gbpList, 0n, { currency: 'GBP' })),
+      'GET /api/financer/sends': () => ok({ sends: [] }),
+      'POST /api/financer/batches/confirm': () => {
+        confirmed = true;
+        return ok({ results: [{ batchRef: '2026002500', ok: true, transactionRefs: ['TX-G'] }] });
+      },
+    };
+    draw();
+    const row = await screen.findByTestId('financer-batch-2026002500');
+    expect(screen.queryByTestId('financer-part-GBP')).toBeNull();
+    fireEvent.click(within(row).getByRole('button', { name: t.confirm }));
+    const part = await screen.findByTestId('financer-part-GBP');
+    expect(await within(part).findByRole('checkbox', { name: /TX-G/ })).toBeInTheDocument();
+  });
+});
+
 describe('the choice, send after send (review M8)', () => {
   it('a purchase unticked by hand stays out of the next round; what »Choose what fits« left out is chosen again', async () => {
     // The two rounds of review M8, with a send of at most 4 payments: TX-0 is held by an earlier refused send, so the
@@ -194,7 +388,7 @@ describe('the choice, send after send (review M8)', () => {
     routes = {
       'GET /api/financer/me': () => ok(meOf(wallet.address)),
       'GET /api/financer/batches': () => ok({ batches: [] }),
-      'GET /api/financer/sendable': () => ok(sendableOf(wallet.address, left, 1_000n * LANA, { limits })),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf(wallet.address, left, 1_000n * LANA, { limits })),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/sends/prepare': (body) => {
         prepares.push(body.orderIds);
@@ -249,7 +443,7 @@ describe('confirming batches', () => {
           ],
         });
       },
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', [], 0n)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/batches/confirm': (b) => {
         confirmed = b;
@@ -284,7 +478,7 @@ describe('confirming batches', () => {
     routes = {
       'GET /api/financer/me': () => ok(meOf('L-mine')),
       'GET /api/financer/batches': () => ok({ batches: [batchOf('2026002417'), batchOf('2026002325', { status: 'open', canConfirm: false })] }),
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', [], 0n)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/batches/confirm': (b) => {
         confirmed = b;
@@ -308,7 +502,7 @@ describe('confirming many batches at once', () => {
     routes = {
       'GET /api/financer/me': () => ok(meOf('L-mine')),
       'GET /api/financer/batches': () => ok({ batches: refs.map((r) => batchOf(r)) }),
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', [], 0n)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/batches/confirm': (b) => {
         asked.push(b.batchRefs);
@@ -340,7 +534,7 @@ describe('who the page is for', () => {
     routes = {
       'GET /api/financer/me': () => ok(meOf('L-mine', { walletCheck: { ok: false, reason: 'WRONG_WALLET_TYPE', walletType: 'Wallet' } })),
       'GET /api/financer/batches': () => ok({ batches: [] }),
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', purchases, 100n * LANA)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', purchases, 100n * LANA)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
     };
     draw();
@@ -364,7 +558,7 @@ describe('the page reads the wallet again by itself while a payment waits for a 
     routes = {
       'GET /api/financer/me': () => ok(meOf('L-mine')),
       'GET /api/financer/batches': () => ok({ batches: [] }),
-      'GET /api/financer/sendable': () => {
+      'GET /api/financer/sendable?currency=EUR': () => {
         reads++;
         return ok(sendableOf('L-mine', purchases, 100n * LANA, { balance: { confirmed: String(100n * LANA), unconfirmed } }));
       },
@@ -397,7 +591,7 @@ describe('the page reads the wallet again by itself while a payment waits for a 
     routes = {
       'GET /api/financer/me': () => ok(meOf('L-mine')),
       'GET /api/financer/batches': () => ok({ batches: [] }),
-      'GET /api/financer/sendable': () => {
+      'GET /api/financer/sendable?currency=EUR': () => {
         reads++;
         return ok(sendableOf('L-mine', purchases, 100n * LANA, { balance: { confirmed: String(100n * LANA), unconfirmed } }));
       },
@@ -426,7 +620,7 @@ describe('the page reads the wallet again by itself while a payment waits for a 
     routes = {
       'GET /api/financer/me': () => ok(meOf('L-mine')),
       'GET /api/financer/batches': () => ok({ batches: [] }),
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', purchases, 100n * LANA)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', purchases, 100n * LANA)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/sends/prepare': () => ({ status: 503, body: { code: 'CHAIN_UNKNOWN', error: 'x' } }),
     };
@@ -472,7 +666,7 @@ describe('»Confirm again« on a batch already confirmed (review N7/N9)', () => 
           ],
         });
       },
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', [], 0n)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/batches/confirm': (b) => {
         confirmed = b;
@@ -531,7 +725,7 @@ describe('»Confirm again« on a batch already confirmed (review N7/N9)', () => 
             batchOf('2026002201', { canConfirm: false, canConfirmAgain: true, resendStopped: undefined }, mineConfirmed({ legs: waiting })),
           ],
         }),
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', [], 0n)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
     };
     draw();
@@ -579,7 +773,7 @@ describe('what the server answers now, said', () => {
       'GET /api/financer/me': () => ok(meOf('L-mine')),
       'GET /api/financer/batches': () =>
         ok({ batches: [batchOf('2026002293', { held: true, canConfirm: false }), batchOf('2026002417'), batchOf('2026002389')] }),
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', [], 0n)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
     };
     draw();
@@ -595,7 +789,7 @@ describe('what the server answers now, said', () => {
     routes = {
       'GET /api/financer/me': () => ok(meOf('L-mine')),
       'GET /api/financer/batches': () => ok({ batches: [batchOf('2026002417'), batchOf('2026002389')] }),
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', [], 0n)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/batches/confirm': () =>
         answer === 'not-financer'
@@ -627,7 +821,7 @@ describe('what the server answers now, said', () => {
     routes = {
       'GET /api/financer/me': () => ok(meOf(wallet.address)),
       'GET /api/financer/batches': () => ok({ batches: [] }),
-      'GET /api/financer/sendable': () => ok(sendableOf(wallet.address, purchases, 103n * LANA)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf(wallet.address, purchases, 103n * LANA)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
       'POST /api/financer/sends/prepare': () => refusal,
     };
@@ -648,7 +842,7 @@ describe('what the server answers now, said', () => {
     routes = {
       'GET /api/financer/me': () => ok(meOf('L-mine')),
       'GET /api/financer/batches': () => ok({ batches: [] }),
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', [], 0n)),
       'GET /api/financer/sends': () => ok({ sends: [sendViewOf(signed, { state: 'confirmed', blockHeight: 100, chainTxid: onChain })] }),
     };
     draw();
@@ -695,7 +889,7 @@ describe('what a confirmed batch waits on at Direct.Fund, named (owner, 9 Oct 20
             confirmedWaiting('2026002201', undefined),
           ],
         }),
-      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sendable?currency=EUR': () => ok(sendableOf('L-mine', [], 0n)),
       'GET /api/financer/sends': () => ok({ sends: [] }),
     };
     draw();

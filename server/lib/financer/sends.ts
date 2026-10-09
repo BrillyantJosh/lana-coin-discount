@@ -85,6 +85,16 @@
  * 12 Sept 2026). The treasury's wallet is shared with other services, so its
  * own rule stays: coins spent by its own sends on their way are left out.
  *
+ * ONE WALLET PER CURRENCY (owner, 9 Oct 2026). A financer chooses a Lana.Discount
+ * wallet on Direct.Fund for each currency of their budgets (EUR, GBP …), and a
+ * purchase's LANA go from the wallet of ITS currency — the currency of its legs
+ * here (purchaseCurrencySql; a purchase whose legs carry none, or not one and
+ * the same, is sent from no wallet: CURRENCY_UNKNOWN). One send carries
+ * purchases of one currency (MIXED_CURRENCY), from Direct.Fund's wallet for it
+ * (dfClient.ts walletFor; none chosen: NO_WALLET), and every check below runs
+ * against that wallet: a GBP purchase is never announced from the EUR wallet.
+ * The round keeps sending each send from its own recorded wallet.
+ *
  * WHAT IS CHECKED AT A FINANCER'S ANNOUNCE, before anything is stored:
  *   - the bytes are one transaction, its id computed here; the same id again
  *     answers with the send as it stands (a double click, a lost answer);
@@ -93,8 +103,9 @@
  *     are the allocations (a redirect between prepare and announce is caught);
  *     no purchase whose investor leg now pays ANOTHER financer (a brain
  *     redirect after the confirm: OWNER_MISMATCH — never sendable here);
- *   - the wallet, as Direct.Fund names it, again at the Registrar (registered,
- *     Lana.Discount, this financer's, not frozen — registrarWallet.ts);
+ *   - one currency for all of its purchases, and the wallet Direct.Fund names
+ *     for it, again at the Registrar (registered, Lana.Discount, this
+ *     financer's, not frozen — registrarWallet.ts);
  *   - every coin it spends is a confirmed coin of that wallet now, read from
  *     its own previous transaction fetched and re-hashed here;
  *   - checkPayoutTx (shared/lana-tx/payout.ts), the very rule the browser
@@ -121,7 +132,7 @@ import { createPayoutChain, type BroadcastOutcome, type PayoutChain, type Wallet
 import { createPaymentReader, type PaymentReader } from './chainPayment.js';
 import { electrumServersFrom } from './electrumSession.js';
 import { enqueue, sqlTime } from './brainOutbox.js';
-import { fetchFinancer, dfHttpStatus, type DfClientOptions, type DfFinancer } from './dfClient.js';
+import { currencyCode, fetchFinancer, dfHttpStatus, type DfClientOptions, type DfFinancer } from './dfClient.js';
 import { checkFinancerWallet, type FinancerWalletCheck } from './registrarWallet.js';
 import { settleBatchesWithSentLana } from '../batchSettlement.js';
 import { tryAcquireSendLock, releaseSendLock } from '../sendLock.js';
@@ -204,6 +215,8 @@ interface LegRow {
   must_spend_json: string | null;
   batch_ref: string | null;
   created_at: string | null;
+  /** The currency of the leg's PURCHASE (purchaseCurrencySql) — read with the legs a send may carry; null: not known. */
+  purchase_currency?: string | null;
 }
 
 /** One send as the pages and the admin see it. Lanoshis as decimal text. */
@@ -254,8 +267,11 @@ export interface SendablePurchase {
 }
 
 export interface SendableAnswer {
+  /** The currency these purchases are in, and whose wallet is read; null: the financer has none yet (nothing to send). */
+  currency: string | null;
+  /** The financer's wallet for that currency, as Direct.Fund names it now. */
   wallet: string | null;
-  /** Why there is no wallet to read: none chosen on Direct.Fund, or Direct.Fund could not be asked. */
+  /** Why there is no wallet to read: none chosen on Direct.Fund (for this currency), or Direct.Fund could not be asked. */
   walletProblem: 'NO_WALLET' | 'DF_UNAVAILABLE' | null;
   balance: { confirmed: string; unconfirmed: string } | null;
   purchases: SendablePurchase[];
@@ -264,7 +280,7 @@ export interface SendableAnswer {
   wallets: number;
   /** The least the wallet lacks to send ALL of them in one go (one coin, no change); 0 when the balance may cover it. */
   shortfallLanoshis: string;
-  /** This financer's sends still on their way. */
+  /** This financer's sends from that wallet still on their way. */
   inFlight: SendView[];
   /** maxLegs: the legs one prepare or announce may name (MAX_ORDER_IDS) — more is refused BAD_ORDER_IDS. */
   limits: { maxWallets: number; maxLegs: number; maxInputs: number; dustLanoshis: string; stepLanoshis: string };
@@ -277,6 +293,8 @@ export interface PreparedAllocationOut {
 }
 
 export interface PrepareAnswer {
+  /** The currency of these purchases: the send goes from the financer's wallet for it. */
+  currency: string;
   wallet: string;
   /** The server's clock, seconds UTC — the send's nTime (src/lib/financer/payoutView.ts serverNowSec). */
   nowSec: number;
@@ -366,7 +384,11 @@ export interface RoundResult {
 }
 
 export interface Sends {
-  sendable(owner: string): Promise<SendableAnswer>;
+  /**
+   * The signer's purchases of one currency that may go now, against the wallet of that currency. Without a currency:
+   * the one their purchases to send or on their way are in — in more than one, refused CURRENCY_REQUIRED (with them).
+   */
+  sendable(owner: string, currency?: unknown): Promise<SendOutcome<{ body: SendableAnswer }>>;
   prepare(owner: string, orderIds: unknown): Promise<SendOutcome<{ body: PrepareAnswer }>>;
   announce(owner: string, body: unknown): Promise<SendOutcome<{ send: SendView; already: boolean }>>;
   list(owner: string): SendView[];
@@ -593,6 +615,88 @@ export const foreignInvestorSql = (ref: string, owner: string): string => `EXIST
     WHERE x.transaction_ref = ${ref} AND x.order_type = 'investor_lana' AND x.status NOT IN ('cancelled', 'failed')
       AND LOWER(x.to_hex) != ${owner})`;
 
+/**
+ * The currency of the purchase `ref` (an SQL expression): the one its legs carry, upper case — NULL when a leg carries
+ * none, or they do not all carry the same (owner, 9 Oct 2026: a purchase's LANA go from the financer's wallet of its
+ * currency). Read with currencyCode: anything but three letters is no currency either.
+ */
+export const purchaseCurrencySql = (ref: string): string => `(SELECT CASE
+      WHEN COUNT(c.currency) = COUNT(*) AND COUNT(DISTINCT UPPER(TRIM(c.currency))) = 1 THEN MAX(UPPER(TRIM(c.currency)))
+    END FROM brain_lana_orders c WHERE c.transaction_ref = ${ref})`;
+
+/**
+ * The currencies of a financer's purchases with a leg still to send or on its way (pending — approved or not — or
+ * sending), sorted; and those purchases whose currency is not known (purchaseCurrencySql), which no wallet sends.
+ * Owned here (purchase_settlement), as sendable reads them.
+ */
+export function financerCurrencies(db: Database.Database, owner: string): { currencies: string[]; unknownRefs: string[] } {
+  const rows = db.prepare(`
+    SELECT ps.transaction_ref AS ref, ${purchaseCurrencySql('ps.transaction_ref')} AS currency FROM purchase_settlement ps
+    WHERE ps.settled_by = 'financer' AND ps.owner_hex = ?
+      AND EXISTS (SELECT 1 FROM brain_lana_orders p WHERE p.transaction_ref = ps.transaction_ref AND p.status IN ('pending', 'sending'))
+    ORDER BY ps.created_at, ps.transaction_ref
+  `).all(lc(owner)) as Array<{ ref: string; currency: string | null }>;
+  const currencies = new Set<string>();
+  const unknownRefs: string[] = [];
+  for (const r of rows) {
+    const c = currencyCode(r.currency);
+    if (c) currencies.add(c);
+    else unknownRefs.push(r.ref);
+  }
+  return { currencies: [...currencies].sort(), unknownRefs };
+}
+
+/**
+ * A purchase whose live investor leg pays somebody other than the signer — the brain moved it to another financer
+ * after this one confirmed (a reallocation's redirect, which this side never refuses: the brain contract) — is not
+ * the signer's to send: they would pay another financer's LANA from their own wallet. As confirm.ts refuses it at the
+ * confirm. One `?`: the signer.
+ */
+const FOREIGN_INVESTOR = foreignInvestorSql('blo.transaction_ref', '?');
+
+/** The purchase's currency, read with each leg (purchase_currency). */
+const PURCHASE_CURRENCY = `${purchaseCurrencySql('blo.transaction_ref')} AS purchase_currency`;
+
+/**
+ * The signer's legs that may go now: theirs, authorised, pending, in no send — oldest purchase first — each with its
+ * purchase's currency (purchase_currency).
+ */
+function sendableLegsOf(db: Database.Database, owner: string, refs?: string[]): LegRow[] {
+  const refFilter = refs ? `AND blo.transaction_ref IN (${refs.map(() => '?').join(',')})` : '';
+  return db.prepare(`
+    SELECT blo.*, ${PURCHASE_CURRENCY} FROM brain_lana_orders blo
+    JOIN purchase_settlement ps ON ps.transaction_ref = blo.transaction_ref AND ps.settled_by = 'financer' AND ps.owner_hex = ?
+    WHERE blo.status = 'pending' AND blo.brain_authorized = 1 AND blo.send_txid IS NULL
+      AND NOT ${FOREIGN_INVESTOR}
+    ${refFilter}
+    ${LEG_ORDER}
+  `).all(owner, owner, ...(refs ?? [])) as LegRow[];
+}
+
+/**
+ * The currency a request that names none is about: a page from before wallets per currency, which knows ONE wallet.
+ * It is the one currency of the owner's purchases that may go now (sendableLegsOf) or are on their way in a send of
+ * theirs. In more than one, `currencies` holds them all (GET /sendable refuses CURRENCY_REQUIRED with them) and
+ * `currency` the first. In none, the first of the currencies they have a wallet for on Direct.Fund
+ * (`dfWalletCurrencies`, asked only then) or a purchase still to send in (financerCurrencies); null when there is none.
+ * GET /sendable and /me's single wallet both answer by it, so an old page shows the very wallet it then sends from.
+ */
+export async function legacyCurrency(
+  db: Database.Database,
+  owner: string,
+  dfWalletCurrencies: () => Promise<readonly string[]>,
+): Promise<{ currency: string | null; currencies: string[] }> {
+  const flying = db.prepare(`
+    SELECT DISTINCT ${PURCHASE_CURRENCY} FROM brain_lana_orders blo
+    JOIN lana_sends s ON s.txid = blo.send_txid AND s.sender = 'financer' AND s.owner_hex = ? AND s.state IN ('announced', 'mempool')
+    WHERE blo.status = 'sending'
+  `).all(owner) as Array<{ purchase_currency: string | null }>;
+  const seen = [...new Set([...sendableLegsOf(db, owner), ...flying].map(l => currencyCode(l.purchase_currency)).filter((c): c is string => !!c))].sort();
+  if (seen.length) return { currency: seen[0], currencies: seen };
+  const theirs = new Set([...await dfWalletCurrencies(), ...financerCurrencies(db, owner).currencies]);
+  return { currency: [...theirs].sort()[0] ?? null, currencies: [] };
+}
+
 const backoffS = (broadcasts: number): number => Math.min(REBROADCAST_MAX_S, REBROADCAST_FIRST_S * 2 ** Math.max(0, Math.min(10, broadcasts - 1)));
 
 function outcomeText(o: BroadcastOutcome): string {
@@ -677,26 +781,8 @@ export function createSends(deps: SendsDeps): Sends {
     return out;
   };
 
-  /**
-   * A purchase whose live investor leg pays somebody other than the signer — the brain moved it to another financer
-   * after this one confirmed (a reallocation's redirect, which this side never refuses: the brain contract) — is not
-   * the signer's to send: they would pay another financer's LANA from their own wallet. As confirm.ts refuses it at the
-   * confirm. One `?`: the signer.
-   */
-  const FOREIGN_INVESTOR = foreignInvestorSql('blo.transaction_ref', '?');
-
-  /** The signer's legs that may go now: theirs, authorised, pending, in no send — oldest purchase first. */
-  const sendableLegs = (owner: string, refs?: string[]): LegRow[] => {
-    const refFilter = refs ? `AND blo.transaction_ref IN (${refs.map(() => '?').join(',')})` : '';
-    return db.prepare(`
-      SELECT blo.* FROM brain_lana_orders blo
-      JOIN purchase_settlement ps ON ps.transaction_ref = blo.transaction_ref AND ps.settled_by = 'financer' AND ps.owner_hex = ?
-      WHERE blo.status = 'pending' AND blo.brain_authorized = 1 AND blo.send_txid IS NULL
-        AND NOT ${FOREIGN_INVESTOR}
-      ${refFilter}
-      ${LEG_ORDER}
-    `).all(owner, owner, ...(refs ?? [])) as LegRow[];
-  };
+  /** The signer's legs that may go now (sendableLegsOf). */
+  const sendableLegs = (owner: string, refs?: string[]): LegRow[] => sendableLegsOf(db, owner, refs);
 
   /**
    * The legs a request names, as the database holds them now — every one the signer's to send, and whole purchases.
@@ -710,7 +796,7 @@ export function createSends(deps: SendsDeps): Sends {
     const ids = raw as string[];
     if (new Set(ids).size !== ids.length) return refusal(400, 'BAD_ORDER_IDS', 'A leg is named twice.');
     const rows = db.prepare(`
-      SELECT blo.*, ps.owner_hex AS ps_owner, ps.settled_by AS ps_settled_by, ${FOREIGN_INVESTOR} AS foreign_investor
+      SELECT blo.*, ps.owner_hex AS ps_owner, ps.settled_by AS ps_settled_by, ${FOREIGN_INVESTOR} AS foreign_investor, ${PURCHASE_CURRENCY}
       FROM brain_lana_orders blo
       LEFT JOIN purchase_settlement ps ON ps.transaction_ref = blo.transaction_ref
       WHERE blo.id IN (${ids.map(() => '?').join(',')})
@@ -741,26 +827,48 @@ export function createSends(deps: SendsDeps): Sends {
     return { ok: true, legs: ok.map(({ ps_owner: _o, ps_settled_by: _s, foreign_investor: _f, ...leg }) => leg as LegRow) };
   };
 
-  /** The financer's wallet as Direct.Fund names it now, judged at the Registrar now — or why not. */
-  const readyWallet = async (owner: string): Promise<{ ok: true; wallet: string } | SendRefusal> => {
+  /**
+   * The one currency of the purchases these legs belong to (purchase_currency, read by legsOfRequest) — or why they
+   * cannot go in one send: a purchase whose currency is not known goes from no wallet (CURRENCY_UNKNOWN); purchases of
+   * two currencies go from two wallets, in two sends (MIXED_CURRENCY).
+   */
+  const currencyOfLegs = (legs: readonly LegRow[]): { ok: true; currency: string } | SendRefusal => {
+    const unknown = legs.filter(l => !currencyCode(l.purchase_currency));
+    if (unknown.length) {
+      return refusal(409, 'CURRENCY_UNKNOWN', 'The currency of a purchase you chose is not known (its legs carry none, or not one and the same), so there is no wallet to send it from. An administrator has to look at it.', {
+        orderIds: unknown.map(l => l.id),
+        transactionRefs: [...new Set(unknown.map(l => l.transaction_ref))],
+      });
+    }
+    const currencies = [...new Set(legs.map(l => currencyCode(l.purchase_currency) as string))].sort();
+    if (currencies.length !== 1) {
+      return refusal(409, 'MIXED_CURRENCY', 'These purchases are in more than one currency. Each currency is sent from its own wallet, in a send of its own.', { currencies });
+    }
+    return { ok: true, currency: currencies[0] };
+  };
+
+  /** The financer's wallet for this currency as Direct.Fund names it now, judged at the Registrar now — or why not. */
+  const readyWallet = async (owner: string, currency: string): Promise<{ ok: true; wallet: string } | SendRefusal> => {
     let f: DfFinancer;
     try {
       f = await deps.financer(owner);
     } catch (err) {
       return refusal(dfHttpStatus(err), 'DF_UNAVAILABLE', 'Direct.Fund could not be asked which wallet you send from. Nothing was changed; try again shortly.');
     }
-    if (!f.lanaDiscountWallet) return refusal(409, 'NO_WALLET', 'Choose your Lana.Discount wallet on Direct.Fund first.');
-    const check = await deps.checkWallet(f.lanaDiscountWallet, owner);
+    const wallet = f.walletFor(currency);
+    if (!wallet) return refusal(409, 'NO_WALLET', `Choose your Lana.Discount wallet for ${currency} on Direct.Fund first.`, { currency });
+    const check = await deps.checkWallet(wallet, owner);
     if (check.ok !== true) {
       const reason = check.reason || 'REGISTRAR_UNKNOWN';
-      return refusal(reason === 'REGISTRAR_UNKNOWN' ? 503 : 409, 'WALLET_REFUSED', `The Registrar does not allow sending from ${f.lanaDiscountWallet} now (${reason}).`, {
+      return refusal(reason === 'REGISTRAR_UNKNOWN' ? 503 : 409, 'WALLET_REFUSED', `The Registrar does not allow sending from ${wallet} now (${reason}).`, {
         reason,
-        wallet: f.lanaDiscountWallet,
+        wallet,
+        currency,
         ...(check.walletType ? { walletType: check.walletType } : {}),
         ...(check.freezeReason ? { freezeReason: check.freezeReason } : {}),
       });
     }
-    return { ok: true, wallet: f.lanaDiscountWallet };
+    return { ok: true, wallet };
   };
 
   const inFlightRefusal = (wallet: string): SendRefusal | null => {
@@ -1187,8 +1295,27 @@ export function createSends(deps: SendsDeps): Sends {
   };
 
   const sends: Sends = {
-    async sendable(owner) {
-      const legs = sendableLegs(owner);
+    async sendable(owner, currencyIn) {
+      let currency: string | null = null;
+      if (currencyIn !== undefined && currencyIn !== null && currencyIn !== '') {
+        currency = currencyCode(currencyIn);
+        if (!currency) return refusal(400, 'BAD_CURRENCY', 'currency must be a three-letter code (EUR, GBP, USD …).');
+      }
+      const mine = sendableLegs(owner);
+      // Direct.Fund asked once, when needed; null: it could not be asked.
+      let asked: Promise<DfFinancer | null> | null = null;
+      const financerNow = () => (asked ??= deps.financer(owner).catch(() => null));
+      if (!currency) {
+        // Not named (a page from before wallets per currency): the one currency of what is to send or on its way — or,
+        // with nothing, the first of theirs. /me's single wallet is that currency's (legacyCurrency).
+        const meant = await legacyCurrency(db, owner, async () => Object.keys((await financerNow())?.wallets ?? {}));
+        if (meant.currencies.length > 1) {
+          return refusal(400, 'CURRENCY_REQUIRED', 'Your purchases are in more than one currency, each sent from its own wallet: ask for one of them.', { currencies: meant.currencies });
+        }
+        currency = meant.currency;
+      }
+      // A purchase whose currency is not known is sent from no wallet: in no currency's list (CURRENCY_UNKNOWN).
+      const legs = currency === null ? [] : mine.filter(l => currencyCode(l.purchase_currency) === currency);
       const byRef = new Map<string, LegRow[]>();
       for (const l of legs) {
         const ref = l.transaction_ref as string;
@@ -1209,14 +1336,11 @@ export function createSends(deps: SendsDeps): Sends {
       });
       const all = mergedAllocations(legs);
       const total = legs.reduce((s, l) => s + lanoshisOf(l), 0n);
-      let wallet: string | null = null;
-      let walletProblem: SendableAnswer['walletProblem'] = null;
-      try {
-        wallet = (await deps.financer(owner)).lanaDiscountWallet;
-        if (!wallet) walletProblem = 'NO_WALLET';
-      } catch {
-        walletProblem = 'DF_UNAVAILABLE';
-      }
+      // The wallet of this currency. A Direct.Fund before wallets per currency names one for every currency — and for
+      // none known (walletFor(null)).
+      const f = await financerNow();
+      const wallet = f ? f.walletFor(currency) : null;
+      const walletProblem: SendableAnswer['walletProblem'] = !f ? 'DF_UNAVAILABLE' : !wallet ? 'NO_WALLET' : null;
       let balance: SendableAnswer['balance'] = null;
       if (wallet) {
         const state = await chain.state(wallet).catch(() => null);
@@ -1224,18 +1348,25 @@ export function createSends(deps: SendsDeps): Sends {
       }
       const confirmed = balance ? BigInt(balance.confirmed) : 0n;
       const missing = all.length ? total + feeFor(1, all.length) - confirmed : 0n;
-      const inFlight = (db.prepare("SELECT * FROM lana_sends WHERE sender = 'financer' AND owner_hex = ? AND state IN ('announced', 'mempool') ORDER BY created_at DESC").all(owner) as SendRow[]).map(viewOf);
+      // The sends on their way from THIS wallet: the next send of it waits for them (SEND_IN_FLIGHT).
+      const inFlight = wallet
+        ? (db.prepare("SELECT * FROM lana_sends WHERE sender = 'financer' AND owner_hex = ? AND wallet_id = ? AND state IN ('announced', 'mempool') ORDER BY created_at DESC").all(owner, wallet) as SendRow[]).map(viewOf)
+        : [];
       return {
-        wallet,
-        walletProblem,
-        balance,
-        purchases,
-        totalLanoshis: total.toString(),
-        legCount: legs.length,
-        wallets: all.length,
-        shortfallLanoshis: (missing > 0n ? missing : 0n).toString(),
-        inFlight,
-        limits: LIMITS,
+        ok: true,
+        body: {
+          currency,
+          wallet,
+          walletProblem,
+          balance,
+          purchases,
+          totalLanoshis: total.toString(),
+          legCount: legs.length,
+          wallets: all.length,
+          shortfallLanoshis: (missing > 0n ? missing : 0n).toString(),
+          inFlight,
+          limits: LIMITS,
+        },
       };
     },
 
@@ -1243,7 +1374,10 @@ export function createSends(deps: SendsDeps): Sends {
       const req = legsOfRequest(owner, orderIds);
       if (req.ok === false) return req;
       const legs = req.legs;
-      const ready = await readyWallet(owner);
+      const cur = currencyOfLegs(legs);
+      if (cur.ok === false) return cur;
+      const currency = cur.currency;
+      const ready = await readyWallet(owner, currency);
       if (ready.ok === false) return ready;
       const wallet = ready.wallet;
       const own = legs.filter(l => l.to_wallet === wallet).map(l => l.id);
@@ -1324,6 +1458,7 @@ export function createSends(deps: SendsDeps): Sends {
       return {
         ok: true,
         body: {
+          currency,
           wallet,
           nowSec: nowSec(),
           balance: { confirmed: state.balance.confirmed.toString(), unconfirmed: state.balance.unconfirmed.toString() },
@@ -1365,7 +1500,10 @@ export function createSends(deps: SendsDeps): Sends {
       const req = legsOfRequest(owner, idsIn);
       if (req.ok === false) return req;
       const legs = req.legs;
-      const ready = await readyWallet(owner);
+      // The wallet of THESE purchases' currency: a GBP purchase is never announced from the EUR wallet.
+      const cur = currencyOfLegs(legs);
+      if (cur.ok === false) return cur;
+      const ready = await readyWallet(owner, cur.currency);
       if (ready.ok === false) return ready;
       const wallet = ready.wallet;
       const busy = inFlightRefusal(wallet);

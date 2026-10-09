@@ -64,11 +64,27 @@ export interface WalletCheck {
   freezeReason?: string;
 }
 
+/** One currency's Lana.Discount wallet (owner, 9 Oct 2026: one per currency — a purchase's LANA go from its currency's). */
+export interface CurrencyWallet {
+  /** EUR, GBP, USD … */
+  currency: string;
+  /** The wallet chosen for it on Direct.Fund; null: none yet (walletCheck NO_WALLET). */
+  walletId: string | null;
+  walletCheck: WalletCheck;
+}
+
 export interface FinancerMe {
   hexId: string;
   /** Direct.Fund knows this key as a financer. */
   isFinancer: boolean;
-  /** The Lana.Discount wallet they chose on Direct.Fund, or null. */
+  /**
+   * Every currency they chose a wallet for, or have a purchase still to send in, sorted. Absent from a server before
+   * wallets per currency; empty when there is none of either — the page then reads the single wallet below.
+   */
+  wallets?: CurrencyWallet[];
+  /** Their purchases whose currency is not known: no wallet sends them (an administrator looks at them). */
+  unknownCurrencyRefs?: string[];
+  /** The first currency's wallet (a page from before wallets per currency read only this), or null. */
   lanaDiscountWallet: string | null;
   lanaDiscountWalletSetAt: string | null;
   walletCheck: WalletCheck;
@@ -236,6 +252,8 @@ export interface SendLimits {
 
 /** sends.ts SendableAnswer. */
 export interface SendableAnswer {
+  /** The currency of these purchases and of the wallet read; null: none known yet. Absent from a server before it. */
+  currency?: string | null;
   wallet: string | null;
   walletProblem: 'NO_WALLET' | 'DF_UNAVAILABLE' | null;
   balance: { confirmed: string; unconfirmed: string } | null;
@@ -250,6 +268,8 @@ export interface SendableAnswer {
 
 /** sends.ts PrepareAnswer: what the browser signs from (payoutView.ts reads its PreparedSend part). */
 export interface PrepareAnswer extends PreparedSend {
+  /** The currency of these purchases: the send goes from the wallet of it (`wallet`). */
+  currency?: string;
   balance: { confirmed: string; unconfirmed: string };
   coins: { txid: string; vout: number; value: string; height: number; rawTx: string }[];
   allocations: { wallet: string; lanoshis: string; orderIds: string[] }[];
@@ -267,7 +287,9 @@ export const financerApi = {
   batches: () => ask<{ batches: FinancerBatch[] }>('/api/financer/batches'),
   /** Only the references go: the server builds every batch from Direct.Fund's own fresh answer. */
   confirm: (batchRefs: string[]) => post<{ results: ConfirmResult[] }>('/api/financer/batches/confirm', { batchRefs }),
-  sendable: () => ask<SendableAnswer>('/api/financer/sendable'),
+  /** One currency's purchases and wallet; without one (a server or Direct.Fund before wallets per currency), the only ones. */
+  sendable: (currency?: string | null) =>
+    ask<SendableAnswer>(currency ? `/api/financer/sendable?currency=${encodeURIComponent(currency)}` : '/api/financer/sendable'),
   prepare: (orderIds: string[]) => post<PrepareAnswer>('/api/financer/sends/prepare', { orderIds }),
   /** The signed transaction and the legs it pays — the same bytes again when an answer did not come. */
   announce: (orderIds: string[], rawTx: string) => post<{ send: SendView; already: boolean }>('/api/financer/sends', { orderIds, rawTx }),

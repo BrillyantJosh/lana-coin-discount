@@ -8,7 +8,8 @@
  * are internal — they pay themselves — and the financer does both steps here:
  *
  *   1. MY WALLET — the Lana.Discount wallet they chose on Direct.Fund, what the
- *      LANA Registrar says of it now, and its confirmed balance;
+ *      LANA Registrar says of it now, and its confirmed balance — one per
+ *      currency (owner, 9 Oct 2026, below);
  *   2. TO CONFIRM — their Lana Discount batches, paid on Direct.Fund first
  *      (»I Have Paid This Batch«), then »Potrdi« / »Potrdi vse« here — and
  *      »Potrdi znova« on one they confirmed, when a repeat would change
@@ -21,6 +22,18 @@
  *      wallet's key, signed IN THIS BROWSER (src/lib/financer/payoutKey.ts) —
  *      the key never reaches lana.discount, only the signed transaction does;
  *   4. ON THE WAY AND SENT — each send, with its transaction on the explorer.
+ *
+ * ONE WALLET PER CURRENCY (owner, 9 Oct 2026). A financer chooses a
+ * Lana.Discount wallet on Direct.Fund for each currency of their budgets, and
+ * a purchase's LANA go from the wallet of its currency. So 1 and 3 come once
+ * per currency (GET /api/financer/me `wallets`: each currency with a wallet or
+ * a purchase still to send): its wallet card, then its purchases to send — read
+ * with GET /sendable?currency= against that currency's wallet — and the send of
+ * them, signed with THAT wallet's key (the key check names any other wallet).
+ * The batches stay one list. One send is open on the page at a time: while a
+ * plan or a send in doubt is open in one currency, the others wait for it. A
+ * server or Direct.Fund from before wallets per currency gives one part, as it
+ * was (`currency` null, /sendable asked without one).
  *
  * NEVER TWICE. A signed send whose announce got no answer (a timeout, a server
  * error, too many requests — payoutView.ts announceInDoubt) may already be
@@ -45,7 +58,7 @@ import { FINANCER_TEXT } from '@/copy';
 import { LangToggle, useNoticeLang } from '@/components/SellingMovedNotice';
 import {
   DIRECT_FUND_URL, financerApi,
-  type Answer, type ConfirmResult, type FinancerBatch, type FinancerMe, type SendableAnswer, type SendView,
+  type Answer, type ConfirmResult, type FinancerBatch, type FinancerMe, type SendableAnswer, type SendView, type WalletCheck,
 } from '@/lib/financer/financerApi';
 import { signPayoutWithKey } from '@/lib/financer/payoutKey';
 import {
@@ -61,11 +74,32 @@ import { codeText, fill, refusalText } from '@/components/financer/financerText'
 
 type Loaded<T> = { kind: 'loading' } | { kind: 'ready'; data: T } | { kind: 'failed'; text: string };
 
+/**
+ * One currency's part of the page: its wallet, its purchases to send and their send. `key` is the currency — '' for the
+ * one part of a server or Direct.Fund from before wallets per currency (`currency` null).
+ */
+export interface Section {
+  key: string;
+  currency: string | null;
+  walletId: string | null;
+  walletCheck: WalletCheck;
+}
+
+/** The page's parts, one per currency /me lists — or, listing none (or a server before them), its single wallet. */
+export function sectionsOf(me: FinancerMe): Section[] {
+  if (Array.isArray(me.wallets) && me.wallets.length > 0) {
+    return me.wallets.map((w) => ({ key: w.currency, currency: w.currency, walletId: w.walletId, walletCheck: w.walletCheck }));
+  }
+  return [{ key: '', currency: null, walletId: me.lanaDiscountWallet, walletCheck: me.walletCheck }];
+}
+
 /** A send signed here whose announce has no answer yet: the very bytes, sent again as they are — never signed anew. */
 interface PendingSend {
   rawTx: string;
   txid: string;
   orderIds: string[];
+  /** The part (currency) it was signed in. */
+  key: string;
 }
 
 type Busy = 'prepare' | 'sign' | 'send' | null;
@@ -81,8 +115,11 @@ const Financer = () => {
 
   const [me, setMe] = useState<Loaded<FinancerMe>>({ kind: 'loading' });
   const [batches, setBatches] = useState<Loaded<FinancerBatch[]>>({ kind: 'loading' });
-  const [sendable, setSendable] = useState<Loaded<SendableAnswer>>({ kind: 'loading' });
+  /** Each part's purchases to send and its wallet (by Section.key); a part not read yet is loading. */
+  const [sendable, setSendable] = useState<Record<string, Loaded<SendableAnswer>>>({});
   const [sends, setSends] = useState<SendView[]>([]);
+  /** The parts as /me last said them — read by the loaders, which outlive a render. */
+  const sectionsRef = useRef<Section[]>([]);
 
   const [confirming, setConfirming] = useState<ReadonlySet<string>>(new Set());
   const [confirmResults, setConfirmResults] = useState<Record<string, ConfirmResult>>({});
@@ -94,7 +131,8 @@ const Financer = () => {
    */
   const [choice, setChoice] = useState<Choice>(ALL_CHOSEN);
   const unchosen = useMemo(() => unchosenOf(choice), [choice]);
-  const [prepared, setPrepared] = useState<(PreparedView & { orderIds: string[] }) | null>(null);
+  /** The plan open on the page — one at a time — and the part (currency) it is in. */
+  const [prepared, setPrepared] = useState<(PreparedView & { orderIds: string[]; key: string }) | null>(null);
   const [step, setStep] = useState<'plan' | 'key'>('plan');
   const [busy, setBusy] = useState<Busy>(null);
   /** Held apart from the state: a second click lands before the state has changed. */
@@ -105,7 +143,7 @@ const Financer = () => {
    * waiting for a block (WALLET_UNCONFIRMED) is taken down by the first read of the wallet started after it that finds
    * the balance confirmed (review N14) — never left in red beside a »Pripravi pošiljanje« that is on again.
    */
-  const [sendNotice, setSendNotice] = useState<{ tone: 'ok' | 'problem'; text: string; code?: string | null; at?: number } | null>(null);
+  const [sendNotice, setSendNotice] = useState<{ tone: 'ok' | 'problem'; text: string; key: string; code?: string | null; at?: number } | null>(null);
   const [pending, setPending] = useState<PendingSend | null>(null);
   const mounted = useRef(true);
   /** Each send's state as last read: one that moved on reads the batches and the wallet again. */
@@ -131,15 +169,26 @@ const Financer = () => {
     else setBatches((b) => (b.kind === 'ready' ? b : failed(r, t.confirmCodes as Record<string, string>)));
   }, [failed, t]);
 
+  /** Every part's purchases and wallet, each read against its own currency's wallet. */
   const loadSendable = useCallback(async () => {
-    const startedAt = Date.now();
-    const r = await financerApi.sendable();
-    if (!mounted.current) return;
-    if (r.data) {
-      setSendable({ kind: 'ready', data: r.data });
-      const confirmed = !!r.data.balance && r.data.balance.unconfirmed === '0';
-      if (confirmed) setSendNotice((n) => (n?.code === 'WALLET_UNCONFIRMED' && (n.at ?? 0) <= startedAt ? null : n));
-    } else setSendable((s) => (s.kind === 'ready' ? s : failed(r, t.sendCodes as Record<string, string>)));
+    await Promise.all(
+      sectionsRef.current.map(async (section) => {
+        const startedAt = Date.now();
+        const r = await financerApi.sendable(section.currency);
+        if (!mounted.current) return;
+        if (r.data) {
+          const data = r.data;
+          setSendable((all) => ({ ...all, [section.key]: { kind: 'ready', data } }));
+          const confirmed = !!data.balance && data.balance.unconfirmed === '0';
+          if (confirmed) setSendNotice((n) => (n?.key === section.key && n.code === 'WALLET_UNCONFIRMED' && (n.at ?? 0) <= startedAt ? null : n));
+        } else {
+          setSendable((all) => {
+            const before = all[section.key];
+            return { ...all, [section.key]: before?.kind === 'ready' ? before : failed(r, t.sendCodes as Record<string, string>) };
+          });
+        }
+      }),
+    );
   }, [failed, t]);
 
   const loadSends = useCallback(async () => {
@@ -160,18 +209,27 @@ const Financer = () => {
     }
   }, [loadBatches, loadSendable]);
 
-  const loadAll = useCallback(async () => {
+  /**
+   * Who the signer is and their wallet per currency: the page's parts. False: not read, or no financer. Not read, it is
+   * said in place of the page — or, `keep`, the page stays as it was (a read again after a confirm).
+   */
+  const loadMe = useCallback(async (keep = false): Promise<boolean> => {
     setMe((m) => (m.kind === 'ready' ? m : { kind: 'loading' }));
     const r = await financerApi.me();
-    if (!mounted.current) return;
+    if (!mounted.current) return false;
     if (!r.data) {
-      setMe(failed(r, {}));
-      return;
+      setMe((m) => (keep && m.kind === 'ready' ? m : failed(r, {})));
+      return false;
     }
+    sectionsRef.current = sectionsOf(r.data);
     setMe({ kind: 'ready', data: r.data });
-    if (!r.data.isFinancer) return;
+    return r.data.isFinancer;
+  }, [failed]);
+
+  const loadAll = useCallback(async () => {
+    if (!(await loadMe(false))) return;
     await Promise.all([loadBatches(), loadSendable(), loadSends()]);
-  }, [failed, loadBatches, loadSendable, loadSends]);
+  }, [loadMe, loadBatches, loadSendable, loadSends]);
 
   useEffect(() => {
     if (session) void loadAll();
@@ -180,13 +238,21 @@ const Financer = () => {
   }, [session?.nostrHexId]);
 
   // ── what is on its way is asked about again, while the page is in view ──
-  const sendableData = sendable.kind === 'ready' ? sendable.data : null;
+  const meData = me.kind === 'ready' ? me.data : null;
+  const sections = useMemo(() => (meData ? sectionsOf(meData) : []), [meData]);
+  const dataOf = (key: string): SendableAnswer | null => {
+    const s = sendable[key];
+    return s?.kind === 'ready' ? s.data : null;
+  };
   const batchList = batches.kind === 'ready' ? batches.data : [];
   const awaitingApproval = batchList.some((b) => batchStateOf(b) === 'awaitingApproval');
   // A payment into or out of the wallet waiting for a block blocks the next send (WALLET_UNCONFIRMED); nothing else
   // may be on its way then (a top-up, a send the reading server has not caught up with), so the wallet is read again
   // until it is confirmed — the block lifts by itself, never only on »Osveži« (review C22).
-  const walletMoving = !!sendableData?.balance && sendableData.balance.unconfirmed !== '0';
+  const walletMoving = sections.some((section) => {
+    const balance = dataOf(section.key)?.balance;
+    return !!balance && balance.unconfirmed !== '0';
+  });
   const live = pending !== null || sends.some((s) => s.state === 'announced' || s.state === 'mempool') || awaitingApproval || walletMoving;
   useEffect(() => {
     if (!live) return;
@@ -206,7 +272,7 @@ const Financer = () => {
       setPrepared(null);
       setStep('plan');
       setProblem(null);
-      setSendNotice({ tone: 'ok', text: t.sentOk });
+      setSendNotice({ tone: 'ok', text: t.sentOk, key: pending.key });
       setChoice(choiceAfterSend);
     }
   }, [pending, sends, t]);
@@ -248,33 +314,37 @@ const Financer = () => {
       setBatchNotice({ tone: refused.length || failure ? 'problem' : 'ok', lines });
       if (results.length) {
         void loadBatches();
-        void loadSendable();
+        // A batch confirmed may bring purchases of a currency the page has no part for yet: /me first, then each part
+        // (the parts as they were, when /me could not be read).
+        if (done.length) void loadMe(true).then(() => loadSendable());
+        else void loadSendable();
       }
     },
-    [confirming, t, loadBatches, loadSendable],
+    [confirming, t, loadBatches, loadMe, loadSendable],
   );
 
   // ── preparing, signing, announcing ──
-  const maxLegs = sendableData?.limits.maxLegs;
   const sendRefusal = useCallback(
-    (r: Answer<unknown>): string => {
+    (r: Answer<unknown>, key: string): string => {
       // What a refusal names: the wallet of an earlier refused send (MUST_SPEND_OTHER_WALLET), the payments one send
-      // carries and the button that chooses what fits (BAD_ORDER_IDS).
+      // carries and the button that chooses what fits (BAD_ORDER_IDS), the currency without a wallet (NO_WALLET).
+      const answer = sendable[key];
       const text = fill(refusalText(t, r, t.sendCodes as Record<string, string>), {
         wallet: typeof r.refusal?.wallet === 'string' ? r.refusal.wallet : '?',
-        max: maxLegs ?? '?',
+        max: answer?.kind === 'ready' ? answer.data.limits.maxLegs : '?',
         button: t.chooseFits,
+        currency: typeof r.refusal?.currency === 'string' ? r.refusal.currency : key || '?',
       });
       const reason = r.refusal?.code === 'WALLET_REFUSED' ? String(r.refusal.reason || '') : '';
       if (!reason) return text;
       return `${text} ${fill(codeText(t.walletReasons as Record<string, string>, reason), { type: String(r.refusal?.walletType ?? '?') })}`;
     },
-    [t, maxLegs],
+    [t, sendable],
   );
 
-  /** Read the wallet and the legs for these purchases; `why` says why it is read again, when it is. */
+  /** Read the wallet and the legs for these purchases of the part `key`; `why` says why it is read again, when it is. */
   const prepare = useCallback(
-    async (orderIds: string[], why: string | null = null) => {
+    async (key: string, orderIds: string[], why: string | null = null) => {
       if (busyRef.current) return;
       busyRef.current = true;
       setBusy('prepare');
@@ -284,13 +354,13 @@ const Financer = () => {
         const r = await financerApi.prepare(orderIds);
         if (!mounted.current) return;
         if (r.data) {
-          setPrepared({ answer: r.data, receivedAt: Date.now(), orderIds: (r.data.legs ?? []).map((l) => l.orderId) });
+          setPrepared({ answer: r.data, receivedAt: Date.now(), orderIds: (r.data.legs ?? []).map((l) => l.orderId), key });
           setStep('plan');
           setProblem(why);
         } else {
           setPrepared(null);
           setStep('plan');
-          setSendNotice({ tone: 'problem', text: sendRefusal(r), code: r.refusal?.code ?? null, at: Date.now() });
+          setSendNotice({ tone: 'problem', text: sendRefusal(r, key), key, code: r.refusal?.code ?? null, at: Date.now() });
           // The list and the wallet as they are now: a purchase gone, a payment waiting for a block (polled from here).
           void loadSendable();
         }
@@ -302,10 +372,9 @@ const Financer = () => {
     [sendRefusal, loadSendable],
   );
 
-  const chosenOrderIds = useMemo(
-    () => (sendableData?.purchases ?? []).filter((p) => !unchosen.has(p.transactionRef)).flatMap((p) => p.legs.map((l) => l.orderId)),
-    [sendableData, unchosen],
-  );
+  /** The legs of a part's chosen purchases: what »Pripravi pošiljanje« in it prepares. */
+  const chosenOrderIds = (data: SendableAnswer): string[] =>
+    data.purchases.filter((p) => !unchosen.has(p.transactionRef)).flatMap((p) => p.legs.map((l) => l.orderId));
 
   const announce = useCallback(
     async (next: PendingSend) => {
@@ -319,7 +388,7 @@ const Financer = () => {
         setPrepared(null);
         setStep('plan');
         setProblem(null);
-        setSendNotice({ tone: 'ok', text: t.sentOk });
+        setSendNotice({ tone: 'ok', text: t.sentOk, key: next.key });
         // The next round starts from all but what the financer unticked by hand (review M8).
         setChoice(choiceAfterSend);
         setSends((list) => [send, ...list.filter((s) => s.txid !== send.txid)]);
@@ -338,7 +407,7 @@ const Financer = () => {
       setPrepared(null);
       setStep('plan');
       setProblem(null);
-      setSendNotice({ tone: 'problem', text: sendRefusal(r), code: r.refusal?.code ?? null, at: Date.now() });
+      setSendNotice({ tone: 'problem', text: sendRefusal(r, next.key), key: next.key, code: r.refusal?.code ?? null, at: Date.now() });
       void loadSendable();
     },
     [t, sendRefusal, loadSendable, loadBatches],
@@ -349,7 +418,7 @@ const Financer = () => {
     async (typed: string) => {
       if (busyRef.current || pending || !prepared) return;
       if (Date.now() - prepared.receivedAt > STALE_MS) {
-        void prepare(prepared.orderIds, t.stale);
+        void prepare(prepared.key, prepared.orderIds, t.stale);
         return;
       }
       const coins = coinsOf(prepared.answer);
@@ -384,7 +453,7 @@ const Financer = () => {
           return;
         }
         // Kept only if the answer does not come (announce); a second click meanwhile meets busyRef.
-        await announce({ rawTx: signed.rawTx, txid: signed.txid, orderIds: prepared.orderIds });
+        await announce({ rawTx: signed.rawTx, txid: signed.txid, orderIds: prepared.orderIds, key: prepared.key });
       } finally {
         busyRef.current = false;
         if (mounted.current) setBusy(null);
@@ -409,7 +478,7 @@ const Financer = () => {
   const toKey = useCallback(() => {
     if (!prepared) return;
     if (Date.now() - prepared.receivedAt > FRESH_BEFORE_KEY_MS) {
-      void prepare(prepared.orderIds, t.refreshed);
+      void prepare(prepared.key, prepared.orderIds, t.refreshed);
       return;
     }
     setProblem(null);
@@ -418,18 +487,52 @@ const Financer = () => {
 
   if (isLoading || !session) return null;
 
-  const meData = me.kind === 'ready' ? me.data : null;
-  const blocked = !sendableData || !meData
-    ? null
-    : pending
-      ? t.pendingBlock
-      : sendableData.inFlight.length > 0
-        ? t.inFlightBlock
-        : !meData.lanaDiscountWallet || !meData.walletCheck.ok
-          ? t.walletBlock
-          : sendableData.balance && sendableData.balance.unconfirmed !== '0'
-            ? t.sendCodes.WALLET_UNCONFIRMED
-            : null;
+  /** The part a plan or a send in doubt is open in: the others wait for it (one send at a time on the page). */
+  const openKey = pending?.key ?? prepared?.key;
+  /** Why nothing can be prepared in this part now, in words; null when it can. */
+  const blockedOf = (section: Section, data: SendableAnswer): string | null => {
+    if (openKey !== undefined && openKey !== section.key) return fill(t.otherSendOpen, { currency: openKey || '?' });
+    if (pending) return t.pendingBlock;
+    if (data.inFlight.length > 0) return t.inFlightBlock;
+    if (!section.walletId || !section.walletCheck.ok) return t.walletBlock;
+    if (data.balance && data.balance.unconfirmed !== '0') return t.sendCodes.WALLET_UNCONFIRMED;
+    return null;
+  };
+  /** The open send — in doubt, or its plan and key — drawn in its part (or after them all, its part gone meanwhile). */
+  const openSend = () =>
+    pending ? (
+      <section className="rounded-2xl border-2 border-amber-400/60 bg-card p-5 sm:p-6 space-y-3" data-testid="financer-in-doubt" role="alert">
+        <p className="text-sm text-foreground">{t.inDoubt}</p>
+        <p className="font-mono text-xs text-muted-foreground break-all">{pending.txid}</p>
+        <button
+          type="button"
+          onClick={() => void resend()}
+          disabled={busy !== null}
+          className="rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        >
+          {busy === 'send' ? t.announcing : t.resend}
+        </button>
+      </section>
+    ) : (
+      prepared && (
+        <FinancerSendPanel
+          t={t}
+          lang={lang}
+          prepared={prepared}
+          step={step}
+          busy={busy}
+          problem={problem}
+          onBack={() => {
+            setPrepared(null);
+            setStep('plan');
+            setProblem(null);
+          }}
+          onContinue={toKey}
+          onSign={(typed) => void sign(typed)}
+        />
+      )
+    );
+  const unknownRefs = meData?.unknownCurrencyRefs ?? [];
 
   return (
     <div className="min-h-screen bg-background flex flex-col" lang={lang}>
@@ -475,6 +578,7 @@ const Financer = () => {
             </button>
           </div>
           <p className="text-sm text-muted-foreground leading-relaxed">{t.intro}</p>
+          <p className="text-xs text-muted-foreground">{t.walletsPerCurrency}</p>
           <p className="text-xs text-muted-foreground">{t.keyStays}</p>
         </header>
 
@@ -496,7 +600,21 @@ const Financer = () => {
 
         {meData?.isFinancer && (
           <>
-            <FinancerWalletCard t={t} me={meData} balance={sendableData?.balance} />
+            {sections.map((section) => (
+              <FinancerWalletCard
+                key={`wallet-${section.key}`}
+                t={t}
+                currency={section.currency}
+                walletId={section.walletId}
+                walletCheck={section.walletCheck}
+                balance={dataOf(section.key)?.balance}
+              />
+            ))}
+            {unknownRefs.length > 0 && (
+              <p className="rounded-xl border border-amber-300/60 p-3 text-sm text-amber-800 dark:text-amber-300" role="status" data-testid="financer-unknown-currency">
+                {fill(t.unknownCurrency, { count: unknownRefs.length, refs: unknownRefs.join(', ') })}
+              </p>
+            )}
 
             {batchNotice && (
               <div
@@ -517,64 +635,42 @@ const Financer = () => {
               <FinancerBatches t={t} lang={lang} batches={batches.data} confirming={confirming} results={confirmResults} onConfirm={(refs, again) => void confirm(refs, again)} />
             )}
 
-            {sendNotice && (
-              <p
-                role={sendNotice.tone === 'problem' ? 'alert' : 'status'}
-                data-testid="financer-send-notice"
-                className={`rounded-xl border p-3 text-sm ${sendNotice.tone === 'ok' ? 'border-emerald-300/60 bg-emerald-50/60 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300' : 'border-red-300/60 bg-red-50/60 text-red-700 dark:bg-red-500/10 dark:text-red-400'}`}
-              >
-                {sendNotice.text}
-              </p>
-            )}
-            {sendable.kind === 'failed' ? (
-              <p className="rounded-xl border border-red-300/60 p-4 text-sm text-red-700 dark:text-red-400" role="alert">{sendable.text}</p>
-            ) : sendable.kind === 'loading' ? (
-              <p className="text-sm text-muted-foreground">{t.loading}</p>
-            ) : (
-              <FinancerSendable
-                t={t}
-                answer={sendable.data}
-                choice={choice}
-                onChoose={(refs, on, byHand) => setChoice((prev) => choose(prev, refs, on, byHand))}
-                locked={prepared !== null || pending !== null}
-                blocked={blocked}
-                preparing={busy === 'prepare'}
-                onPrepare={() => void prepare(chosenOrderIds)}
-              />
-            )}
-
-            {pending ? (
-              <section className="rounded-2xl border-2 border-amber-400/60 bg-card p-5 sm:p-6 space-y-3" data-testid="financer-in-doubt" role="alert">
-                <p className="text-sm text-foreground">{t.inDoubt}</p>
-                <p className="font-mono text-xs text-muted-foreground break-all">{pending.txid}</p>
-                <button
-                  type="button"
-                  onClick={() => void resend()}
-                  disabled={busy !== null}
-                  className="rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
-                >
-                  {busy === 'send' ? t.announcing : t.resend}
-                </button>
-              </section>
-            ) : (
-              prepared && (
-                <FinancerSendPanel
-                  t={t}
-                  lang={lang}
-                  prepared={prepared}
-                  step={step}
-                  busy={busy}
-                  problem={problem}
-                  onBack={() => {
-                    setPrepared(null);
-                    setStep('plan');
-                    setProblem(null);
-                  }}
-                  onContinue={toKey}
-                  onSign={(typed) => void sign(typed)}
-                />
-              )
-            )}
+            {sections.map((section) => {
+              const loaded = sendable[section.key];
+              const data = loaded?.kind === 'ready' ? loaded.data : null;
+              const notice = sendNotice?.key === section.key ? sendNotice : null;
+              return (
+                <div key={`send-${section.key}`} className="space-y-5" data-testid={`financer-part-${section.key || 'one'}`}>
+                  {notice && (
+                    <p
+                      role={notice.tone === 'problem' ? 'alert' : 'status'}
+                      data-testid="financer-send-notice"
+                      className={`rounded-xl border p-3 text-sm ${notice.tone === 'ok' ? 'border-emerald-300/60 bg-emerald-50/60 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300' : 'border-red-300/60 bg-red-50/60 text-red-700 dark:bg-red-500/10 dark:text-red-400'}`}
+                    >
+                      {notice.text}
+                    </p>
+                  )}
+                  {loaded?.kind === 'failed' ? (
+                    <p className="rounded-xl border border-red-300/60 p-4 text-sm text-red-700 dark:text-red-400" role="alert">{loaded.text}</p>
+                  ) : !data ? (
+                    <p className="text-sm text-muted-foreground">{t.loading}</p>
+                  ) : (
+                    <FinancerSendable
+                      t={t}
+                      answer={data}
+                      choice={choice}
+                      onChoose={(refs, on, byHand) => setChoice((prev) => choose(prev, refs, on, byHand))}
+                      locked={prepared !== null || pending !== null}
+                      blocked={blockedOf(section, data)}
+                      preparing={busy === 'prepare'}
+                      onPrepare={() => void prepare(section.key, chosenOrderIds(data))}
+                    />
+                  )}
+                  {openKey === section.key && openSend()}
+                </div>
+              );
+            })}
+            {openKey !== undefined && !sections.some((section) => section.key === openKey) && openSend()}
 
             <FinancerSends t={t} lang={lang} sends={sends} />
           </>
