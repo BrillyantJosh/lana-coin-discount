@@ -13,10 +13,11 @@
  * DfError the caller refuses on. The caller never guesses.
  *
  * Peer calls, authenticated with this server's own key (lib/fundPeer.ts), to
- * three read-only routes DF admits for its peer:
+ * four read-only routes DF admits for its peer:
  *   GET /api/admin/batch-by-ref/:batchRef
  *   GET /api/admin/financers/:hexId
  *   GET /api/admin/financers/:hexId/lana-discount-batches
+ *   GET /api/admin/financers/:hexId/unpaid-parts?refs=…   (9 Oct 2026: only words a page, decides nothing)
  */
 import { DIRECT_FUND_URL } from '../directFund.js';
 import { fundPeerHeaders } from '../fundPeer.js';
@@ -106,6 +107,35 @@ export interface DfFinancerBatch {
   closedAt: string | null;
   paidAt: string | null;
   transactionRefs: string[];
+}
+
+/** A part of a purchase Direct.Fund does not have as paid yet (not cancelled, payment not confirmed). */
+export interface DfUnpaidPart {
+  transactionRef: string;
+  /** brain_fiat_orders.order_type: lana_purchase, merchant_payment, merchant_commission, caretaker_via_discount…; '' when DF gave none. */
+  orderType: string;
+  /** 'bank' or 'lana_discount'; null when DF did not say. */
+  destinationType: string | null;
+  amount: number;
+  currency: string;
+  /** The Direct.Fund batch it is in; null: in no batch yet. */
+  batchRef: string | null;
+  /** open | closed | paid of that batch; null with no batch. */
+  batchStatus: string | null;
+}
+
+/** Most purchases one unpaid-parts call may name (Direct.Fund refuses more, TOO_MANY_REFS). */
+export const MAX_UNPAID_REFS = 200;
+/**
+ * And at most this many characters of them in the query, so the request line stays inside the 8 KB a default nginx
+ * proxy reads (a longer one is answered 414, and the page would only say the generic sentence): 200 UUIDs and their
+ * commas are about 7,400.
+ */
+export const MAX_UNPAID_REFS_CHARS = 7_500;
+
+/** A reference the unpaid-parts query can carry: not empty, no comma (the separator). */
+export function isUnpaidRef(v: unknown): v is string {
+  return typeof v === 'string' && v.trim() !== '' && !v.includes(',');
 }
 
 const BATCH_REF_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -227,6 +257,44 @@ export async function fetchFinancerBatches(hexId: string, opts: DfClientOptions 
         ? [...new Set<string>(b.transactionRefs.filter((r: unknown) => typeof r === 'string' && r.trim() !== '').map((r: string) => r.trim()))]
         : [],
     }));
+}
+
+/**
+ * Which parts of these purchases of the financer Direct.Fund does not have as paid yet — what a confirmed batch's
+ * approval still waits on. Never cached; throws DfError. A Direct.Fund before this route answers 404 or 403
+ * (DF_NOT_FOUND / DF_REFUSED). An answer with a part it cannot read whole is DF_BAD_RESPONSE, never a shorter list:
+ * a part left out would read as paid.
+ */
+export async function fetchFinancerUnpaidParts(hexId: string, refs: string[], opts: DfClientOptions = {}): Promise<DfUnpaidPart[]> {
+  const h = hex(hexId);
+  if (!HEX_RE.test(h)) throw new DfError('DF_NOT_FOUND', 'Not a hex id');
+  const asked = [...new Set(refs.filter(isUnpaidRef).map(r => r.trim()))];
+  if (asked.length === 0) return [];
+  const query = asked.map(encodeURIComponent).join(',');
+  if (asked.length > MAX_UNPAID_REFS || query.length > MAX_UNPAID_REFS_CHARS) {
+    throw new DfError('DF_BAD_RESPONSE', `At most ${MAX_UNPAID_REFS} purchases (${MAX_UNPAID_REFS_CHARS} characters) per call`);
+  }
+  const d = await getJson(`/api/admin/financers/${h}/unpaid-parts?refs=${query}`, opts);
+  if (!Array.isArray(d?.parts)) throw new DfError('DF_BAD_RESPONSE', 'Direct.Fund unpaid-parts answer has no list');
+  const wanted = new Set(asked);
+  return d.parts
+    .map((p: any): DfUnpaidPart => {
+      const ref = str(p?.transactionRef);
+      const amount = num(p?.amount);
+      const currency = str(p?.currency);
+      if (!ref || Number.isNaN(amount) || !currency) throw new DfError('DF_BAD_RESPONSE', 'Direct.Fund named an unpaid part it did not describe');
+      const batchRef = isBatchRef(p?.batchRef) ? p.batchRef : null;
+      return {
+        transactionRef: ref,
+        orderType: str(p?.orderType) ?? '',
+        destinationType: str(p?.destinationType),
+        amount,
+        currency,
+        batchRef,
+        batchStatus: batchRef ? str(p?.batchStatus) : null,
+      };
+    })
+    .filter((p: DfUnpaidPart) => wanted.has(p.transactionRef));
 }
 
 /** What a route tells the browser when DF could not be asked; 404 stays 404, the rest is 502. */

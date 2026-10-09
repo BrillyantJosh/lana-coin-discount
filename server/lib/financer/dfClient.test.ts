@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'http';
 import type { AddressInfo } from 'net';
-import { fetchBatchByRef, fetchFinancer, fetchFinancerBatches, DfError, parseBatchByRef } from './dfClient';
+import { fetchBatchByRef, fetchFinancer, fetchFinancerBatches, fetchFinancerUnpaidParts, DfError, parseBatchByRef, MAX_UNPAID_REFS } from './dfClient';
 
 const HEX = 'c'.repeat(64);
 let base = '';
@@ -109,5 +109,55 @@ describe('fetchFinancer / fetchFinancerBatches', () => {
     expect(seen[0].url).toBe(`/api/admin/financers/${HEX}/lana-discount-batches`);
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ batchRef: '2026002417', status: 'paid', transactionRefs: ['T1', 'T2'], closedAt: null });
+  });
+});
+
+describe('fetchFinancerUnpaidParts (9 Oct 2026: what a confirmed batch waits on)', () => {
+  const part = (over: Record<string, unknown> = {}) => ({
+    transactionRef: 'T1', orderType: 'merchant_commission', destinationType: 'bank', amount: 0.25, currency: 'EUR',
+    batchRef: '2026002433', batchStatus: 'closed', ...over,
+  });
+
+  it('asks for the purchases in one call — each once, encoded — with the peer key, and reads the parts', async () => {
+    reply = () => ({ status: 200, body: { parts: [part(), part({ transactionRef: 'T 2/x', batchRef: null, batchStatus: 'open', orderType: null, destinationType: '' })] } });
+    const parts = await fetchFinancerUnpaidParts(HEX, ['T1', 'T 2/x', 'T1', '', 'a,b'], opts());
+    expect(seen.map(s => s.url)).toEqual([`/api/admin/financers/${HEX}/unpaid-parts?refs=T1,T%202%2Fx`]);
+    expect(seen[0].auth).toBe('Bearer peer-key');
+    expect(seen[0].cacheControl).toBe('no-cache');
+    expect(parts).toEqual([
+      { transactionRef: 'T1', orderType: 'merchant_commission', destinationType: 'bank', amount: 0.25, currency: 'EUR', batchRef: '2026002433', batchStatus: 'closed' },
+      // In no batch: no batch status either; what Direct.Fund did not say reads as unknown.
+      { transactionRef: 'T 2/x', orderType: '', destinationType: null, amount: 0.25, currency: 'EUR', batchRef: null, batchStatus: null },
+    ]);
+  });
+
+  it('nothing to ask: no call at all', async () => {
+    expect(await fetchFinancerUnpaidParts(HEX, [], opts())).toEqual([]);
+    expect(await fetchFinancerUnpaidParts(HEX, ['', ' '], opts())).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  it('a part about a purchase not asked about is dropped; a part it cannot read whole fails the answer — never a shorter list', async () => {
+    reply = () => ({ status: 200, body: { parts: [part(), part({ transactionRef: 'NOT-ASKED' })] } });
+    expect((await fetchFinancerUnpaidParts(HEX, ['T1'], opts())).map(p => p.transactionRef)).toEqual(['T1']);
+    for (const bad of [{ amount: '0.25' }, { amount: null }, { currency: '' }, { transactionRef: null }]) {
+      reply = () => ({ status: 200, body: { parts: [part(), part(bad)] } });
+      await expect(fetchFinancerUnpaidParts(HEX, ['T1'], opts()), JSON.stringify(bad)).rejects.toMatchObject({ code: 'DF_BAD_RESPONSE' });
+    }
+    reply = () => ({ status: 200, body: { list: [] } });
+    await expect(fetchFinancerUnpaidParts(HEX, ['T1'], opts())).rejects.toMatchObject({ code: 'DF_BAD_RESPONSE' });
+  });
+
+  it('a Direct.Fund without the route: 404 DF_NOT_FOUND, 403 DF_REFUSED; more than it takes is never sent', async () => {
+    reply = () => ({ status: 404, body: {} });
+    await expect(fetchFinancerUnpaidParts(HEX, ['T1'], opts())).rejects.toMatchObject({ code: 'DF_NOT_FOUND' });
+    reply = () => ({ status: 403, body: {} });
+    await expect(fetchFinancerUnpaidParts(HEX, ['T1'], opts())).rejects.toMatchObject({ code: 'DF_REFUSED' });
+    seen.length = 0;
+    const many = Array.from({ length: MAX_UNPAID_REFS + 1 }, (_, i) => `T${i}`);
+    await expect(fetchFinancerUnpaidParts(HEX, many, opts())).rejects.toBeInstanceOf(DfError);
+    await expect(fetchFinancerUnpaidParts(HEX, ['x'.repeat(8000)], opts())).rejects.toBeInstanceOf(DfError);
+    await expect(fetchFinancerUnpaidParts('not-hex', ['T1'], opts())).rejects.toBeInstanceOf(DfError);
+    expect(seen).toEqual([]);
   });
 });

@@ -22,8 +22,8 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { FINANCER, FINANCER_SL } from '@/copy';
 import { fill } from '@/components/financer/financerText';
-import { batchStateOf } from '@/components/financer/FinancerBatches';
-import type { FinancerBatch } from '@/lib/financer/financerApi';
+import { FinancerBatches, batchStateOf } from '@/components/financer/FinancerBatches';
+import type { FinancerBatch, WaitingPart } from '@/lib/financer/financerApi';
 import { POLL_MS } from '@/lib/financer/payoutView';
 import { bytesToHex } from '../../server/shared/lana-tx/bytes.ts';
 import { decodeTx, txidOfRaw } from '../../server/shared/lana-tx/codec.ts';
@@ -655,5 +655,114 @@ describe('what the server answers now, said', () => {
     const row = await screen.findByTestId(`financer-send-${signed}`);
     expect(within(row).getByRole('link')).toHaveAttribute('href', `https://chainz.cryptoid.info/lana/tx.dws?${onChain}`);
     expect(row.textContent).toContain(fill(t.copyNote, { txid: signed }));
+  });
+});
+
+describe('what a confirmed batch waits on at Direct.Fund, named (owner, 9 Oct 2026)', () => {
+  // Batch 2026002432 confirmed; the brain did not approve, because the purchase's €0.25 merchant's commission by bank
+  // sat in Direct.Fund batch 2026002433, closed and not marked paid — and the page said only "when every part is paid".
+  const waitingLegs = { total: 3, pending: 3, authorized: 0, sending: 0, sent: 0, cancelled: 0 };
+  const confirmedWaiting = (ref: string, waitingOn: WaitingPart[] | null | undefined) =>
+    batchOf(ref, { canConfirm: false }, {
+      confirmed: true, settledBy: 'financer', status: 'received',
+      purchases: { total: 1, mine: 1, treasury: 0, other: 0, unclaimed: 0, retakeable: 0, cancelled: 0 },
+      unclaimedRefs: [], legs: waitingLegs, waitingOn,
+    });
+  const part = (over: Partial<WaitingPart>): WaitingPart => ({
+    batchRef: '2026002433', batchStatus: 'closed', orderType: 'merchant_commission', destinationType: 'bank',
+    amount: 0.25, currency: 'EUR', transactionRef: 'TX-1', ...over,
+  });
+  const lines = (ref: string) => [...screen.getByTestId(`financer-batch-waiting-${ref}`).querySelectorAll('p')].map((p) => p.textContent);
+
+  it('the unpaid part by its Direct.Fund batch, amount, what and how; every part paid; and the general sentence when Direct.Fund could not say', async () => {
+    routes = {
+      'GET /api/financer/me': () => ok(meOf('L-mine')),
+      'GET /api/financer/batches': () =>
+        ok({
+          batches: [
+            confirmedWaiting('2026002432', [part({})]),
+            // Two parts in one Direct.Fund batch, one in another (in GBP), one in no batch yet: a line each batch, a line for it.
+            confirmedWaiting('2026002440', [
+              part({ transactionRef: 'TX-2' }),
+              part({ transactionRef: 'TX-2', orderType: 'merchant_payment', amount: 1234.5 }),
+              part({ transactionRef: 'TX-3', batchRef: '2026002450', orderType: 'lana_purchase', destinationType: 'lana_discount', amount: 9.75, currency: 'GBP' }),
+              part({ transactionRef: 'TX-4', batchRef: null, batchStatus: null, orderType: 'caretaker_via_discount', destinationType: 'lana_discount', amount: 1.5, currency: 'CHF' }),
+              part({ transactionRef: 'TX-5', batchRef: '2026002450', orderType: 'something_new', destinationType: null, amount: 2, currency: 'GBP' }),
+            ]),
+            confirmedWaiting('2026002389', []),
+            confirmedWaiting('2026002325', null),
+            // A server before `waitingOn`.
+            confirmedWaiting('2026002201', undefined),
+          ],
+        }),
+      'GET /api/financer/sendable': () => ok(sendableOf('L-mine', [], 0n)),
+      'GET /api/financer/sends': () => ok({ sends: [] }),
+    };
+    draw();
+
+    const live = await screen.findByTestId('financer-batch-2026002432');
+    expect(lines('2026002432')).toEqual([
+      'Waiting for Direct.Fund: batch 2026002433 (€0.25 — merchant’s commission, bank transfer) is not marked paid yet. ' +
+        'Pay it there and press »I Have Paid This Batch«; the LANA can be sent about 10–20 minutes later.',
+    ]);
+    expect(within(live).queryByText(t.batchState.awaitingApproval)).toBeNull();
+
+    expect(lines('2026002440')).toEqual([
+      fill(t.waitingOn.inBatch, { batch: '2026002433', parts: '€0.25 — merchant’s commission, bank transfer; €1,234.50 — payment to the merchant, bank transfer' }),
+      fill(t.waitingOn.inBatch, { batch: '2026002450', parts: '£9.75 — LANA purchase, internal; £2.00 — other payment' }),
+      fill(t.waitingOn.noBatch, { part: 'CHF 1.50 — payment to the caretaker, internal' }),
+    ]);
+    expect(lines('2026002440')[2]).toBe(
+      'Waiting for Direct.Fund: a part of the purchase (CHF 1.50 — payment to the caretaker, internal) is not in a batch on ' +
+        'Direct.Fund yet. Once it is in one, pay that batch there and press »I Have Paid This Batch«; the LANA can be sent ' +
+        'about 10–20 minutes later.',
+    );
+
+    expect(lines('2026002389')).toEqual(['Every part is paid on Direct.Fund. Approval comes on its own within about 10–20 minutes.']);
+
+    for (const ref of ['2026002325', '2026002201']) {
+      const row = screen.getByTestId(`financer-batch-${ref}`);
+      expect(within(row).getByText(t.batchState.awaitingApproval)).toBeInTheDocument();
+      expect(within(row).queryByTestId(`financer-batch-waiting-${ref}`)).toBeNull();
+    }
+    // Nothing unfilled anywhere.
+    for (const ref of ['2026002432', '2026002440', '2026002389']) for (const l of lines(ref)) expect(l).not.toMatch(/\{\w+\}/);
+  });
+
+  it('in Slovenian, in a business reader’s words', () => {
+    render(
+      <FinancerBatches
+        t={FINANCER_SL}
+        lang="sl"
+        batches={[
+          confirmedWaiting('2026002432', [part({})]),
+          confirmedWaiting('2026002440', [part({ batchRef: null, batchStatus: null, orderType: 'caretaker_via_discount', destinationType: 'lana_discount', amount: 1.5 })]),
+          confirmedWaiting('2026002389', []),
+          confirmedWaiting('2026002325', null),
+        ]}
+        confirming={new Set()}
+        results={{}}
+        onConfirm={() => {}}
+      />,
+    );
+    expect(lines('2026002432')).toEqual([
+      'Čaka še Direct.Fund: paket 2026002433 (€0.25 — provizija trgovcu, bančno nakazilo) še ni označen kot plačan. ' +
+        'Plačajte ga tam in pritisnite »I Have Paid This Batch«; LANE boste lahko poslali približno 10–20 minut zatem.',
+    ]);
+    expect(lines('2026002440')).toEqual([
+      'Čaka še Direct.Fund: del nakupa (€1.50 — plačilo skrbniku, interno) na Direct.Fund še ni v nobenem paketu. ' +
+        'Ko bo v paketu, ga tam plačajte in pritisnite »I Have Paid This Batch«; LANE boste lahko poslali približno 10–20 minut zatem.',
+    ]);
+    expect(lines('2026002389')).toEqual(['Na Direct.Fund so plačani vsi deli. Odobritev pride sama, v približno 10–20 minutah.']);
+    expect(within(screen.getByTestId('financer-batch-2026002325')).getByText(FINANCER_SL.batchState.awaitingApproval)).toBeInTheDocument();
+  });
+
+  it('only a batch waiting for the approval says it: one ready to send keeps its own sentence', () => {
+    const ready = { ...confirmedWaiting('2026002432', [part({})]) };
+    ready.ld = { ...ready.ld, legs: { ...waitingLegs, authorized: 3 } };
+    expect(batchStateOf(ready)).toBe('ready');
+    render(<FinancerBatches t={t} lang="en" batches={[ready]} confirming={new Set()} results={{}} onConfirm={() => {}} />);
+    expect(screen.queryByTestId('financer-batch-waiting-2026002432')).toBeNull();
+    expect(screen.getByText(t.batchState.ready)).toBeInTheDocument();
   });
 });

@@ -86,6 +86,21 @@ export interface LegStats {
   cancelled: number;
 }
 
+/** server/routes/financer.ts WaitingPart: a part of a purchase not paid on Direct.Fund yet. */
+export interface WaitingPart {
+  /** The Direct.Fund batch it is in; null: in no batch there yet. */
+  batchRef: string | null;
+  /** open | closed | paid; null with no batch. */
+  batchStatus: string | null;
+  /** lana_purchase, merchant_payment, merchant_commission, caretaker_via_discount, … ('' when Direct.Fund said none). */
+  orderType: string;
+  /** 'bank' (a bank transfer) or 'lana_discount' (internal); null when Direct.Fund did not say. */
+  destinationType: string | null;
+  amount: number;
+  currency: string;
+  transactionRef: string;
+}
+
 export interface FinancerBatch {
   batchRef: string;
   /** Direct.Fund's status: open → closed → paid ("I Have Paid This Batch"). */
@@ -117,6 +132,12 @@ export interface FinancerBatch {
     unclaimedRefs: string[];
     /** On a batch you confirmed: the legs of YOUR purchases only. */
     legs: LegStats;
+    /**
+     * On a batch you confirmed whose purchases wait for the approval: the parts of them Direct.Fund does not have as
+     * paid yet. `[]`: it has every part paid (the approval comes by itself). null — or absent, from a server before
+     * it — when Direct.Fund could not be asked: the page keeps its general sentence.
+     */
+    waitingOn?: WaitingPart[] | null;
   };
   /**
    * Lana.Discount's administrator decides who settles it (server/lib/financer/confirm.ts heldBatches: it may already

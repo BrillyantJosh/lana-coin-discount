@@ -17,6 +17,10 @@
  *        (ld.purchases.cancelled: finished, nobody's to send). `resendStopped`:
  *        its call to the brain stopped and a repeat brings it back.
  *        `canConfirmAgain` offers that repeat only while it changes something.
+ *        A batch they confirmed whose purchases wait for the approval carries
+ *        ld.waitingOn: the parts of them Direct.Fund does not have as paid yet
+ *        (its batch, amount, what and how) — [] when it has them all, null
+ *        when it could not be asked; one Direct.Fund call for all of them.
  *
  *   POST /batches/confirm   { batchRefs: string[] } → { results: [{batchRef, ok, code?, error?, skippedRefs?, skippedPaymentIds?}] }
  *        Confirm internal batches already paid on Direct.Fund; from then on the
@@ -45,8 +49,9 @@ import type Database from 'better-sqlite3';
 import { getDbHandle } from '../db/index.js';
 import { requireSigner } from '../lib/financer/requireSigner.js';
 import {
-  fetchBatchByRef, fetchFinancer, fetchFinancerBatches, dfHttpStatus, isBatchRef,
-  type DfClientOptions, type DfFinancerBatch,
+  fetchBatchByRef, fetchFinancer, fetchFinancerBatches, fetchFinancerUnpaidParts, dfHttpStatus, isBatchRef, isUnpaidRef,
+  MAX_UNPAID_REFS, MAX_UNPAID_REFS_CHARS,
+  type DfClientOptions, type DfFinancerBatch, type DfUnpaidPart,
 } from '../lib/financer/dfClient.js';
 import { checkFinancerWallet, type FinancerWalletCheck } from '../lib/financer/registrarWallet.js';
 import { confirmFinancerBatches, heldBatches } from '../lib/financer/confirm.js';
@@ -82,6 +87,35 @@ function dfRefusal(res: Response, err: unknown) {
 }
 
 interface LegStats { total: number; pending: number; authorized: number; sending: number; sent: number; cancelled: number }
+
+/** A part of a purchase Direct.Fund does not have as paid yet (lib/financer/dfClient.ts DfUnpaidPart). */
+export type WaitingPart = Pick<DfUnpaidPart, 'batchRef' | 'batchStatus' | 'orderType' | 'destinationType' | 'amount' | 'currency' | 'transactionRef'>;
+
+/**
+ * Which of the batches waiting for the approval are asked about, oldest first, while their purchases fit one
+ * Direct.Fund call (MAX_UNPAID_REFS, MAX_UNPAID_REFS_CHARS). A batch is asked about whole or not at all: an answer
+ * about some of its purchases would read as the rest being paid. Exported for tests.
+ */
+export function chooseWaitingBatches<B extends { createdAt: string | null }>(
+  waiting: Array<{ batch: B; index: number; refs: string[] }>,
+): { refs: string[]; chosen: Array<{ batch: B; index: number; refs: string[] }> } {
+  const asked = new Set<string>();
+  let chars = 0;
+  const chosen: Array<{ batch: B; index: number; refs: string[] }> = [];
+  // Direct.Fund lists newest first, so of two made in the same second the later in its list is the older.
+  const oldestFirst = [...waiting].sort((x, y) =>
+    String(x.batch.createdAt ?? '').localeCompare(String(y.batch.createdAt ?? '')) || y.index - x.index);
+  for (const w of oldestFirst) {
+    if (w.refs.length === 0 || !w.refs.every(isUnpaidRef)) continue;
+    const fresh = w.refs.filter(r => !asked.has(r));
+    const extra = fresh.reduce((s, r) => s + encodeURIComponent(r).length + 1, 0);
+    if (asked.size + fresh.length > MAX_UNPAID_REFS || chars + extra > MAX_UNPAID_REFS_CHARS) continue;
+    for (const r of fresh) asked.add(r);
+    chars += extra;
+    chosen.push(w);
+  }
+  return { refs: [...asked], chosen };
+}
 
 export function createFinancerRouter(deps: FinancerRouterDeps): Router {
   const router = Router();
@@ -133,7 +167,8 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
         SUM(CASE WHEN status IN ('cancelled', 'failed') THEN 1 ELSE 0 END) AS cancelled
       FROM brain_lana_orders WHERE transaction_ref = ?
     `);
-    const out = batches.map(b => {
+    const awaiting: Array<{ batch: DfFinancerBatch; index: number; refs: string[] }> = [];
+    const out = batches.map((b, index) => {
       const row = local.get(b.batchRef) as any;
       const confirmedByMe = row?.settled_by === 'financer' && String(row.investor_hex).toLowerCase() === hex;
       const refs = [...new Set(b.transactionRefs)];
@@ -177,9 +212,17 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
       // counted in, it would show the batch waiting for that approval for
       // good (review N7). It is reported apart, as unclaimed.
       const stats: LegStats = { total: 0, pending: 0, authorized: 0, sending: 0, sent: 0, cancelled: 0 };
+      // Your purchases still waiting for the approval: a leg pending and not approved, or none here yet.
+      const waitingRefs: string[] = [];
       for (const ref of confirmedByMe ? mineRefs : refs) {
         const s = legs.get(ref) as Record<keyof LegStats, number | null>;
         for (const k of Object.keys(stats) as Array<keyof LegStats>) stats[k] += s[k] || 0;
+        if ((s.pending || 0) > (s.authorized || 0) || !s.total) waitingRefs.push(ref);
+      }
+      // The page's 'awaitingApproval' (src/components/financer/FinancerBatches.tsx batchStateOf): confirmed by you,
+      // nothing of yours approved to send yet, and something of yours still to come.
+      if (confirmedByMe && stats.authorized === 0 && (stats.pending > 0 || (stats.total === 0 && mineRefs.length > 0))) {
+        awaiting.push({ batch: b, index, refs: waitingRefs });
       }
       const settledBy: 'financer' | 'treasury' | null = confirmedByMe ? 'financer'
         : (row?.settled_by === 'treasury' || treasury > 0 || (row && !row.settled_by && row.status !== 'incoming')) ? 'treasury'
@@ -203,6 +246,8 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
           purchases: { total: refs.length, mine: mineRefs.length, treasury, other, unclaimed: unclaimedRefs.length, retakeable, cancelled },
           unclaimedRefs: unclaimedRefs.slice(0, MAX_UNCLAIMED_REFS),
           legs: stats,
+          // Filled in below for a batch waiting for the approval; null: not asked, or Direct.Fund did not answer.
+          waitingOn: null as WaitingPart[] | null,
         },
         held: isHeld,
         // Paid on Direct.Fund, not yet confirmed here, nobody else's, and not held.
@@ -211,6 +256,31 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
         resendStopped,
       };
     });
+    // What the approval still waits on (owner, 9 Oct 2026: batch 2026002432 confirmed, and the purchase's €0.25
+    // merchant's commission by bank still unpaid in Direct.Fund batch 2026002433 — the page said only "when every
+    // part is paid"). ONE Direct.Fund call for every batch waiting; it only words the page, so a Direct.Fund that
+    // cannot answer (or one before the route: 403/404) leaves waitingOn null and the page its general sentence.
+    // An empty list: Direct.Fund has every part paid, and the approval comes on the brain's next rounds.
+    const { refs: askRefs, chosen } = chooseWaitingBatches(awaiting);
+    if (askRefs.length > 0) {
+      let parts: DfUnpaidPart[] | null = null;
+      try {
+        parts = await fetchFinancerUnpaidParts(hex, askRefs, df);
+      } catch (err) {
+        console.warn(`[financer] unpaid parts not read from Direct.Fund: ${(err as any)?.message || err}`);
+      }
+      if (parts) {
+        for (const w of chosen) {
+          const mine = new Set(w.refs);
+          out[w.index].ld.waitingOn = parts
+            .filter(p => mine.has(p.transactionRef))
+            .map(p => ({
+              batchRef: p.batchRef, batchStatus: p.batchStatus, orderType: p.orderType, destinationType: p.destinationType,
+              amount: p.amount, currency: p.currency, transactionRef: p.transactionRef,
+            }));
+        }
+      }
+    }
     return res.json({ batches: out });
   });
 

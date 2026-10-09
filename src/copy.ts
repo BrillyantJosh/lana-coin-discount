@@ -1202,6 +1202,30 @@ export const FINANCER = {
       'decides who settles it. Nothing to do here for now.',
     other: 'Some of its purchases are settled by another financer. Ask the administrator.',
   },
+  // Owner, 9 Oct 2026: batch 2026002432 confirmed, and nothing said that the purchase's €0.25 merchant's commission by
+  // bank was still unpaid in Direct.Fund batch 2026002433. A confirmed batch waiting for the approval now names what
+  // Direct.Fund does not have as paid yet, one line per Direct.Fund batch ({parts}: "€0.25 — merchant’s commission,
+  // bank transfer", several joined by "; "). When Direct.Fund cannot be asked, batchState.awaitingApproval says it in general.
+  waitingOn: {
+    inBatch:
+      'Waiting for Direct.Fund: batch {batch} ({parts}) is not marked paid yet. Pay it there and press ' +
+      '»I Have Paid This Batch«; the LANA can be sent about 10–20 minutes later.',
+    noBatch:
+      'Waiting for Direct.Fund: a part of the purchase ({part}) is not in a batch on Direct.Fund yet. Once it is in ' +
+      'one, pay that batch there and press »I Have Paid This Batch«; the LANA can be sent about 10–20 minutes later.',
+    allPaid: 'Every part is paid on Direct.Fund. Approval comes on its own within about 10–20 minutes.',
+    orderTypes: {
+      lana_purchase: 'LANA purchase',
+      merchant_payment: 'payment to the merchant',
+      merchant_commission: 'merchant’s commission',
+      caretaker_via_discount: 'payment to the caretaker',
+      other: 'other payment',
+    },
+    destinations: {
+      bank: 'bank transfer',
+      lana_discount: 'internal',
+    },
+  },
   unclaimed:
     'Purchases of this batch you do not send yet ({count}): {refs}. Direct.Fund did not count them when you confirmed ' +
     'the batch (moved to another batch, for instance).',
@@ -1491,6 +1515,26 @@ export const FINANCER_SL: FinancerText = {
       'Zadržan: ta paket je morda že plačan na bančni račun zakladnice, zato o tem, kdo ga poravna, odloči administrator ' +
       'Lana.Discount. Tukaj zaenkrat ni treba storiti ničesar.',
     other: 'Nekatere njegove nakupe poravnava drug financer. Vprašajte administratorja.',
+  },
+  waitingOn: {
+    inBatch:
+      'Čaka še Direct.Fund: paket {batch} ({parts}) še ni označen kot plačan. Plačajte ga tam in pritisnite ' +
+      '»I Have Paid This Batch«; LANE boste lahko poslali približno 10–20 minut zatem.',
+    noBatch:
+      'Čaka še Direct.Fund: del nakupa ({part}) na Direct.Fund še ni v nobenem paketu. Ko bo v paketu, ga tam plačajte ' +
+      'in pritisnite »I Have Paid This Batch«; LANE boste lahko poslali približno 10–20 minut zatem.',
+    allPaid: 'Na Direct.Fund so plačani vsi deli. Odobritev pride sama, v približno 10–20 minutah.',
+    orderTypes: {
+      lana_purchase: 'nakup LANA',
+      merchant_payment: 'plačilo trgovcu',
+      merchant_commission: 'provizija trgovcu',
+      caretaker_via_discount: 'plačilo skrbniku',
+      other: 'drugo plačilo',
+    },
+    destinations: {
+      bank: 'bančno nakazilo',
+      lana_discount: 'interno',
+    },
   },
   unclaimed:
     'Nakupi tega paketa, ki jih še ne pošiljate vi ({count}): {refs}. Ko ste paket potrdili, jih Direct.Fund ni štel ' +

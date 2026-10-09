@@ -13,7 +13,10 @@
  *   - not paid there yet → close and pay it on Direct.Fund first (a link);
  *   - confirmed by them → how far its LANA has got: waiting for the approval
  *     (once every part of a purchase is paid on Direct.Fund, bank payouts to
- *     merchants included — review C19), ready below, on its way, sent;
+ *     merchants included — review C19), ready below, on its way, sent; while
+ *     it waits, the parts Direct.Fund does not have as paid yet are named, one
+ *     line per Direct.Fund batch (`ld.waitingOn`, owner 9 Oct 2026), or said
+ *     all paid — the general sentence only when Direct.Fund could not be asked;
  *   - the treasury's, or another financer's in part → said, never confirmable;
  *   - held (`held`: it may already have been paid to the treasury's bank
  *     account, server/lib/financer/confirm.ts heldBatches) → the administrator
@@ -36,7 +39,7 @@
  * answers per batch; a refusal is shown under its row in the reader's words.
  */
 import type { FinancerText } from '@/copy';
-import type { ConfirmResult, FinancerBatch } from '@/lib/financer/financerApi';
+import type { ConfirmResult, FinancerBatch, WaitingPart } from '@/lib/financer/financerApi';
 import { DIRECT_FUND_URL } from '@/lib/financer/financerApi';
 import { codeText, dayText, fiatText, fill } from './financerText';
 
@@ -60,6 +63,35 @@ export function batchStateOf(b: FinancerBatch): Row['state'] {
   if (b.ld.purchases.other > 0) return 'other';
   if (b.canConfirm) return 'canConfirm';
   return 'notPaid';
+}
+
+/** A label from one of the copy's maps; one the page does not know is undefined (never an Object property). */
+const labelOf = (map: Record<string, string>, key: string | null): string | undefined =>
+  key !== null && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+
+/**
+ * What a confirmed batch's approval still waits on at Direct.Fund (owner, 9 Oct 2026: batch 2026002432 confirmed, and
+ * nothing said that the purchase's €0.25 merchant's commission by bank sat unpaid in batch 2026002433). One sentence
+ * per Direct.Fund batch, its parts named in it; one per part in no batch yet; `[]` is every part paid. null when
+ * Direct.Fund could not be asked (or a server before `waitingOn`): the row keeps its general sentence.
+ */
+export function waitingLines(t: FinancerText, waitingOn: WaitingPart[] | null | undefined): string[] | null {
+  if (!waitingOn) return null;
+  const w = t.waitingOn;
+  if (waitingOn.length === 0) return [w.allPaid];
+  const partText = (p: WaitingPart) => {
+    const what = labelOf(w.orderTypes, p.orderType) ?? w.orderTypes.other;
+    const how = labelOf(w.destinations, p.destinationType);
+    return `${fiatText(p.amount, p.currency)} — ${what}${how ? `, ${how}` : ''}`;
+  };
+  const byBatch = new Map<string, WaitingPart[]>();
+  const inNoBatch: string[] = [];
+  for (const p of waitingOn) {
+    if (p.batchRef) byBatch.set(p.batchRef, [...(byBatch.get(p.batchRef) ?? []), p]);
+    else inNoBatch.push(fill(w.noBatch, { part: partText(p) }));
+  }
+  const inBatch = [...byBatch].map(([batch, parts]) => fill(w.inBatch, { batch, parts: parts.map(partText).join('; ') }));
+  return [...inBatch, ...inNoBatch];
 }
 
 const FOLDED: ReadonlyArray<Row['state']> = ['done', 'treasury'];
@@ -164,6 +196,8 @@ function BatchRow(props: {
   const retakeable = b.ld.purchases?.retakeable ?? unclaimed;
   const againResend = again && (b.resendStopped ?? retakeable === 0);
   const againTake = again && (retakeable > 0 || !againResend);
+  // Waiting for the approval: what Direct.Fund does not have as paid yet, when it could say.
+  const waiting = row.state === 'awaitingApproval' ? waitingLines(t, b.ld.waitingOn) : null;
   return (
     <li data-testid={`financer-batch-${b.batchRef}`} className="rounded-xl border border-border bg-background/60 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -198,7 +232,13 @@ function BatchRow(props: {
           )}
         </div>
       </div>
-      <p className={`mt-2 text-sm ${TONE[row.state]}`}>{t.batchState[row.state]}</p>
+      {waiting ? (
+        <div className={`mt-2 space-y-1 text-sm ${TONE[row.state]}`} data-testid={`financer-batch-waiting-${b.batchRef}`}>
+          {waiting.map((line, i) => <p key={i}>{line}</p>)}
+        </div>
+      ) : (
+        <p className={`mt-2 text-sm ${TONE[row.state]}`}>{t.batchState[row.state]}</p>
+      )}
       {row.state === 'notPaid' && (
         <a href={DIRECT_FUND_URL} rel="noopener" className="mt-1 inline-block text-sm font-semibold text-primary hover:underline">
           {t.openDf}

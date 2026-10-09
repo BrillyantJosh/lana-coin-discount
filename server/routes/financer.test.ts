@@ -29,7 +29,7 @@ vi.mock('../db/index.js', async () => {
 });
 
 import { getDbHandle } from '../db/index.js';
-import { createFinancerRouter } from './financer';
+import { createFinancerRouter, chooseWaitingBatches } from './financer';
 import { recordTreasuryReceived, heldBatches } from '../lib/financer/confirm';
 import { parseBatchByRef } from '../lib/financer/dfClient';
 import { ownerMismatchPurchases, forgetUnownedMismatches } from '../lib/financer/sends';
@@ -57,6 +57,11 @@ const dfWorld = {
   batchDown: false,
   /** Listed for the signer, but batch-by-ref no longer knows it. */
   ghosts: [] as string[],
+  /** What unpaid-parts knows as not paid yet (answered for the asked references only), and how it answers. */
+  unpaid: [] as Array<Record<string, unknown>>,
+  unpaidStatus: 200,
+  /** The references each unpaid-parts call asked about, in order. */
+  unpaidAsks: [] as string[][],
 };
 let dfServer: http.Server;
 let dfBase = '';
@@ -99,6 +104,14 @@ beforeAll(async () => {
       const b = dfWorld.batches.get(decodeURIComponent(m[1]));
       if (!b) { res.statusCode = 404; res.end('{"error":"BATCH_NOT_FOUND"}'); return; }
       res.end(JSON.stringify(b));
+      return;
+    }
+    m = /^\/api\/admin\/financers\/([0-9a-f]{64})\/unpaid-parts\?refs=(.*)$/.exec(url);
+    if (m) {
+      const refs = m[2].split(',').map(decodeURIComponent);
+      dfWorld.unpaidAsks.push(refs);
+      if (dfWorld.unpaidStatus !== 200) { res.statusCode = dfWorld.unpaidStatus; res.end('{}'); return; }
+      res.end(JSON.stringify({ parts: dfWorld.unpaid.filter(p => refs.includes(String(p.transactionRef))) }));
       return;
     }
     m = /^\/api\/admin\/financers\/([0-9a-f]{64})(\/lana-discount-batches)?$/.exec(url);
@@ -148,6 +161,9 @@ beforeEach(() => {
   dfWorld.down = false;
   dfWorld.batchDown = false;
   dfWorld.ghosts = [];
+  dfWorld.unpaid = [];
+  dfWorld.unpaidStatus = 200;
+  dfWorld.unpaidAsks = [];
   registrar = () => ({ registered: true, frozen: false, wallet_type: 'Lana.Discount', nostr_hex_id: me.hex });
 });
 
@@ -748,5 +764,139 @@ describe('GET /api/financer/batches', () => {
     } finally {
       if (saved === undefined) delete process.env.FINANCER_HELD_BATCHES; else process.env.FINANCER_HELD_BATCHES = saved;
     }
+  });
+});
+
+// ─── what the approval waits on at Direct.Fund (owner, 9 Oct 2026) ─────────
+// Batch 2026002432 confirmed, and the brain did not approve: the purchase's
+// €0.25 merchant's commission by bank sat in Direct.Fund batch 2026002433,
+// closed and not marked paid. The page said only "when every part is paid".
+
+describe('GET /api/financer/batches: ld.waitingOn', () => {
+  const COMMISSION = { transactionRef: 'B-OLD-T1', orderType: 'merchant_commission', destinationType: 'bank', amount: 0.25, currency: 'EUR', batchRef: '2026002433', batchStatus: 'closed' };
+  const INVOICE = { transactionRef: 'B-OLD-T1', orderType: 'merchant_payment', destinationType: 'bank', amount: 12, currency: 'EUR', batchRef: '2026002433', batchStatus: 'closed' };
+  const CARETAKER = { transactionRef: 'B-NEW-T1', orderType: 'caretaker_via_discount', destinationType: 'lana_discount', amount: 1.5, currency: 'EUR', batchRef: null, batchStatus: null };
+  const unpaidHits = () => dfWorld.hits.filter(h => h.includes('/unpaid-parts'));
+  const batches = async () => {
+    const r = await call(me, 'GET', '/batches');
+    expect(r.status).toBe(200);
+    return Object.fromEntries(r.body.batches.map((b: any) => [b.batchRef, b]));
+  };
+
+  /**
+   * Two batches waiting for the approval (Direct.Fund lists the newer first), one ready to send, one not confirmed.
+   * Of B-OLD, T1 waits and T2 is sent; B-NEW's one purchase has no approval yet. B-READY has one purchase approved
+   * and one not: it is ready to send, not waiting, so nothing of it is asked about.
+   */
+  async function world() {
+    financers(me);
+    dfBatch('B-NEW', me, { createdAt: '2026-10-08 09:00:00' }, [{}]);
+    dfBatch('B-OLD', me, { createdAt: '2026-10-07 09:00:00' });
+    dfBatch('B-READY', me, {}, [{}, {}]);
+    dfBatch('B-FRESH', me, {}, [{}]);
+    for (const ref of ['B-NEW', 'B-OLD', 'B-READY']) expect((await confirm(me, [ref])).body.results[0]).toMatchObject({ ok: true });
+    leg('B-OLD-T1', { auth: 0 });
+    leg('B-OLD-T2', { status: 'sent', auth: 1 });
+    leg('B-NEW-T1', { auth: 0 });
+    leg('B-READY-T1', { auth: 1 });
+    leg('B-READY-T2', { auth: 0 });
+    leg('B-FRESH-T1', { auth: 0 });
+    dfWorld.hits = [];
+  }
+
+  it('names the unpaid parts per batch — its own purchases only — from ONE Direct.Fund call, oldest batch first', async () => {
+    await world();
+    dfWorld.unpaid = [COMMISSION, INVOICE, CARETAKER, { ...COMMISSION, transactionRef: 'B-READY-T2' }, { ...COMMISSION, transactionRef: 'B-FRESH-T1' }];
+    const by = await batches();
+
+    expect(unpaidHits()).toHaveLength(1);
+    expect(unpaidHits()[0]).toBe(`/api/admin/financers/${me.hex}/unpaid-parts?refs=B-OLD-T1,B-NEW-T1`);
+    expect(dfWorld.auth.at(-1)).toBe('Bearer peer-test');
+    expect(by['B-OLD'].ld.waitingOn).toEqual([
+      { batchRef: '2026002433', batchStatus: 'closed', orderType: 'merchant_commission', destinationType: 'bank', amount: 0.25, currency: 'EUR', transactionRef: 'B-OLD-T1' },
+      { batchRef: '2026002433', batchStatus: 'closed', orderType: 'merchant_payment', destinationType: 'bank', amount: 12, currency: 'EUR', transactionRef: 'B-OLD-T1' },
+    ]);
+    expect(by['B-NEW'].ld.waitingOn).toEqual([
+      { batchRef: null, batchStatus: null, orderType: 'caretaker_via_discount', destinationType: 'lana_discount', amount: 1.5, currency: 'EUR', transactionRef: 'B-NEW-T1' },
+    ]);
+    // Ready to send, or not confirmed by the signer: nothing waits on Direct.Fund for them here, and nothing is asked.
+    expect(by['B-READY'].ld.waitingOn).toBeNull();
+    expect(by['B-FRESH'].ld.waitingOn).toBeNull();
+  });
+
+  it('an empty list when Direct.Fund has every part paid: the approval comes by itself', async () => {
+    await world();
+    const by = await batches();
+    expect(unpaidHits()).toHaveLength(1);
+    expect(by['B-OLD'].ld.waitingOn).toEqual([]);
+    expect(by['B-NEW'].ld.waitingOn).toEqual([]);
+  });
+
+  it('null — the page keeps its general sentence — when Direct.Fund has no such route (404, 403) or does not answer; the list itself still answers', async () => {
+    await world();
+    for (const status of [404, 403, 503]) {
+      dfWorld.unpaidStatus = status;
+      const by = await batches();
+      expect(by['B-OLD'].ld.waitingOn, String(status)).toBeNull();
+      expect(by['B-NEW'].ld.waitingOn, String(status)).toBeNull();
+      expect(by['B-OLD'].ld.confirmed).toBe(true);
+    }
+    expect(unpaidHits()).toHaveLength(3);
+  });
+
+  it('no Direct.Fund call when no batch waits for the approval', async () => {
+    financers(me);
+    dfBatch('B-READY', me, {}, [{}, {}]);
+    dfBatch('B-FRESH', me, {}, [{}]);
+    await confirm(me, ['B-READY']);
+    leg('B-READY-T1', { auth: 1 });
+    leg('B-READY-T2', { auth: 0 }); // ready to send (T1): not waiting, though T2 is not approved yet
+    leg('B-FRESH-T1', { auth: 0 }); // not confirmed: nothing of it is the signer's to wait for
+    dfWorld.hits = [];
+    const by = await batches();
+    expect(unpaidHits()).toEqual([]);
+    expect(by['B-READY'].ld.waitingOn).toBeNull();
+    // All sent: done, nothing to ask either.
+    db.prepare("UPDATE brain_lana_orders SET status = 'sent'").run();
+    await batches();
+    expect(unpaidHits()).toEqual([]);
+  });
+
+  it('a confirmed purchase whose legs have not come yet waits too, and is asked about', async () => {
+    financers(me);
+    dfBatch('B1', me, {}, [{}]);
+    await confirm(me, ['B1']);
+    dfWorld.unpaid = [{ ...COMMISSION, transactionRef: 'B1-T1' }];
+    const by = await batches();
+    expect(dfWorld.unpaidAsks).toEqual([['B1-T1']]);
+    expect(by['B1'].ld.waitingOn).toEqual([{ ...COMMISSION, transactionRef: 'B1-T1' }]);
+  });
+
+  it('at most 200 purchases in one call, whole batches only, oldest first; a batch that does not fit stays null', () => {
+    const batch = (createdAt: string, n: number, prefix: string, len = 8) => ({
+      batch: { createdAt },
+      refs: Array.from({ length: n }, (_, i) => `${prefix}${String(i).padStart(len, '0')}`),
+    });
+    // Direct.Fund's order: newest first.
+    const listed = [batch('2026-10-09 10:00:00', 50, 'c'), batch('2026-10-08 10:00:00', 100, 'b'), batch('2026-10-07 10:00:00', 150, 'a')]
+      .map((b, index) => ({ ...b, index }));
+    const { refs, chosen } = chooseWaitingBatches(listed);
+    expect(chosen.map(c => c.index)).toEqual([2, 0]); // the oldest (150), then the 50 that still fit; the 100 do not
+    expect(refs).toHaveLength(200);
+    expect(refs[0]).toBe('a00000000');
+
+    // A purchase in two batches is asked once.
+    const shared = chooseWaitingBatches([
+      { batch: { createdAt: '2026-10-08' }, index: 0, refs: ['T1', 'T2'] },
+      { batch: { createdAt: '2026-10-07' }, index: 1, refs: ['T2', 'T3'] },
+    ]);
+    expect(shared.refs).toEqual(['T2', 'T3', 'T1']);
+    expect(shared.chosen.map(c => c.index)).toEqual([1, 0]);
+
+    // Long references: the query stays short enough for a proxy to read it (MAX_UNPAID_REFS_CHARS), whole batches still.
+    const long = chooseWaitingBatches([{ ...batch('2026-10-07', 80, 'L', 120), index: 0 }, { ...batch('2026-10-08', 2, 'S'), index: 1 }]);
+    expect(long.chosen.map(c => c.index)).toEqual([1]);
+    // A reference with a comma cannot be asked about: its batch stays null.
+    expect(chooseWaitingBatches([{ batch: { createdAt: null }, index: 0, refs: ['a,b'] }]).chosen).toEqual([]);
   });
 });
