@@ -38,9 +38,7 @@ export interface NoticeText {
   directory: string;
   loading: string;
   source: string;
-  soldBefore: string;
-  soldBeforeLink: string;
-  soldBeforeBelow: string;
+  signInOnly: string;
   signInTitle: string;
   signInIntro: string;
   signInKeyIntro: string;
@@ -73,13 +71,11 @@ export const NOTICE_TEXT: Record<NoticeLang, NoticeText> = {
     directory: 'Podjetja na BEF Explorerju',
     loading: 'Berem podjetja z relejev Lana …',
     source: 'Prebrano iz podpisanega profila vsakega podjetja (KIND 30972) na relejih Lana.',
-    soldBefore: 'Ste LANE že prodali na Lana.discount?',
-    soldBeforeLink: 'Prijavite se in poglejte, kaj vam še dolgujemo.',
-    soldBeforeBelow: 'Spodaj se prijavite in poglejte, kaj vam še dolgujemo.',
+    signInOnly: 'Prijava je tukaj odslej samo za podjetja, ki financirajo nakupe, in za administratorje.',
     signInTitle: 'Prijava',
     signInIntro:
-      'Prijava je namenjena le še pregledu LAN, ki ste jih tu že prodali, in temu, kar vam še dolgujemo, ' +
-      'financerjem za poravnavo njihovih nakupov (/financer) ter skrbnikom strani.',
+      'Prijava je odslej samo za podjetja, ki financirajo nakupe (poravnajo jih na /financer), in za ' +
+      'administratorje strani.',
     signInKeyIntro: 'Vnesite zasebni ključ WIF svoje denarnice LanaCoin.',
     signInKeyLabel: 'Zasebni ključ WIF',
     signInKeyPlaceholder: 'Vnesite ključ WIF ...',
@@ -104,9 +100,7 @@ export const NOTICE_TEXT: Record<NoticeLang, NoticeText> = {
     directory: SELLING_MOVED.directory,
     loading: SELLING_MOVED.loading,
     source: SELLING_MOVED.source,
-    soldBefore: SELLING_MOVED.soldBefore,
-    soldBeforeLink: SELLING_MOVED.soldBeforeLink,
-    soldBeforeBelow: SELLING_MOVED.soldBeforeBelow,
+    signInOnly: SELLING_MOVED.signInOnly,
     signInTitle: SELLING_MOVED.signInTitle,
     signInIntro: SELLING_MOVED.signInIntro,
     signInKeyIntro: SELLING_MOVED.signInKeyIntro,
@@ -165,15 +159,18 @@ export function LangToggle({ lang, onChange }: { lang: NoticeLang; onChange: (l:
 export function SellingMovedNotice({
   lang: controlledLang,
   onLangChange,
-  soldBefore = 'link',
+  signInNote = true,
   answer: givenAnswer,
   headingLevel = 'h1',
 }: {
   /** Controlled language (the sign-in page shares it with its form); uncontrolled when omitted. */
   lang?: NoticeLang;
   onLangChange?: (l: NoticeLang) => void;
-  /** How the line for people who already sold here ends: a link to sign in, "sign in below", or not at all. */
-  soldBefore?: 'link' | 'below' | 'none';
+  /**
+   * The closing line: who may still sign in here (9 Oct 2026). Off where the page says it itself (the sign-in page)
+   * or the reader is already signed in (the dashboard).
+   */
+  signInNote?: boolean;
   /** The firms, when the page already has them; otherwise the notice reads them itself. */
   answer?: BuyingDealersAnswer | null;
   headingLevel?: 'h1' | 'h2';
@@ -263,12 +260,9 @@ export function SellingMovedNotice({
         </a>
       )}
 
-      {soldBefore !== 'none' && (
+      {signInNote && (
         <p className="mt-5 pt-4 border-t border-border text-sm text-muted-foreground leading-relaxed">
-          {c.soldBefore}{' '}
-          {soldBefore === 'link'
-            ? <a href="/login" className="font-semibold text-primary hover:underline">{c.soldBeforeLink}</a>
-            : c.soldBeforeBelow}
+          {c.signInOnly}
         </p>
       )}
     </section>

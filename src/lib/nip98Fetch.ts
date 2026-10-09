@@ -17,7 +17,9 @@
  * component deep in a page can sign without having the session drilled into it.
  *
  * Vendored into lana-brain, lana-direct-fund and lana-coin-discount; the only
- * difference between the copies is SESSION_KEY.
+ * differences between the copies are SESSION_KEY and, here, nip98Headers'
+ * `key`: the sign-in asks the server who a key is before it keeps a session
+ * (src/lib/sessionRole.ts), so that one request signs with a key not stored yet.
  */
 import { finalizeEvent } from 'nostr-tools/pure';
 
@@ -84,9 +86,11 @@ export function canSignRequests(): boolean {
  * The Authorization header proving this session signed this method + URL + body.
  * Returns {} when there is no key, so the request goes out unsigned and the
  * server refuses it with a reason, rather than this throwing inside a click handler.
+ * `key` (32-byte hex) signs instead of the stored session's.
  */
-export async function nip98Headers(method: string, url: string, body?: string): Promise<Record<string, string>> {
-  const sk = storedPrivateKey();
+export async function nip98Headers(method: string, url: string, body?: string, key?: string): Promise<Record<string, string>> {
+  const given = key === undefined ? null : String(key).trim().toLowerCase();
+  const sk = key === undefined ? storedPrivateKey() : given && /^[0-9a-f]{64}$/.test(given) ? given : null;
   if (!sk) return {};
   const tags: string[][] = [
     ['u', signedUrl(url)],

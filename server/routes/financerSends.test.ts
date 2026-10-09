@@ -455,6 +455,9 @@ describe('a financer sends their purchases\' LANA from their own wallet', () => 
   it('another financer sees nothing of these legs and can neither prepare nor send them', async () => {
     const ids = await confirmedPurchase('T6', 'B6');
     const { rawTx } = await prepareAndSign(ids);
+    // A financer too (9 Oct 2026: a key that is none is refused before any of this — routes/financerGate.test.ts),
+    // with no wallet chosen.
+    df.financers.set(other.hex, null);
     expect((await call(other, 'GET', '/sendable')).body).toMatchObject({ purchases: [], legCount: 0, walletProblem: 'NO_WALLET' });
     expect(await call(other, 'POST', '/sends/prepare', { orderIds: ids })).toMatchObject({ status: 409, body: { code: 'NOT_SENDABLE' } });
     expect(await call(other, 'POST', '/sends', { orderIds: ids, rawTx })).toMatchObject({ status: 409, body: { code: 'NOT_SENDABLE' } });

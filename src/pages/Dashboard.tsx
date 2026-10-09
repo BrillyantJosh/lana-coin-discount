@@ -417,7 +417,7 @@ const Dashboard = () => {
         {/* Where the invitation to submit an offer was: where selling went. */}
         {SELLING_CLOSED ? (
           <div className="max-w-4xl mx-auto">
-            <SellingMovedNotice soldBefore="none" headingLevel="h2" />
+            <SellingMovedNotice signInNote={false} headingLevel="h2" />
           </div>
         ) : (
         <div className="max-w-4xl mx-auto">

@@ -1,14 +1,25 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth, SignInRefused, type SignInRefusal } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { SellingMovedNotice, NOTICE_TEXT, useNoticeLang } from '@/components/SellingMovedNotice';
 import { SELLING_CLOSED } from '@/lib/sellingClosed';
+import { landingFor } from '@/lib/sessionRole';
+import { SIGN_IN_GATE_TEXT, type SignInGateText } from '@/copy';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
 
-/** Pages a sign-in may return to (`/login?next=…`): a financer sent here from Direct.Fund goes back to /financer. */
-const AFTER_SIGN_IN = ['/financer'];
+/** The signature gate's reasons for a device clock more than a minute off (server/lib/nip98Auth.ts), as nip98Fetch's explainSignatureFailure reads them. */
+const CLOCK_REASONS = ['STALE', 'BAD_TIME'];
+
+/** What the page says about a key that was not kept, in the reader's language. */
+function refusedText(gate: SignInGateText, refusal: SignInRefusal, reason: string | null): { title: string; body: string } {
+  if (refusal === 'NOT_ALLOWED') return { title: gate.notAllowedTitle, body: gate.notAllowed };
+  if (refusal === 'SIGNATURE') {
+    return { title: gate.signatureTitle, body: CLOCK_REASONS.includes(reason ?? '') ? gate.clock : gate.signature };
+  }
+  return { title: gate.uncheckedTitle, body: gate.unchecked };
+}
 
 const Login = () => {
   const [wif, setWif] = useState('');
@@ -16,22 +27,24 @@ const Login = () => {
   const [rememberMe, setRememberMe] = useState(true);
   const [relays, setRelays] = useState<string[]>([]);
   const [showQrScanner, setShowQrScanner] = useState(false);
-  const { login, session } = useAuth();
+  const { login, session, refusal, refusalReason } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
-  // Where to go once signed in. Only pages named here: an address from the link
-  // must never decide where a fresh session is taken (an open redirect).
+  // Where to go once signed in: a financer to /financer, an administrator where
+  // they always went (?next= only when it names a page in AFTER_SIGN_IN).
   const [searchParams] = useSearchParams();
-  const home = AFTER_SIGN_IN.includes(searchParams.get('next') || '') ? (searchParams.get('next') as string) : '/dashboard';
+  const next = searchParams.get('next');
   // One language for the notice and the form under it. Before sign-in there is
   // no profile to read it from, so it starts from the browser.
   const [lang, setLang] = useNoticeLang();
   const t = NOTICE_TEXT[lang];
+  const gate = SIGN_IN_GATE_TEXT[lang];
+  const refused = refusal ? refusedText(gate, refusal, refusalReason) : null;
 
-  // If already logged in, redirect to dashboard
+  // If already logged in, go where that key lands
   useEffect(() => {
-    if (session) navigate(home);
-  }, [session, navigate, home]);
+    if (session) navigate(landingFor(session, next));
+  }, [session, navigate, next]);
 
   // Fetch relays on mount
   useEffect(() => {
@@ -50,10 +63,15 @@ const Login = () => {
 
     setIsLoading(true);
     try {
-      await login(wif, relays, rememberMe);
+      const signedIn = await login(wif, relays, rememberMe);
       toast({ title: "Welcome!", description: "Login successful." });
-      navigate(home);
+      navigate(landingFor(signedIn, next));
     } catch (error) {
+      // Said on the page itself, in the reader's language (below), not in a toast that goes away.
+      if (error instanceof SignInRefused) {
+        setWif('');
+        return;
+      }
       toast({
         title: "Login failed",
         description: error instanceof Error ? error.message : "Invalid WIF key",
@@ -82,7 +100,7 @@ const Login = () => {
       {SELLING_CLOSED && (
         <div className="px-4 sm:px-6 pt-8 sm:pt-12">
           <div className="w-full max-w-2xl mx-auto">
-            <SellingMovedNotice lang={lang} onLangChange={setLang} soldBefore="below" />
+            <SellingMovedNotice lang={lang} onLangChange={setLang} signInNote={false} />
           </div>
         </div>
       )}
@@ -90,6 +108,19 @@ const Login = () => {
       {/* Login form */}
       <div className="flex-1 flex items-center justify-center px-6 py-12">
         <div className="w-full max-w-md space-y-8">
+          {/* Why the key just given — or the session kept from before — was not kept (9 Oct 2026). */}
+          {refused && (
+            <div
+              role="alert"
+              data-testid="sign-in-refused"
+              lang={lang}
+              className="rounded-xl border-2 border-destructive/40 bg-destructive/5 p-5 text-left space-y-2"
+            >
+              <p className="font-semibold text-foreground">{refused.title}</p>
+              <p className="text-sm text-muted-foreground leading-relaxed">{refused.body}</p>
+            </div>
+          )}
+
           <div className="text-center space-y-2">
             <img src="/lana-logo.png" alt="Lana" className="h-16 w-16 mx-auto dark:invert" />
             {SELLING_CLOSED ? (

@@ -16,6 +16,7 @@ import db, { closeDb, getElectrumServersFromDb, getAppSetting, getRelaysFromDb }
 import { heartbeatLegCounts } from './lib/autoSendSelection.js';
 import { runOutbox, outboxHealth, brainCallbackTarget } from './lib/financer/brainOutbox.js';
 import { createFinancerRouter } from './routes/financer.js';
+import { createSessionRouter } from './routes/session.js';
 // The LANA send machine (8 Oct 2026): every send recorded before it is
 // broadcast and finished from the chain — the financers' and the treasury's.
 import { defaultSends, sendsHealth } from './lib/financer/sends.js';
@@ -130,6 +131,10 @@ app.use('/api/financer', createFinancerRouter({
   walletCheckBaseUrl: process.env.WALLET_CHECK_BASE_URL || 'https://check.lanapays.us',
   sends: defaultSends(),
 }));
+// Who a signed-in key is here: an administrator, a financer (Direct.Fund's
+// word) or neither — the sign-in page keeps a session only for the first two
+// (owner, 9 Oct 2026). Signed (NIP-98); before the SPA catch-all, as above.
+app.use('/api/session', createSessionRouter());
 
 // Heartbeat status for the admin page. It MUST be registered before the static
 // files and the SPA catch-all below: an /api route declared after them never

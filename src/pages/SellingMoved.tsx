@@ -14,7 +14,7 @@ const SellingMoved = () => (
   <div className="min-h-screen bg-background flex flex-col">
     <Navbar />
     <main className="flex-1 container mx-auto px-4 sm:px-6 py-8 sm:py-14 max-w-3xl">
-      <SellingMovedNotice soldBefore="link" />
+      <SellingMovedNotice />
     </main>
     <Footer />
   </div>

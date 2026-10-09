@@ -1,8 +1,9 @@
 /**
  * THE WAY TO /financer IS SHOWN TO A FINANCER, AND ONLY TO ONE.
  *
- * Most people who sign in here are sellers who are still owed; a link to a page
- * that only says "this is not for you" is noise. So it is drawn on a clear yes
+ * Since 9 Oct 2026 only financers and administrators sign in here; to an
+ * administrator who is not a financer, a link to a page that only says "this
+ * is not for you" is noise. So it is drawn on a clear yes
  * from GET /api/financer/me (Direct.Fund's word, asked about the signer), and
  * a no, a refusal or Direct.Fund being away draws nothing.
  */

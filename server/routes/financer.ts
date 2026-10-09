@@ -55,6 +55,13 @@
  * Every route is signed (requireSigner, NIP-98) and answers only about the
  * signer. Direct.Fund is read FRESH on every call (lib/financer/dfClient.ts):
  * these answers decide whose money moves, and a cached one can be minutes old.
+ *
+ * And only to a financer (owner, 9 Oct 2026: lana.discount is now only for the
+ * companies that finance purchases and for the administrators): Direct.Fund
+ * says isInvestor && financer (DfFinancer.isFinancer). /me answers anyone else
+ * isFinancer: false and nothing of theirs — the page and its header link read
+ * that; every other route refuses them 403 NOT_FINANCER before it reads or
+ * writes anything (requireFinancer).
  */
 import { Router, type Request, type Response } from 'express';
 import type Database from 'better-sqlite3';
@@ -88,6 +95,12 @@ export interface FinancerRouterDeps {
 export const MAX_CONFIRM_BATCHES = 100;
 /** Most unclaimed purchases one batch lists by reference (ld.unclaimedRefs); the count is whole. */
 export const MAX_UNCLAIMED_REFS = 50;
+
+/** What a key that is not a financer on Direct.Fund (isInvestor && financer) is told, on every route but /me. */
+const notFinancer = () => ({
+  error: 'Direct.Fund does not know this key as a financer. lana.discount is now only for the companies that finance purchases and for the administrators.',
+  code: 'NOT_FINANCER',
+});
 
 function dfRefusal(res: Response, err: unknown) {
   const status = dfHttpStatus(err);
@@ -134,6 +147,27 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
   const dbOf = deps.db ?? getDbHandle;
   const df = deps.df ?? {};
 
+  /**
+   * The signer's hex, once Direct.Fund says they are a financer NOW — or null, after answering itself: 403 unsigned,
+   * 403 NOT_FINANCER, or DF_UNAVAILABLE (asked fresh, as every answer here).
+   */
+  const requireFinancer = async (req: Request, res: Response): Promise<string | null> => {
+    const hex = requireSigner(req, res);
+    if (!hex) return null;
+    let f: DfFinancer;
+    try {
+      f = await fetchFinancer(hex, df);
+    } catch (err) {
+      dfRefusal(res, err);
+      return null;
+    }
+    if (!f.isFinancer) {
+      res.status(403).json(notFinancer());
+      return null;
+    }
+    return hex;
+  };
+
   router.get('/me', async (req: Request, res: Response) => {
     const hex = requireSigner(req, res);
     if (!hex) return;
@@ -142,6 +176,18 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
       f = await fetchFinancer(hex, df);
     } catch (err) {
       return dfRefusal(res, err);
+    }
+    // Not a financer: the same shape, holding nothing of theirs — no wallet, no purchase, no Registrar question.
+    if (!f.isFinancer) {
+      return res.json({
+        hexId: hex,
+        isFinancer: false,
+        wallets: [],
+        unknownCurrencyRefs: [],
+        lanaDiscountWallet: null,
+        lanaDiscountWalletSetAt: null,
+        walletCheck: { ok: false, reason: 'NO_WALLET' },
+      });
     }
     // Every currency they chose a wallet for on Direct.Fund, or have a purchase still to send in here.
     const db = dbOf();
@@ -164,7 +210,7 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
     const first = f.walletFor((await legacyCurrency(db, hex, async () => Object.keys(f.wallets))).currency);
     return res.json({
       hexId: hex,
-      isFinancer: f.isInvestor,
+      isFinancer: true,
       wallets,
       unknownCurrencyRefs: local.unknownRefs.slice(0, MAX_UNCLAIMED_REFS),
       lanaDiscountWallet: first,
@@ -174,7 +220,7 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
   });
 
   router.get('/batches', async (req: Request, res: Response) => {
-    const hex = requireSigner(req, res);
+    const hex = await requireFinancer(req, res);
     if (!hex) return;
     let batches: DfFinancerBatch[];
     try {
@@ -340,9 +386,7 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
     let ownBatchRefs: Set<string>;
     try {
       const f = await fetchFinancer(hex, df);
-      if (!f.isInvestor) {
-        return res.status(403).json({ error: 'Direct.Fund does not know this key as a financer.', code: 'NOT_FINANCER' });
-      }
+      if (!f.isFinancer) return res.status(403).json(notFinancer());
       ownBatchRefs = new Set((await fetchFinancerBatches(hex, df)).map(b => b.batchRef));
     } catch (err) {
       return dfRefusal(res, err);
@@ -370,7 +414,7 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
   };
 
   router.get('/sendable', async (req: Request, res: Response) => {
-    const hex = requireSigner(req, res);
+    const hex = await requireFinancer(req, res);
     if (!hex) return;
     try {
       // ?currency=EUR: that currency's purchases and wallet. Read by the machine, which refuses one that is not (BAD_CURRENCY).
@@ -384,7 +428,7 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
   });
 
   router.post('/sends/prepare', async (req: Request, res: Response) => {
-    const hex = requireSigner(req, res);
+    const hex = await requireFinancer(req, res);
     if (!hex) return;
     try {
       const r = await sendsOf().prepare(hex, (req.body || {}).orderIds);
@@ -400,7 +444,9 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
   });
 
   router.post('/sends', async (req: Request, res: Response) => {
-    const hex = requireSigner(req, res);
+    // Refused here, nothing is stored; Direct.Fund away (502) is an answer that did not come, and the browser sends
+    // the same signed bytes again (src/lib/financer/payoutView.ts announceInDoubt).
+    const hex = await requireFinancer(req, res);
     if (!hex) return;
     // Thrown after the send was stored is still a stored send: the browser repeats the SAME bytes on a 5xx
     // (src/lib/financer/payoutView.ts announceInDoubt) and is then answered with it as it stands.
@@ -417,8 +463,8 @@ export function createFinancerRouter(deps: FinancerRouterDeps): Router {
     }
   });
 
-  router.get('/sends', (req: Request, res: Response) => {
-    const hex = requireSigner(req, res);
+  router.get('/sends', async (req: Request, res: Response) => {
+    const hex = await requireFinancer(req, res);
     if (!hex) return;
     return res.json({ sends: sendsOf().list(hex) });
   });

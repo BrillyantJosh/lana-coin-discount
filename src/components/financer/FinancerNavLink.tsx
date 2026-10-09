@@ -2,11 +2,12 @@
  * The way to /financer from the signed-in header — shown only to a financer.
  *
  * Who is one is Direct.Fund's word, read through GET /api/financer/me (signed:
- * the signer is asked about, never a hex the page names). Most people who sign
- * in here are sellers who are still owed, and the link would only lead them to
- * a page that says it is not for them; so it is drawn only on a clear yes, and
- * a refusal, a timeout or Direct.Fund being away draws nothing — a missing
- * link must never stand in the way of the page it sits on.
+ * the signer is asked about, never a hex the page names). Since 9 Oct 2026 only
+ * financers and administrators sign in here, and an administrator who is not a
+ * financer would only be led to a page that says it is not for them; so it is
+ * drawn only on a clear yes, and a refusal, a timeout or Direct.Fund being away
+ * draws nothing — a missing link must never stand in the way of the page it
+ * sits on.
  *
  * One question per page load and signer: the dashboard re-renders, the answer
  * does not change in that time, and each ask is a call to Direct.Fund.

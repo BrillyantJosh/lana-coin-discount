@@ -15,7 +15,7 @@
  * Peer calls, authenticated with this server's own key (lib/fundPeer.ts), to
  * four read-only routes DF admits for its peer:
  *   GET /api/admin/batch-by-ref/:batchRef
- *   GET /api/admin/financers/:hexId                        (9 Oct 2026: + wallets, one per currency)
+ *   GET /api/admin/financers/:hexId                        (9 Oct 2026: + wallets, one per currency; + financer)
  *   GET /api/admin/financers/:hexId/lana-discount-batches
  *   GET /api/admin/financers/:hexId/unpaid-parts?refs=…   (9 Oct 2026: only words a page, decides nothing)
  */
@@ -91,6 +91,14 @@ export interface DfBatchByRef {
 export interface DfFinancer {
   hexId: string;
   isInvestor: boolean;
+  /**
+   * Direct.Fund's financer flag (owner, 9 Oct 2026: only the companies that finance purchases may use Direct.Fund and
+   * lana.discount; Direct.Fund's administrators set it). A Direct.Fund before the flag (the field absent): isInvestor,
+   * as it was.
+   */
+  financer: boolean;
+  /** isInvestor && financer: the one answer to "may this key act as a financer here". */
+  isFinancer: boolean;
   /** investors.lana_discount_wallet — the one wallet of a Direct.Fund before wallets per currency. */
   lanaDiscountWallet: string | null;
   lanaDiscountWalletSetAt: string | null;
@@ -250,11 +258,17 @@ export function currencyCode(v: unknown): string | null {
  * wallet (never the fallback); not an object at all, DF_BAD_RESPONSE. An entry whose key is no upper-case
  * three-letter code, or whose walletId is empty or not text, is no wallet — as Direct.Fund's own gate counts a row
  * without one.
+ *
+ * `financer` (boolean, 9 Oct 2026) the same way: ABSENT, a Direct.Fund before it — isInvestor stands for it, as before
+ * the flag; true or false, Direct.Fund's word; anything else, DF_BAD_RESPONSE (refused, never read as a yes).
  */
 export function parseFinancer(d: any, askedHex: string): DfFinancer {
   const h = hex(askedHex);
   if (!d || typeof d !== 'object' || hex(d.hexId) !== h) throw new DfError('DF_BAD_RESPONSE', 'Direct.Fund financer answer is for somebody else');
   if (typeof d.isInvestor !== 'boolean') throw new DfError('DF_BAD_RESPONSE', 'Direct.Fund financer answer has no isInvestor');
+  // Absent: a Direct.Fund before the flag, read as before (isInvestor). Present, only true or false is an answer.
+  if (d.financer !== undefined && typeof d.financer !== 'boolean') throw new DfError('DF_BAD_RESPONSE', 'Direct.Fund financer answer has a financer flag that is not true or false');
+  const financer: boolean = d.financer === undefined ? d.isInvestor : d.financer;
   const lanaDiscountWallet = str(d.lanaDiscountWallet);
   const perCurrency = d.wallets !== undefined;
   if (perCurrency && (d.wallets === null || typeof d.wallets !== 'object' || Array.isArray(d.wallets))) {
@@ -271,6 +285,8 @@ export function parseFinancer(d: any, askedHex: string): DfFinancer {
   return {
     hexId: h,
     isInvestor: d.isInvestor,
+    financer,
+    isFinancer: d.isInvestor && financer,
     lanaDiscountWallet,
     lanaDiscountWalletSetAt: str(d.lanaDiscountWalletSetAt),
     wallets,
@@ -283,7 +299,7 @@ export function parseFinancer(d: any, askedHex: string): DfFinancer {
   };
 }
 
-/** Is this hex a financer on DF, and which Lana.Discount wallet did they choose for each currency. Throws DfError. */
+/** Is this hex a financer on DF (isFinancer), and which Lana.Discount wallet did they choose for each currency. Throws DfError. */
 export async function fetchFinancer(hexId: string, opts: DfClientOptions = {}): Promise<DfFinancer> {
   const h = hex(hexId);
   if (!HEX_RE.test(h)) throw new DfError('DF_NOT_FOUND', 'Not a hex id');

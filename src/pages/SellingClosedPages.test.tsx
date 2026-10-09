@@ -5,7 +5,8 @@
  * leads to it, which MejmoSeFajn and being3 still link to), the landing page's
  * call to action and the sign-in page — show where selling went instead: the
  * firms read from the relays, with no wallet list and no field to sell with.
- * Signing in still works, for sellers who are still owed and for the admins.
+ * Signing in still works — since 9 Oct 2026 only for the companies that finance
+ * purchases and for the administrators (src/pages/Login.gate.test.tsx).
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
@@ -49,7 +50,7 @@ describe('/offer, where other apps still send people to sell', () => {
 });
 
 describe('the sign-in page', () => {
-  it('says first where selling went, then keeps the sign-in for what is still owed', async () => {
+  it('says first where selling went, then keeps the sign-in for the financing companies and the administrators', async () => {
     stubFetch(TWO_FIRMS, url => (url.includes('/api/relays') ? { relays: ['wss://relay.test'] } : {}));
     const { container } = render(<AuthProvider><MemoryRouter><Login /></MemoryRouter></AuthProvider>);
     await expectBothFirms();
@@ -57,8 +58,11 @@ describe('the sign-in page', () => {
     const form = container.querySelector('form')!;
     // Above the form, in the page's order.
     expect(notice.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(notice).getByText(/Sign in below to see what we still owe you\./)).toBeInTheDocument();
-    expect(screen.getByText(/Signing in is only for seeing the LANA you have already sold here/)).toBeInTheDocument();
+    // The notice does not invite a seller to sign in; the form says who may.
+    expect(within(notice).queryByText(/owe you|Signing in here/)).toBeNull();
+    expect(screen.getByText(
+      'Signing in is now only for the companies that finance purchases (they settle them at /financer) and for the administrators of this site.',
+    )).toBeInTheDocument();
     // The sign-in itself is untouched: one key field, one button.
     expect(within(form).getByLabelText('WIF Private Key')).toHaveAttribute('type', 'password');
     expect(within(form).getByRole('button', { name: 'Sign In' })).toBeInTheDocument();
@@ -71,7 +75,10 @@ describe('the sign-in page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'SL' }));
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent)
       .toBe(`Odkup LAN sta prevzeli podjetji ${KROG.name} in ${RAVENA.name}`));
-    expect(screen.getByText(/Spodaj se prijavite in poglejte, kaj vam še dolgujemo\./)).toBeInTheDocument();
+    expect(screen.queryByText(/dolgujemo/)).toBeNull();
+    expect(screen.getByText(
+      'Prijava je odslej samo za podjetja, ki financirajo nakupe (poravnajo jih na /financer), in za administratorje strani.',
+    )).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 2, name: 'Prijava' })).toBeInTheDocument();
     const form = container.querySelector('form')!;
     expect(within(form).getByLabelText('Zasebni ključ WIF')).toBeInTheDocument();
@@ -96,5 +103,15 @@ describe('the landing page', () => {
     expect(screen.getByText('Outstanding purchase-price settlements')).toBeInTheDocument();
     expect(screen.getByText('Completed treasury acquisitions')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'See what we owe' })).toHaveAttribute('href', '#settlements');
+  });
+
+  it('invites no seller to sign in: one sentence says who may (9 Oct 2026)', async () => {
+    stubFetch(TWO_FIRMS, () => undefined);
+    render(<MemoryRouter><Index /></MemoryRouter>);
+    await expectBothFirms();
+    const notice = screen.getByTestId('selling-moved');
+    expect(notice.querySelector('a[href="/login"]')).toBeNull();
+    expect(within(notice).queryByText(/owe you/)).toBeNull();
+    expect(within(notice).getByText('Signing in here is now only for the companies that finance purchases and for the administrators.')).toBeInTheDocument();
   });
 });

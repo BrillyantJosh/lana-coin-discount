@@ -52,7 +52,9 @@ describe('the two firms, read from the relays', () => {
       .toEqual([KROG.registerUrl, RAVENA.registerUrl]);
     expect(screen.getAllByRole('link', { name: 'Prodaj LANE' }).map(a => a.getAttribute('href')))
       .toEqual([KROG.sellUrl, RAVENA.sellUrl]);
-    expect(screen.getByRole('link', { name: 'Prijavite se in poglejte, kaj vam še dolgujemo.' })).toHaveAttribute('href', '/login');
+    // Who may still sign in (9 Oct 2026) — said, not offered: no way to the sign-in from here.
+    expect(screen.getByText('Prijava je tukaj odslej samo za podjetja, ki financirajo nakupe, in za administratorje.')).toBeInTheDocument();
+    expect(document.querySelector('a[href="/login"]')).toBeNull();
   });
 
   it('agrees the Slovenian verb with one firm', async () => {

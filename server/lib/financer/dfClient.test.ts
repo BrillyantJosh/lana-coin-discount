@@ -99,6 +99,24 @@ describe('fetchFinancer / fetchFinancerBatches', () => {
     await expect(fetchFinancer(HEX, opts())).rejects.toMatchObject({ code: 'DF_BAD_RESPONSE' });
   });
 
+  it('the financer flag (owner, 9 Oct 2026): a financer is an investor Direct.Fund marks one — isFinancer is both', async () => {
+    reply = () => ({ status: 200, body: { hexId: HEX, isInvestor: true, financer: true, lanaDiscountWallet: null, wallets: {} } });
+    expect(await fetchFinancer(HEX, opts())).toMatchObject({ isInvestor: true, financer: true, isFinancer: true });
+    // An investor whose flag is off (every investor but the financing companies' representatives) is no financer.
+    reply = () => ({ status: 200, body: { hexId: HEX, isInvestor: true, financer: false, lanaDiscountWallet: 'LOld', wallets: { EUR: { walletId: 'LEur' } } } });
+    expect(await fetchFinancer(HEX, opts())).toMatchObject({ isInvestor: true, financer: false, isFinancer: false });
+    // A flag on a key that is no investor makes nobody a financer.
+    expect(parseFinancer({ hexId: HEX, isInvestor: false, financer: true }, HEX)).toMatchObject({ financer: true, isFinancer: false });
+  });
+
+  it('a Direct.Fund before the flag (the field ABSENT): isInvestor stands for it, as before; a flag that is not true or false fails the answer', () => {
+    expect(parseFinancer({ hexId: HEX, isInvestor: true, lanaDiscountWallet: null }, HEX)).toMatchObject({ financer: true, isFinancer: true });
+    expect(parseFinancer({ hexId: HEX, isInvestor: false, lanaDiscountWallet: null }, HEX)).toMatchObject({ financer: false, isFinancer: false });
+    for (const financer of [null, 1, 0, 'true', 'yes', {}, []]) {
+      expect(() => parseFinancer({ hexId: HEX, isInvestor: true, financer }, HEX), JSON.stringify(financer)).toThrow(DfError);
+    }
+  });
+
   it('wallets per currency (owner, 9 Oct 2026): each currency its own, read from the peer route', async () => {
     reply = () => ({ status: 200, body: {
       hexId: HEX, isInvestor: true, lanaDiscountWallet: 'LOld', lanaDiscountWalletSetAt: '2026-10-08',

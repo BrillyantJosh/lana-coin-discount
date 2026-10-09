@@ -13,7 +13,7 @@ const HeroSection = () => {
       <section className="relative overflow-hidden py-10 md:py-20">
         <div className="container mx-auto px-4 sm:px-6 flex flex-col lg:flex-row items-center gap-10 lg:gap-12">
           <div className="flex-1 min-w-0 w-full space-y-6">
-            <SellingMovedNotice soldBefore="link" />
+            <SellingMovedNotice />
             <p className="text-sm md:text-base text-muted-foreground leading-relaxed">{LANDING.heroBodySecond}</p>
             <a
               href="#settlements"

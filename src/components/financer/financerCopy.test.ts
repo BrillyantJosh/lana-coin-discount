@@ -81,6 +81,17 @@ describe('the financer page in Slovenian and English', () => {
     expect([...new Set(unworded)]).toEqual([]);
   });
 
+  it('NOT_FINANCER, which the send routes answer too since 9 Oct 2026, is worded among the send codes — a send refusal is worded from them only', () => {
+    // routes/financer.ts requireFinancer guards /sendable, /sends/prepare and /sends as well as the confirm.
+    const route = readFileSync(join(ROOT, 'server/routes/financer.ts'), 'utf8');
+    for (const path of ["'/sendable'", "'/sends/prepare'", "'/sends'"]) {
+      const at = route.indexOf(`router.post(${path}`) > -1 ? route.indexOf(`router.post(${path}`) : route.indexOf(`router.get(${path}`);
+      expect(route.slice(at, at + 400), path).toContain('requireFinancer(req, res)');
+    }
+    expect(FINANCER.sendCodes.NOT_FINANCER).toMatch(/financer/);
+    expect(FINANCER_SL.sendCodes.NOT_FINANCER).toMatch(/financerja/);
+  });
+
   it('the page fills every placeholder of a refusal: a send refusal names only what the page knows', () => {
     // src/pages/Financer.tsx sendRefusal fills {wallet} (from the refusal), {max} (limits.maxLegs), {button} and
     // {currency} (the refusal's — NO_WALLET names the currency without a wallet — or the part's own).

@@ -1096,14 +1096,14 @@ export const SELLING_MOVED = {
   directory: 'Companies on BEF Explorer',
   loading: 'Reading the companies from the Lana relays…',
   source: 'Read from each company’s own signed profile (KIND 30972) on the Lana relays.',
-  soldBefore: 'Already sold LANA to Lana.discount?',
-  soldBeforeLink: 'Sign in to see what we still owe you.',
-  soldBeforeBelow: 'Sign in below to see what we still owe you.',
-  // The sign-in form, which stays: for sellers who are still owed, and for the administrators.
+  // Where "Already sold LANA? Sign in to see what we still owe you." stood until 9 Oct 2026: since then a seller's key
+  // cannot sign in (SIGN_IN_GATE below), so the line invites nobody, it says who may.
+  signInOnly: 'Signing in here is now only for the companies that finance purchases and for the administrators.',
+  // The sign-in form, which stays: for the companies that finance purchases, and for the administrators.
   signInTitle: 'Sign In',
   signInIntro:
-    'Signing in is only for seeing the LANA you have already sold here and what we still owe you, for financers ' +
-    'settling their purchases (/financer), and for the administrators of this site.',
+    'Signing in is now only for the companies that finance purchases (they settle them at /financer) and for the ' +
+    'administrators of this site.',
   signInKeyIntro: 'Enter your LanaCoin WIF private key to access your account.',
   signInKeyLabel: 'WIF Private Key',
   signInKeyPlaceholder: 'Enter your WIF key...',
@@ -1112,6 +1112,55 @@ export const SELLING_MOVED = {
   signInSubmitting: 'Signing in...',
   signInKeyLocal: 'Your private key is processed locally in your browser and never sent to our servers.',
 } as const;
+
+// ─── who may sign in (owner, 9 Oct 2026) ──────────────────────────────────
+// "lahko pa se prijavijo administratorji v sistem in spremljajo od zadaj":
+// Direct.Fund and lana.discount are now only for the companies that finance
+// purchases, and the administrators still sign in to watch. The server says
+// who a key is (GET /api/session/role, server/routes/session.ts); the sign-in
+// keeps a session only for an administrator or a financer and tells anyone
+// else why — on a fresh sign-in, and when a session kept from before is asked
+// again (src/contexts/AuthContext.tsx). Both languages here, under one type,
+// as FINANCER below.
+
+export const SIGN_IN_GATE = {
+  notAllowedTitle: 'This key cannot sign in here',
+  notAllowed:
+    'Lana.discount is now only for the companies that finance purchases and for the administrators. This key is not ' +
+    'one of them, so it cannot sign in here.',
+  uncheckedTitle: 'Signing in could not be checked',
+  unchecked: 'Whether this key may sign in could not be checked right now. You are not signed in; try again shortly.',
+  // The server refused the signature of the sign-in itself (SIGNATURE_REQUIRED). Trying again unchanged fails the
+  // same way, so these never say "try again shortly": `clock` when the reason is the device clock (STALE, BAD_TIME),
+  // `signature` for any other reason.
+  signatureTitle: 'The signature of this sign-in was refused',
+  clock:
+    'Your device clock is more than a minute off, so the signature of this sign-in was refused. You are not signed ' +
+    'in. Fix the date and time on this device, then sign in again.',
+  signature:
+    'The signature of this sign-in could not be verified. You are not signed in. Check the date and time on this ' +
+    'device and sign in again; if it keeps happening, tell an administrator.',
+};
+
+export type SignInGateText = typeof SIGN_IN_GATE;
+
+export const SIGN_IN_GATE_SL: SignInGateText = {
+  notAllowedTitle: 'S tem ključem se tukaj ni mogoče prijaviti',
+  notAllowed:
+    'Lana.discount je odslej samo za podjetja, ki financirajo nakupe, in za administratorje. Ta ključ ni med njimi, ' +
+    'zato se z njim tukaj ni mogoče prijaviti.',
+  uncheckedTitle: 'Prijave ni bilo mogoče preveriti',
+  unchecked: 'Trenutno ni bilo mogoče preveriti, ali se s tem ključem lahko prijavite. Niste prijavljeni; poskusite znova čez nekaj trenutkov.',
+  signatureTitle: 'Podpis te prijave je bil zavrnjen',
+  clock:
+    'Ura na tej napravi se razlikuje za več kot minuto, zato je bil podpis te prijave zavrnjen. Niste prijavljeni. ' +
+    'Popravite datum in uro na tej napravi, nato se znova prijavite.',
+  signature:
+    'Podpisa te prijave ni bilo mogoče preveriti. Niste prijavljeni. Preverite datum in uro na tej napravi in se ' +
+    'znova prijavite; če se to ponavlja, obvestite administratorja.',
+};
+
+export const SIGN_IN_GATE_TEXT: Record<'sl' | 'en', SignInGateText> = { sl: SIGN_IN_GATE_SL, en: SIGN_IN_GATE };
 
 // ─── /financer: a financer settles their own purchases ────────────────────
 // Owner, 8 Oct 2026: "Financer podpiše z WIF svoje Lana.Discount denarnice.
@@ -1404,6 +1453,7 @@ export const FINANCER = {
     NOT_SENDABLE: 'Some of these purchases cannot be sent now (not approved yet, cancelled, already sent or on their way). Refresh and choose again.',
     PARTIAL_PURCHASE: 'A purchase is sent whole. Refresh and choose again.',
     DF_UNAVAILABLE: 'Direct.Fund could not be asked right now. Nothing was changed; try again shortly.',
+    NOT_FINANCER: 'Direct.Fund does not know this key as a financer, so nothing can be sent from here. Nothing was changed.',
     NO_WALLET: 'You have not chosen your Lana.Discount wallet for {currency} on Direct.Fund yet.',
     MIXED_CURRENCY:
       'The purchases chosen are in more than one currency. Each currency is sent from its own wallet, in a send of its ' +
@@ -1738,6 +1788,7 @@ export const FINANCER_SL: FinancerText = {
     NOT_SENDABLE: 'Nekaterih od teh nakupov zdaj ni mogoče poslati (še niso odobreni, so preklicani, že poslani ali na poti). Osvežite in izberite znova.',
     PARTIAL_PURCHASE: 'Nakup se pošlje v celoti. Osvežite in izberite znova.',
     DF_UNAVAILABLE: 'Direct.Fund trenutno ni dosegljiv. Nič ni bilo spremenjeno; poskusite znova čez nekaj trenutkov.',
+    NOT_FINANCER: 'Direct.Fund tega ključa ne pozna kot financerja, zato od tod ni mogoče ničesar poslati. Nič ni bilo spremenjeno.',
     NO_WALLET: 'Na Direct.Fund še niste izbrali svoje Lana.Discount denarnice za {currency}.',
     MIXED_CURRENCY:
       'Izbrani nakupi so v več valutah. Vsaka valuta gre iz svoje denarnice, v svojem pošiljanju: izberite nakupe ene ' +
