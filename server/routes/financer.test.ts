@@ -500,7 +500,10 @@ describe('POST /api/financer/batches/confirm', () => {
   // the treasury's bank account. Until the administrator decides it, a
   // financer cannot take it — the treasury can.
 
-  it('batch 2026002293 is held: refused BATCH_HELD, shown held and never confirmable, while the treasury may still take it', async () => {
+  it('a held batch is refused BATCH_HELD, shown held and never confirmable, while the treasury may still take it', async () => {
+    const saved = process.env.FINANCER_HELD_BATCHES;
+    process.env.FINANCER_HELD_BATCHES = '2026002293';
+    try {
     dfBatch('2026002293', me);
     leg('2026002293-T1');
     const r = await confirm(me, ['2026002293']);
@@ -514,6 +517,24 @@ describe('POST /api/financer/batches/confirm', () => {
     const df = parseBatchByRef(dfWorld.batches.get('2026002293'), '2026002293');
     expect(recordTreasuryReceived(db, df, 'admin-hex')).toMatchObject({ ok: true });
     expect(owners().map(o => o.settled_by)).toEqual(['treasury', 'treasury']);
+    } finally {
+      if (saved === undefined) delete process.env.FINANCER_HELD_BATCHES; else process.env.FINANCER_HELD_BATCHES = saved;
+    }
+  });
+
+  it('since the owner decided it (9 Oct 2026) nothing is held by default: 2026002293 is the financer\'s like any other', async () => {
+    const saved = process.env.FINANCER_HELD_BATCHES;
+    delete process.env.FINANCER_HELD_BATCHES;
+    try {
+      dfBatch('2026002293', me);
+      leg('2026002293-T1');
+      const listed = (await call(me, 'GET', '/batches')).body.batches.find((b: any) => b.batchRef === '2026002293');
+      expect(listed).toMatchObject({ held: false, canConfirm: true });
+      expect((await confirm(me, ['2026002293'])).body.results[0]).toMatchObject({ batchRef: '2026002293', ok: true });
+      expect(owners().map(o => o.settled_by)).toEqual(['financer', 'financer']);
+    } finally {
+      if (saved !== undefined) process.env.FINANCER_HELD_BATCHES = saved;
+    }
   });
 
   it('FINANCER_HELD_BATCHES replaces the list; set empty, it holds nothing', async () => {
@@ -527,7 +548,7 @@ describe('POST /api/financer/batches/confirm', () => {
       process.env.FINANCER_HELD_BATCHES = '';
       expect((await confirm(me, ['B7'])).body.results[0]).toMatchObject({ ok: true });
       expect(heldBatches({ FINANCER_HELD_BATCHES: '' })).toEqual(new Set());
-      expect(heldBatches({})).toEqual(new Set(['2026002293']));
+      expect(heldBatches({})).toEqual(new Set());
     } finally {
       if (saved === undefined) delete process.env.FINANCER_HELD_BATCHES; else process.env.FINANCER_HELD_BATCHES = saved;
     }

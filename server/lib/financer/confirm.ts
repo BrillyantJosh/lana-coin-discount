@@ -85,11 +85,16 @@ const LANA_DISCOUNT = 'lana_discount';
  * The treasury's own door (recordTreasuryReceived) is NOT held: that is how
  * the administrator decides it when the bank shows the money.
  *
+ * The owner decided it on 9 Oct 2026: the treasury account it might have
+ * reached belonged to that same financer anyway, so 2026002293 is settled by
+ * the financer like any other batch, and nothing is held by default any more.
+ * The mechanism stays for the next such case.
+ *
  * FINANCER_HELD_BATCHES, comma separated, replaces the list when it is set —
  * set it empty ('') to hold nothing. It is the process environment, so a
  * change takes a restart of lana.discount.
  */
-export const DEFAULT_HELD_BATCHES = '2026002293';
+export const DEFAULT_HELD_BATCHES = '';
 
 export function heldBatches(env: NodeJS.ProcessEnv = process.env): ReadonlySet<string> {
   return new Set(String(env.FINANCER_HELD_BATCHES ?? DEFAULT_HELD_BATCHES).split(',').map(s => s.trim()).filter(Boolean));
