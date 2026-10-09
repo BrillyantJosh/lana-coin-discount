@@ -3,7 +3,8 @@
  * dealer's own /admin writes them, and relays and dealer sites that live in
  * memory. Nothing here reaches a relay or a website.
  *
- * Ported from bef-explorer/server/tests/dealerHelpers.ts (a7d3702):
+ * Ported from bef-explorer/server/tests/dealerHelpers.ts (a7d3702, with the
+ * receive wallets per currency of spec 1.6.0 — content "1.4.0" — on top):
  * dealerContent, dealerTags, fakeRelays and fakeSites are theirs verbatim;
  * keys and signatures come from ../roundMandateTestKit (the same Schnorr), and
  * `directory()` stands in for BEF's mirror table — it holds what the last good
@@ -27,6 +28,9 @@ export const TEST_IBAN = { EUR: 'SI56191000000123438', GBP: 'GB29NWBK60161331926
 export const TEST_PAYOUT_WALLET = lanaAddressOf(Uint8Array.from({ length: 33 }, (_, i) => (i === 0 ? 0x02 : i)));
 /** Another one, for the receive wallet (spec 1.5.0) — a test value, nobody's wallet. */
 export const TEST_RECEIVE_WALLET = lanaAddressOf(Uint8Array.from({ length: 33 }, (_, i) => (i === 0 ? 0x03 : 100 + i)));
+/** Two more, for receive wallets per currency (spec 1.6.0) — test values, nobody's wallets. */
+export const TEST_EUR_WALLET = lanaAddressOf(Uint8Array.from({ length: 33 }, (_, i) => (i === 0 ? 0x02 : 150 + i)));
+export const TEST_GBP_WALLET = lanaAddressOf(Uint8Array.from({ length: 33 }, (_, i) => (i === 0 ? 0x03 : 200 + i)));
 
 export type Identity = TestKey & { hex: string };
 export const newIdentity = (): Identity => {
@@ -47,13 +51,17 @@ export interface ContentInput {
   directorHex?: string;
   payoutWallet?: string;
   receiveWallet?: string;
+  /** content.receive_wallets, written last (content.version "1.4.0"), exactly as given — a test may give a malformed one. */
+  receiveWallets?: unknown;
   extra?: Record<string, unknown>;
 }
 
 /** The content a dealer's /admin writes (bef-explorer dealerHelpers.ts, verbatim). */
 export function dealerContent(input: ContentInput = {}): Record<string, unknown> {
   const host = input.host ?? 'krogmenjave.test';
-  const version = input.version ?? (input.receiveWallet !== undefined ? '1.3.0' : input.payoutWallet !== undefined ? '1.2.0' : '1.1.0');
+  const version =
+    input.version ??
+    (input.receiveWallets !== undefined ? '1.4.0' : input.receiveWallet !== undefined ? '1.3.0' : input.payoutWallet !== undefined ? '1.2.0' : '1.1.0');
   const content: Record<string, unknown> = {
     version,
     status: input.status ?? 'active',
@@ -79,9 +87,10 @@ export function dealerContent(input: ContentInput = {}): Record<string, unknown>
   if (input.website !== null) content.website = input.website ?? `https://${host}/`;
   if (input.logo !== null) content.logo = input.logo ?? `https://${host}/uploads/logo.png`;
   const roles = input.roles === undefined ? (['sells', 'buys'] as DealerRole[]) : input.roles;
-  if ((version === '1.1.0' || version === '1.2.0' || version === '1.3.0') && roles !== null) content.roles = roles;
+  if ((version === '1.1.0' || version === '1.2.0' || version === '1.3.0' || version === '1.4.0') && roles !== null) content.roles = roles;
   if (input.payoutWallet !== undefined) content.payout_wallet = input.payoutWallet;
   if (input.receiveWallet !== undefined) content.receive_wallet = input.receiveWallet;
+  if (input.receiveWallets !== undefined) content.receive_wallets = input.receiveWallets;
   return { ...content, ...(input.extra ?? {}) };
 }
 

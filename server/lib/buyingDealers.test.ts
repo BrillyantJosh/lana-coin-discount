@@ -38,6 +38,7 @@ import {
 import { SYSTEM_PARAMETERS_PUBKEY } from './publishedRoundTerms';
 import {
   dealerContent, dealerEvent, fakeRelays, fakeSites, newIdentity, NOW_MS, NOW_S, type SiteReply,
+  TEST_EUR_WALLET, TEST_GBP_WALLET, TEST_PAYOUT_WALLET, TEST_RECEIVE_WALLET,
 } from './befDealers/dealerTestKit';
 import type { NostrEvent } from './nostr';
 
@@ -186,6 +187,33 @@ describe('the firms that buy LANA', () => {
     const answer = await readerOn(paramsDb(JSON.stringify(seed)), asked).get();
     expect(answer).toMatchObject({ status: 'unknown', readAt: null, buyers: [] });
     expect(asked.relays).toEqual([]);
+  });
+
+  it('a firm whose newest profile is 1.4.0 (a receive wallet per currency, KIND 30972 v1.6.0) is named like any other — no wallet goes out', async () => {
+    const v140 = dealerEvent(krog, 'krog-menjave', dealerContent({
+      host: 'krogmenjave.test', name: 'Krog menjave, trgovanje in kroženje vrednosti d.o.o.',
+      payoutWallet: TEST_PAYOUT_WALLET, receiveWallet: TEST_RECEIVE_WALLET, receiveWallets: { EUR: TEST_EUR_WALLET, GBP: TEST_GBP_WALLET },
+    }), { at: NOW_S - 60 });
+    expect(JSON.parse(v140.content).version).toBe('1.4.0');
+    // Ravena Plus names only its wallets per currency — no default, no payout wallet — and buys only.
+    const ravena140 = dealerEvent(ravena, 'ravena-plus', dealerContent({
+      host: 'ravenaplus.test', name: 'Ravena Plus d.o.o.', roles: ['buys'], receiveWallets: { EUR: TEST_EUR_WALLET },
+    }), { at: NOW_S - 60 });
+    const relays = fakeRelays([...events, v140, ravena140], 2, 2, true);
+    const files = fakeSites(sites);
+    const answer = await createBuyingDealersReader({
+      db: () => paramsDb(JSON.stringify(params38888({ reliable }))),
+      author: authority.pub,
+      now: () => NOW_MS,
+      reader: { fetchEvents: relays.source, fetchWellKnown: files.lookup },
+    }).get();
+    expect(answer.status).toBe('read');
+    expect(answer.buyers.map(b => [b.slug, b.eventId, b.signedAt])).toEqual([
+      ['krog-menjave', v140.id, new Date((NOW_S - 60) * 1000).toISOString()],
+      ['ravena-plus', ravena140.id, new Date((NOW_S - 60) * 1000).toISOString()],
+    ]);
+    const text = JSON.stringify(answer);
+    for (const wallet of [TEST_EUR_WALLET, TEST_GBP_WALLET, TEST_RECEIVE_WALLET, TEST_PAYOUT_WALLET]) expect(text).not.toContain(wallet);
   });
 
   it('buyersOf keeps only "buys", in name order, links on the host', () => {
@@ -565,17 +593,19 @@ describe('a firm whose site or relays are silent once is still named', () => {
 /* ── the copies ───────────────────────────────────────────────────────────── */
 
 /**
- * Three files are BEF Explorer's own, byte for byte (bef-explorer a7d3702), and
- * wellKnown.ts differs from its original in the user-agent line only. A change
- * to any of them is a change to the dealer rule: make it in bef-explorer first,
- * copy it here, and update the hash in the same commit.
+ * Three files are BEF Explorer's own, byte for byte (bef-explorer a7d3702;
+ * dealerShape.ts as BEF Explorer reads KIND 30972 content "1.4.0" on top of it
+ * — spec v1.6.0, a receive wallet per currency), and wellKnown.ts differs from
+ * its original in the user-agent line only. A change to any of them is a
+ * change to the dealer rule: make it in bef-explorer first, copy it here, and
+ * update the hash in the same commit.
  */
 describe('the files copied from BEF Explorer', () => {
   const sha = (rel: string) => createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'befDealers', rel))).digest('hex');
   it('are the copies they claim to be', () => {
     expect(sha('bankSchemes.ts')).toBe('25f6993f075bf37be1b70fcffd0e95284aec6d8f8d8ee4a3e259659c95865488');
     expect(sha('lanaAddress.ts')).toBe('f709b6a06475413d4dfcaf4179328e3bf7726b410b40633504a9e26afeea9b02');
-    expect(sha('dealerShape.ts')).toBe('dc2d861f28076f02d65b8f85cc427e616017bc1857ca4c4587c3bc6e825184f7');
+    expect(sha('dealerShape.ts')).toBe('244b5fbf5c9442eaa4eb05647230016ca01bb9988980f45b794335da74c7b01d');
     // bef-explorer's is c5669bb3…c229; the one line that differs names this site, not BEF Explorer, to the dealer's server.
     expect(sha('wellKnown.ts')).toBe('c6be9beccd395a84592562df5dd3538dfebaf4d96c637394be4994b480e87289');
     expect(fs.readFileSync(path.join(__dirname, 'befDealers', 'wellKnown.ts'), 'utf8')).toContain("'user-agent': 'lana.discount KIND 30972 reader'");

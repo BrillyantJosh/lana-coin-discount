@@ -9,8 +9,8 @@
  * different firms. This is a port, rule for rule, of checkDealerShape in
  * krog-menjave/server/lib/dealerShape.ts (itself the reference
  * lana-nostr-kinds-bef/src/lib/befDealers.ts without nostr-tools), with the
- * roles of spec v1.2.0, the payout wallet of spec v1.4.0 and the receive
- * wallet of spec v1.5.0 added.
+ * roles of spec v1.2.0, the payout wallet of spec v1.4.0, the receive wallet
+ * of spec v1.5.0 and the receive wallets per currency of spec v1.6.0 added.
  *
  * v1.2.0 (5 Oct 2026) — WHO BUYS AND WHO SELLS. content.roles says what the
  * firm does with LANA: ["sells"] it only sells LANA to people, ["buys"] it only
@@ -56,6 +56,29 @@
  * companies list. BEF Explorer reads the wallet (DealerProfile.receiveWallet)
  * and, as the payout wallet, neither keeps nor shows it.
  *
+ * v1.6.0 (9 Oct 2026) — A RECEIVE WALLET PER CURRENCY. content.receive_wallets
+ * names, per currency of a sale, the LANA wallet the firm receives that sale's
+ * LANA in: an object from an ISO 4217 code (three capital letters) to a LANA
+ * address, each value under exactly receive_wallet's rule (a LANA address,
+ * never a key — a key is refused with receive_wallet's own sentence). It has
+ * 1 to 20 entries, each code once, written in alphabetical order of the codes;
+ * the same address may serve several currencies, and may be receive_wallet's
+ * or payout_wallet's. It exists only in content.version "1.4.0" ("1.3.0" with
+ * receive_wallets added, after receive_wallet), where it is required: a writer
+ * writes "1.4.0" exactly when it names at least one currency's wallet, and
+ * otherwise as before ("1.3.0", "1.2.0" or "1.1.0"). receive_wallet stays
+ * optional in "1.4.0" as the DEFAULT for currencies without their own entry.
+ * THE ONE RULE, the same in every reader and writer: the wallet for a sale in
+ * currency C is receive_wallets[C], else receive_wallet, else none
+ * (receiveWalletFor). A reader takes "1.4.0" (roles required as in "1.1.0");
+ * in "1.3.0" and lower receive_wallets is a key it does not have, and the
+ * event is invalid. Without "1.4.0" here, a firm that names a wallet per
+ * currency would drop off the companies list. JSON.parse keeps only the last
+ * of a key written twice, so whether a code is written twice is read from the
+ * text itself (writtenKeysOf). BEF Explorer reads the wallets
+ * (DealerProfile.receiveWallets) and, as the other wallets, neither keeps nor
+ * shows them.
+ *
  * Pure: no database, no relay, no clock.
  */
 import { PAYMENT_SCHEMES, PAYMENT_SCOPES, fieldProblem, isPaymentScheme, schemeFields } from './bankSchemes.ts';
@@ -70,12 +93,15 @@ export const CONTENT_VERSION_WITH_ROLES = '1.1.0';
 export const CONTENT_VERSION_WITH_PAYOUT_WALLET = '1.2.0';
 /** content.version of a profile with roles that may name a receive wallet and a payout wallet (spec 1.5.0) — what a writer writes when it names a receive wallet. */
 export const CONTENT_VERSION_WITH_RECEIVE_WALLET = '1.3.0';
+/** content.version of a profile with roles that names a receive wallet per currency (spec 1.6.0) — what a writer writes when it names at least one; receive_wallet and payout_wallet stay optional in it. */
+export const CONTENT_VERSION_WITH_RECEIVE_WALLETS = '1.4.0';
 /** Every content.version a reader takes. */
 export const READ_CONTENT_VERSIONS: readonly string[] = [
   CONTENT_VERSION_WITHOUT_ROLES,
   CONTENT_VERSION_WITH_ROLES,
   CONTENT_VERSION_WITH_PAYOUT_WALLET,
   CONTENT_VERSION_WITH_RECEIVE_WALLET,
+  CONTENT_VERSION_WITH_RECEIVE_WALLETS,
 ];
 /** A reader ignores an event dated more than this far ahead of its own clock (15 minutes). */
 export const FUTURE_TOLERANCE_S = 15 * 60;
@@ -103,6 +129,7 @@ const LIMITS = {
   url: 500,
   owners: 50,
   payment_methods: 20,
+  receive_wallets: 20,
 } as const;
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -124,7 +151,7 @@ export type DealerStatus = 'active' | 'retired';
 export interface DealerProfile {
   /** The slug (the d tag). */
   d: string;
-  /** "1.0.0", "1.1.0", "1.2.0" or "1.3.0". */
+  /** "1.0.0", "1.1.0", "1.2.0", "1.3.0" or "1.4.0". */
   version: string;
   status: DealerStatus;
   name: string;
@@ -137,17 +164,27 @@ export interface DealerProfile {
   currencies: string[];
   /**
    * The LANA wallet it pays Mandate LANA out from (content.payout_wallet,
-   * content.version "1.2.0" or "1.3.0"), exactly as written; null when the
-   * profile names none. Public, read only — not kept in the mirror and not shown.
+   * content.version "1.2.0", "1.3.0" or "1.4.0"), exactly as written; null
+   * when the profile names none. Public, read only — not kept in the mirror
+   * and not shown.
    */
   payoutWallet: string | null;
   /**
    * The LANA wallet it receives the LANA of sales to it in
-   * (content.receive_wallet, content.version "1.3.0"), exactly as written;
-   * null when the profile names none. Public, read only — not kept in the
-   * mirror and not shown.
+   * (content.receive_wallet, content.version "1.3.0" or "1.4.0"), exactly as
+   * written; null when the profile names none. In "1.4.0" it is the DEFAULT:
+   * the wallet of the currencies receiveWallets names none for. Public, read
+   * only — not kept in the mirror and not shown.
    */
   receiveWallet: string | null;
+  /**
+   * The LANA wallet it receives the LANA of a sale in, per currency of the
+   * sale (content.receive_wallets, content.version "1.4.0"): ISO 4217 code →
+   * address, exactly as written, in alphabetical order of the codes; null when
+   * the profile names none. Which wallet a sale in a currency goes to is
+   * receiveWalletFor. Public, read only — not kept in the mirror and not shown.
+   */
+  receiveWallets: Readonly<Record<string, string>> | null;
 }
 
 export type DealerShape = { ok: true; profile: DealerProfile } | { ok: false; errors: string[] };
@@ -205,7 +242,7 @@ function shareUnits(share: string): number {
   return parseInt(whole, 10) * 10000 + parseInt((frac + '0000').slice(0, 4), 10);
 }
 
-/* ── the payout wallet (1.4.0) and the receive wallet (1.5.0) ────────────── */
+/* ── the payout wallet (1.4.0), the receive wallet (1.5.0), per currency (1.6.0) */
 
 /**
  * A text shaped like a KEY rather than a wallet address: a run of 50–53
@@ -231,9 +268,10 @@ export const RECEIVE_WALLET_KEY_REFUSAL =
  * The one wallet rule of the kind, for the key it is written under: a LANA
  * address — Base58Check with the version byte 0x30, 34 characters starting
  * with L, whose checksum holds — written exactly (no spaces, no other form of
- * the same key). The message never repeats the value.
+ * the same key). The message never repeats the value. `key` is where it is
+ * written: payout_wallet, receive_wallet, or receive_wallets.<code> (1.6.0).
  */
-function walletProblem(key: 'payout_wallet' | 'receive_wallet', keyRefusal: string, value: unknown): string | null {
+function walletProblem(key: string, keyRefusal: string, value: unknown): string | null {
   if (typeof value !== 'string') return `${key} must be text: the address of a LANA wallet`;
   if (looksLikeKey(value)) return keyRefusal;
   if (!isLanaAddress(value)) {
@@ -252,6 +290,148 @@ export function receiveWalletProblem(value: unknown): string | null {
   return walletProblem('receive_wallet', RECEIVE_WALLET_KEY_REFUSAL, value);
 }
 
+/**
+ * 1.6.0 — why content.receive_wallets cannot be read, or [] when it can: an
+ * object of 1 to 20 entries, each key an ISO 4217 code (three capital
+ * letters) written once, the keys in alphabetical order, each value exactly
+ * receive_wallet's rule (walletProblem; a key is refused with
+ * RECEIVE_WALLET_KEY_REFUSAL, never repeated). `writtenCodes` are the codes as
+ * the text writes them, each time it writes them (writtenKeysOf) — the only
+ * place a code written twice can be seen; without it, only what JSON.parse
+ * kept is checked. A code is repeated in a message only when it is short (at
+ * most 8 characters), so nothing shaped like a key is ever repeated.
+ */
+export function receiveWalletsProblems(value: unknown, writtenCodes?: readonly string[]): string[] {
+  if (!isPlainObject(value)) return ['receive_wallets must be an object: a currency code (ISO 4217, e.g. EUR) to the address of a LANA wallet'];
+  const codes = Object.keys(value);
+  if (codes.length === 0) {
+    return [`receive_wallets is empty: it names at least one currency and its wallet (a profile that names none is not content.version "${CONTENT_VERSION_WITH_RECEIVE_WALLETS}")`];
+  }
+  const problems: string[] = [];
+  if (codes.length > LIMITS.receive_wallets) problems.push(`receive_wallets names more than ${LIMITS.receive_wallets} currencies: at most ${LIMITS.receive_wallets}`);
+  const shown = (code: string) => (code.length <= 8 ? ` ${JSON.stringify(code)}` : '');
+  for (const code of codes) {
+    if (!CURRENCY.test(code)) {
+      problems.push(`receive_wallets has a key${shown(code)} that is not a currency code: each key is an ISO 4217 code, three capital letters (e.g. EUR)`);
+      continue;
+    }
+    const problem = walletProblem(`receive_wallets.${code}`, RECEIVE_WALLET_KEY_REFUSAL, value[code]);
+    if (problem && !problems.includes(problem)) problems.push(problem);
+  }
+  const seen = new Set<string>();
+  for (const code of writtenCodes ?? codes) {
+    if (seen.has(code)) problems.push(`receive_wallets names${shown(code) || ' a currency'} twice: each currency at most once`);
+    seen.add(code);
+  }
+  const sorted = [...codes].sort();
+  if (codes.join() !== sorted.join()) {
+    problems.push('receive_wallets must be written in alphabetical order of the currency codes (e.g. EUR, GBP, USD)');
+  }
+  return problems;
+}
+
+/**
+ * 1.6.0 — THE ONE RULE for which wallet receives the LANA of a sale in
+ * `currency`: the profile's own wallet for that currency
+ * (receive_wallets[currency]), else its default (receive_wallet), else none
+ * (null — selling in that currency is closed). Only an exact ISO 4217 code
+ * finds an entry; anything else gets the default.
+ */
+export function receiveWalletFor(
+  profile: { receiveWallet: string | null; receiveWallets: Readonly<Record<string, string>> | null },
+  currency: string,
+): string | null {
+  const own = profile.receiveWallets;
+  if (own && CURRENCY.test(currency) && Object.prototype.hasOwnProperty.call(own, currency)) return own[currency];
+  return profile.receiveWallet ?? null;
+}
+
+/**
+ * The keys of the object written under `member` at the top of a JSON text, as
+ * the text writes them: in its order, a key written twice listed twice, each
+ * decoded as JSON.parse decodes it. One entry per time `member` is written at
+ * the top — null when its value there is not an object. JSON.parse keeps only
+ * the last of a key written twice, so this is the only place it shows. The
+ * text must already be valid JSON (it is read only after JSON.parse took it).
+ */
+export function writtenKeysOf(raw: string, member: string): (string[] | null)[] {
+  const found: (string[] | null)[] = [];
+  let i = 0;
+  const space = () => {
+    while (i < raw.length && (raw[i] === ' ' || raw[i] === '\t' || raw[i] === '\n' || raw[i] === '\r')) i++;
+  };
+  const text = (): string => {
+    const start = i;
+    i++;
+    while (i < raw.length && raw[i] !== '"') i += raw[i] === '\\' ? 2 : 1;
+    i++;
+    return JSON.parse(raw.slice(start, i)) as string;
+  };
+  const skip = (): void => {
+    space();
+    if (raw[i] === '"') {
+      text();
+      return;
+    }
+    if (raw[i] === '{' || raw[i] === '[') {
+      let depth = 0;
+      while (i < raw.length) {
+        const ch = raw[i];
+        if (ch === '"') {
+          text();
+          continue;
+        }
+        if (ch === '{' || ch === '[') depth++;
+        else if (ch === '}' || ch === ']') depth--;
+        i++;
+        if (depth === 0) return;
+      }
+      return;
+    }
+    while (i < raw.length && !',}] \t\n\r'.includes(raw[i])) i++;
+  };
+  /** Each member of the object at i: its key, and what is done with its value. */
+  const members = (onMember: (key: string) => void): void => {
+    i++;
+    space();
+    if (raw[i] === '}') {
+      i++;
+      return;
+    }
+    while (i < raw.length) {
+      space();
+      const key = text();
+      space();
+      i++; // the colon
+      space();
+      onMember(key);
+      space();
+      if (raw[i] === ',') {
+        i++;
+        continue;
+      }
+      i++; // the closing brace
+      return;
+    }
+  };
+  space();
+  if (raw[i] !== '{') return found;
+  members((key) => {
+    if (key !== member) return skip();
+    if (raw[i] !== '{') {
+      found.push(null);
+      return skip();
+    }
+    const keys: string[] = [];
+    members((inner) => {
+      keys.push(inner);
+      skip();
+    });
+    found.push(keys);
+  });
+  return found;
+}
+
 /* ── content ──────────────────────────────────────────────────────────────── */
 
 const CONTENT_KEYS_WITHOUT_ROLES = [
@@ -263,6 +443,8 @@ const CONTENT_KEYS_WITH_ROLES = [...CONTENT_KEYS_WITHOUT_ROLES, 'roles'];
 const CONTENT_KEYS_WITH_PAYOUT_WALLET = [...CONTENT_KEYS_WITH_ROLES, 'payout_wallet'];
 /** "1.3.0": "1.2.0" with receive_wallet added (written last, after payout_wallet; a reader does not depend on the order). */
 const CONTENT_KEYS_WITH_RECEIVE_WALLET = [...CONTENT_KEYS_WITH_PAYOUT_WALLET, 'receive_wallet'];
+/** "1.4.0": "1.3.0" with receive_wallets added (written last, after receive_wallet; a reader does not depend on the order of the content's keys). */
+const CONTENT_KEYS_WITH_RECEIVE_WALLETS = [...CONTENT_KEYS_WITH_RECEIVE_WALLET, 'receive_wallets'];
 const ADDRESS_KEYS = ['street', 'postal_code', 'city', 'country'];
 const METHOD_KEYS = ['id', 'scope', 'country', 'scheme', 'currency', 'label', 'fields', 'primary'];
 
@@ -367,11 +549,11 @@ function readPaymentMethods(value: unknown, errors: string[]): string[] {
   return [...currencies].sort();
 }
 
-/** content.roles of a "1.1.0", "1.2.0" or "1.3.0" profile: non-empty, each role at most once, sells before buys. */
+/** content.roles of a "1.1.0", "1.2.0", "1.3.0" or "1.4.0" profile: non-empty, each role at most once, sells before buys. */
 function readRoles(value: unknown, errors: string[]): DealerRole[] | null {
   if (value === undefined) {
     errors.push(
-      `roles is required in content.version "${CONTENT_VERSION_WITH_ROLES}", "${CONTENT_VERSION_WITH_PAYOUT_WALLET}" and "${CONTENT_VERSION_WITH_RECEIVE_WALLET}"`,
+      `roles is required in content.version "${CONTENT_VERSION_WITH_ROLES}", "${CONTENT_VERSION_WITH_PAYOUT_WALLET}", "${CONTENT_VERSION_WITH_RECEIVE_WALLET}" and "${CONTENT_VERSION_WITH_RECEIVE_WALLETS}"`,
     );
     return null;
   }
@@ -411,6 +593,7 @@ interface ReadContent {
   currencies: string[];
   payoutWallet: string | null;
   receiveWallet: string | null;
+  receiveWallets: Record<string, string> | null;
 }
 
 /** The content JSON: every rule a reader can check. */
@@ -433,34 +616,43 @@ function readContent(raw: string, errors: string[]): ReadContent | null {
   const c = parsed;
   const version = typeof c.version === 'string' ? c.version : '';
   // "1.2.0" is "1.1.0" (roles required) that may also name a payout wallet;
-  // "1.3.0" is "1.2.0" that may also name a receive wallet.
-  const withReceiveWallet = version === CONTENT_VERSION_WITH_RECEIVE_WALLET;
+  // "1.3.0" is "1.2.0" that may also name a receive wallet; "1.4.0" is
+  // "1.3.0" that names a receive wallet per currency.
+  const withReceiveWallets = version === CONTENT_VERSION_WITH_RECEIVE_WALLETS;
+  const withReceiveWallet = version === CONTENT_VERSION_WITH_RECEIVE_WALLET || withReceiveWallets;
   const withPayoutWallet = version === CONTENT_VERSION_WITH_PAYOUT_WALLET || withReceiveWallet;
   const withRoles = version === CONTENT_VERSION_WITH_ROLES || withPayoutWallet;
   if (!READ_CONTENT_VERSIONS.includes(version)) {
     errors.push(
-      `content.version must be "${CONTENT_VERSION_WITH_RECEIVE_WALLET}", "${CONTENT_VERSION_WITH_PAYOUT_WALLET}", "${CONTENT_VERSION_WITH_ROLES}" or "${CONTENT_VERSION_WITHOUT_ROLES}"`,
+      `content.version must be "${CONTENT_VERSION_WITH_RECEIVE_WALLETS}", "${CONTENT_VERSION_WITH_RECEIVE_WALLET}", "${CONTENT_VERSION_WITH_PAYOUT_WALLET}", "${CONTENT_VERSION_WITH_ROLES}" or "${CONTENT_VERSION_WITHOUT_ROLES}"`,
     );
   }
   // A "1.0.0" profile states no roles: a roles key in it is an unknown key.
-  // payout_wallet is a key only "1.2.0" and "1.3.0" have, receive_wallet one
-  // only "1.3.0" has — in the others they are unknown too.
-  const allowed = withReceiveWallet
-    ? CONTENT_KEYS_WITH_RECEIVE_WALLET
-    : withPayoutWallet
-      ? CONTENT_KEYS_WITH_PAYOUT_WALLET
-      : withRoles
-        ? CONTENT_KEYS_WITH_ROLES
-        : CONTENT_KEYS_WITHOUT_ROLES;
+  // payout_wallet is a key only "1.2.0", "1.3.0" and "1.4.0" have,
+  // receive_wallet one only "1.3.0" and "1.4.0" have, receive_wallets one only
+  // "1.4.0" has — in the others they are unknown too.
+  const allowed = withReceiveWallets
+    ? CONTENT_KEYS_WITH_RECEIVE_WALLETS
+    : withReceiveWallet
+      ? CONTENT_KEYS_WITH_RECEIVE_WALLET
+      : withPayoutWallet
+        ? CONTENT_KEYS_WITH_PAYOUT_WALLET
+        : withRoles
+          ? CONTENT_KEYS_WITH_ROLES
+          : CONTENT_KEYS_WITHOUT_ROLES;
   for (const key of Object.keys(c)) {
     if (allowed.includes(key)) continue;
     if (key === 'payout_wallet') {
       errors.push(
-        `content.version ${JSON.stringify(c.version)?.slice(0, 20)} has no payout_wallet: a profile that names a payout wallet is content.version "${CONTENT_VERSION_WITH_PAYOUT_WALLET}" (or "${CONTENT_VERSION_WITH_RECEIVE_WALLET}")`,
+        `content.version ${JSON.stringify(c.version)?.slice(0, 20)} has no payout_wallet: a profile that names a payout wallet is content.version "${CONTENT_VERSION_WITH_PAYOUT_WALLET}" (or "${CONTENT_VERSION_WITH_RECEIVE_WALLET}" or "${CONTENT_VERSION_WITH_RECEIVE_WALLETS}")`,
       );
     } else if (key === 'receive_wallet') {
       errors.push(
-        `content.version ${JSON.stringify(c.version)?.slice(0, 20)} has no receive_wallet: a profile that names a receive wallet is content.version "${CONTENT_VERSION_WITH_RECEIVE_WALLET}"`,
+        `content.version ${JSON.stringify(c.version)?.slice(0, 20)} has no receive_wallet: a profile that names a receive wallet is content.version "${CONTENT_VERSION_WITH_RECEIVE_WALLET}" (or "${CONTENT_VERSION_WITH_RECEIVE_WALLETS}")`,
+      );
+    } else if (key === 'receive_wallets') {
+      errors.push(
+        `content.version ${JSON.stringify(c.version)?.slice(0, 20)} has no receive_wallets: a profile that names a receive wallet per currency is content.version "${CONTENT_VERSION_WITH_RECEIVE_WALLETS}"`,
       );
     } else {
       errors.push(`content has an unknown key "${key}"`);
@@ -553,15 +745,36 @@ function readContent(raw: string, errors: string[]): ReadContent | null {
     if (problem) errors.push(problem);
     else payoutWallet = c.payout_wallet as string;
   }
-  // 1.5.0: optional in "1.3.0" (refused above in every other version). It may be the payout wallet's address.
+  // 1.5.0: optional in "1.3.0" and "1.4.0" (refused above in every other
+  // version). It may be the payout wallet's address. In "1.4.0" it is the
+  // default: the wallet of the currencies receive_wallets names none for.
   let receiveWallet: string | null = null;
   if (withReceiveWallet && c.receive_wallet !== undefined) {
     const problem = receiveWalletProblem(c.receive_wallet);
     if (problem) errors.push(problem);
     else receiveWallet = c.receive_wallet as string;
   }
+  // 1.6.0: required, and never empty, in "1.4.0" (refused above in every
+  // other version) — a writer writes "1.4.0" only when it names at least one
+  // currency's wallet. A key written twice at the top is refused for this key
+  // too: which of the two is the profile's wallets cannot be told.
+  let receiveWallets: Record<string, string> | null = null;
+  if (withReceiveWallets) {
+    if (c.receive_wallets === undefined) {
+      errors.push(
+        `receive_wallets is required in content.version "${CONTENT_VERSION_WITH_RECEIVE_WALLETS}": at least one currency and its wallet (a profile that names none is "${CONTENT_VERSION_WITH_RECEIVE_WALLET}" or lower)`,
+      );
+    } else {
+      const written = writtenKeysOf(raw, 'receive_wallets');
+      if (written.length > 1) errors.push('content names receive_wallets twice: it is written once');
+      const last = written.length ? written[written.length - 1] : null;
+      const problems = receiveWalletsProblems(c.receive_wallets, last ?? undefined);
+      if (problems.length) errors.push(...problems);
+      else if (written.length <= 1) receiveWallets = { ...(c.receive_wallets as Record<string, string>) };
+    }
+  }
 
-  return { version, status, name, address, director, owners, website, logo, roles, currencies, payoutWallet, receiveWallet };
+  return { version, status, name, address, director, owners, website, logo, roles, currencies, payoutWallet, receiveWallet, receiveWallets };
 }
 
 /* ── tags ─────────────────────────────────────────────────────────────────── */
@@ -679,6 +892,7 @@ export function checkDealerShape(event: { kind: number; tags: unknown; content: 
       currencies: content.currencies,
       payoutWallet: content.payoutWallet,
       receiveWallet: content.receiveWallet,
+      receiveWallets: content.receiveWallets,
     },
   };
 }
