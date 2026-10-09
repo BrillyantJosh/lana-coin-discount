@@ -4,7 +4,9 @@
  * memory. Nothing here reaches a relay or a website.
  *
  * Ported from bef-explorer/server/tests/dealerHelpers.ts (a7d3702, with the
- * receive wallets per currency of spec 1.6.0 — content "1.4.0" — on top):
+ * receive wallets per currency of spec 1.6.0 — content "1.4.0" — and the
+ * LanaPays.Us payout wallets per currency of spec 1.7.0 — content "1.5.0" —
+ * on top):
  * dealerContent, dealerTags, fakeRelays and fakeSites are theirs verbatim;
  * keys and signatures come from ../roundMandateTestKit (the same Schnorr), and
  * `directory()` stands in for BEF's mirror table — it holds what the last good
@@ -31,6 +33,9 @@ export const TEST_RECEIVE_WALLET = lanaAddressOf(Uint8Array.from({ length: 33 },
 /** Two more, for receive wallets per currency (spec 1.6.0) — test values, nobody's wallets. */
 export const TEST_EUR_WALLET = lanaAddressOf(Uint8Array.from({ length: 33 }, (_, i) => (i === 0 ? 0x02 : 150 + i)));
 export const TEST_GBP_WALLET = lanaAddressOf(Uint8Array.from({ length: 33 }, (_, i) => (i === 0 ? 0x03 : 200 + i)));
+/** Two more, for the LanaPays.Us payout wallets per currency (spec 1.7.0) — test values, nobody's wallets. */
+export const TEST_PAYOUT_EUR_WALLET = lanaAddressOf(Uint8Array.from({ length: 33 }, (_, i) => (i === 0 ? 0x02 : 60 + i)));
+export const TEST_PAYOUT_GBP_WALLET = lanaAddressOf(Uint8Array.from({ length: 33 }, (_, i) => (i === 0 ? 0x03 : 60 + i)));
 
 export type Identity = TestKey & { hex: string };
 export const newIdentity = (): Identity => {
@@ -51,8 +56,10 @@ export interface ContentInput {
   directorHex?: string;
   payoutWallet?: string;
   receiveWallet?: string;
-  /** content.receive_wallets, written last (content.version "1.4.0"), exactly as given — a test may give a malformed one. */
+  /** content.receive_wallets, written last (content.version "1.4.0"), or before payout_wallets ("1.5.0"), exactly as given — a test may give a malformed one. */
   receiveWallets?: unknown;
+  /** content.payout_wallets, written last (content.version "1.5.0"), exactly as given — a test may give a malformed one. */
+  payoutWallets?: unknown;
   extra?: Record<string, unknown>;
 }
 
@@ -61,7 +68,15 @@ export function dealerContent(input: ContentInput = {}): Record<string, unknown>
   const host = input.host ?? 'krogmenjave.test';
   const version =
     input.version ??
-    (input.receiveWallets !== undefined ? '1.4.0' : input.receiveWallet !== undefined ? '1.3.0' : input.payoutWallet !== undefined ? '1.2.0' : '1.1.0');
+    (input.payoutWallets !== undefined
+      ? '1.5.0'
+      : input.receiveWallets !== undefined
+        ? '1.4.0'
+        : input.receiveWallet !== undefined
+          ? '1.3.0'
+          : input.payoutWallet !== undefined
+            ? '1.2.0'
+            : '1.1.0');
   const content: Record<string, unknown> = {
     version,
     status: input.status ?? 'active',
@@ -87,10 +102,11 @@ export function dealerContent(input: ContentInput = {}): Record<string, unknown>
   if (input.website !== null) content.website = input.website ?? `https://${host}/`;
   if (input.logo !== null) content.logo = input.logo ?? `https://${host}/uploads/logo.png`;
   const roles = input.roles === undefined ? (['sells', 'buys'] as DealerRole[]) : input.roles;
-  if ((version === '1.1.0' || version === '1.2.0' || version === '1.3.0' || version === '1.4.0') && roles !== null) content.roles = roles;
+  if ((version === '1.1.0' || version === '1.2.0' || version === '1.3.0' || version === '1.4.0' || version === '1.5.0') && roles !== null) content.roles = roles;
   if (input.payoutWallet !== undefined) content.payout_wallet = input.payoutWallet;
   if (input.receiveWallet !== undefined) content.receive_wallet = input.receiveWallet;
   if (input.receiveWallets !== undefined) content.receive_wallets = input.receiveWallets;
+  if (input.payoutWallets !== undefined) content.payout_wallets = input.payoutWallets;
   return { ...content, ...(input.extra ?? {}) };
 }
 
