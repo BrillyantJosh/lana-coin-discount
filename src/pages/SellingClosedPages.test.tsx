@@ -87,7 +87,7 @@ describe('the sign-in page', () => {
 });
 
 describe('the landing page', () => {
-  it('opens on where selling went, invites no offer, and keeps what we owe', async () => {
+  it('opens on where selling went, invites no offer, and lists nothing we owe (11 Oct 2026)', async () => {
     // The boards' own sources are down here: they are not what is tested.
     stubFetch(TWO_FIRMS, () => undefined);
     const { container } = render(<MemoryRouter><Index /></MemoryRouter>);
@@ -99,10 +99,15 @@ describe('the landing page', () => {
     expect(screen.queryByText('How an acquisition works')).not.toBeInTheDocument();
     expect(screen.queryByText('What we acquire')).not.toBeInTheDocument();
     expect(container.querySelector('#how-we-acquire')).toBeNull();
-    // …and what we owe and what we settled are still there.
-    expect(screen.getByText('Outstanding purchase-price settlements')).toBeInTheDocument();
-    expect(screen.getByText('Completed treasury acquisitions')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'See what we owe' })).toHaveAttribute('href', '#settlements');
+    // …and since 11 Oct 2026 so are the boards of what we owe and what we
+    // settled, the round-order explainer and the hero illustration.
+    expect(screen.queryByText('Outstanding purchase-price settlements')).not.toBeInTheDocument();
+    expect(screen.queryByText('Completed treasury acquisitions')).not.toBeInTheDocument();
+    expect(screen.queryByText('Purchase Price Settlement')).not.toBeInTheDocument();
+    expect(container.querySelector('#settlements, #history, #settlement')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'See what we owe' })).not.toBeInTheDocument();
+    expect(container.querySelector('img.animate-float')).toBeNull();
+    expect(container.querySelector('a[href="/#settlement"]')).toBeNull();
   });
 
   it('invites no seller to sign in: one sentence says who may (9 Oct 2026)', async () => {

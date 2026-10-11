@@ -13,7 +13,10 @@ const Navbar = () => {
           {!SELLING_CLOSED && (
             <a href="/#how-it-works" className="hover:text-foreground transition-colors">How it works</a>
           )}
-          <a href="/#settlement" className="hover:text-foreground transition-colors">How we settle</a>
+          {/* Its section is not shown on the home page since 11 Oct 2026. */}
+          {!SELLING_CLOSED && (
+            <a href="/#settlement" className="hover:text-foreground transition-colors">How we settle</a>
+          )}
           <a href="/obligations" className="hover:text-foreground transition-colors">What we owe</a>
           <a href="/history" className="hover:text-foreground transition-colors">Acquisitions</a>
           <a href="/docs/api" className="hover:text-foreground transition-colors">API</a>

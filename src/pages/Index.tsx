@@ -56,7 +56,12 @@ const Index = () => {
           round. Dates and totals only — never a discount (P08 §4). */}
       {!SELLING_CLOSED && <RoundDates />}
 
+      {/* Since 11 Oct 2026 (the owner) the home page no longer lists what we owe,
+          what we settled, or how we settle it: the two boards and the round-order
+          explainer below are not shown while selling is closed. The pages
+          /obligations and /history stay where they are. */}
       {/* Live board of every purchase price we owe and have not yet settled */}
+      {!SELLING_CLOSED && (
       <section id="settlements" className="py-16 md:py-20 bg-muted/50">
         <div className="container mx-auto px-6 max-w-4xl">
           <div className="flex items-end justify-between gap-4 mb-8 flex-wrap">
@@ -71,8 +76,10 @@ const Index = () => {
           <ObligationsBoard maxPerCurrency={10} />
         </div>
       </section>
+      )}
 
       {/* Acquisitions we have completed and settled */}
+      {!SELLING_CLOSED && (
       <section id="history" className="py-16 md:py-20">
         <div className="container mx-auto px-6 max-w-4xl">
           <div className="flex items-end justify-between gap-4 mb-8 flex-wrap">
@@ -88,6 +95,7 @@ const Index = () => {
           <RecentPayouts limit={12} />
         </div>
       </section>
+      )}
 
       {/* Daily FIAT flows */}
       <section id="stats" className="py-16 md:py-20 bg-muted/50">
@@ -108,7 +116,7 @@ const Index = () => {
       </section>
 
       {/* Explanations come after the live data */}
-      <RoundOrderExplainer />
+      {!SELLING_CLOSED && <RoundOrderExplainer />}
       {!SELLING_CLOSED && <HowItWorks />}
       {!SELLING_CLOSED && <Requirements />}
       <Footer />

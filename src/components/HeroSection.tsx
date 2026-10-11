@@ -8,23 +8,14 @@ const HeroSection = () => {
   // old title ("We acquire selected LANA") and its "Submit an Offer" button
   // would invite a sale the server now refuses. What we already owe stays
   // below, and so does the way to it.
+  // Since 11 Oct 2026 (the owner) it is the notice alone: no floating
+  // illustration, and no pointer to the boards of what we owe, which the home
+  // page no longer shows.
   if (SELLING_CLOSED) {
     return (
       <section className="relative overflow-hidden py-10 md:py-20">
-        <div className="container mx-auto px-4 sm:px-6 flex flex-col lg:flex-row items-center gap-10 lg:gap-12">
-          <div className="flex-1 min-w-0 w-full space-y-6">
-            <SellingMovedNotice />
-            <p className="text-sm md:text-base text-muted-foreground leading-relaxed">{LANDING.heroBodySecond}</p>
-            <a
-              href="#settlements"
-              className="inline-flex items-center justify-center rounded-lg border-2 border-primary px-6 py-3 text-base font-semibold text-primary hover:bg-accent transition-colors"
-            >
-              {LANDING.heroSecondaryCta}
-            </a>
-          </div>
-          <div className="hidden lg:flex flex-1 justify-center">
-            <img src={heroImage} alt="" className="w-full max-w-md animate-float" />
-          </div>
+        <div className="container mx-auto px-4 sm:px-6 max-w-3xl">
+          <SellingMovedNotice />
         </div>
       </section>
     );
