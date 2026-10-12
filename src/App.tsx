@@ -19,6 +19,7 @@ import AdminAnalytics from "./pages/AdminAnalytics";
 import AdminOverview from "./pages/AdminOverview";
 import AdminMandates from "./pages/AdminMandates";
 import AdminTreasuryRounds from "./pages/AdminTreasuryRounds";
+import AdminFinancers from "./pages/AdminFinancers";
 import SubmitOffer from "./pages/SubmitOffer";
 import SellingMoved from "./pages/SellingMoved";
 import { SELLING_CLOSED } from "@/lib/sellingClosed";
@@ -74,6 +75,7 @@ const App = () => (
             <Route path="/admin/api-keys" element={<AdminApiKeys />} />
             <Route path="/admin/admins" element={<AdminUsers />} />
             <Route path="/admin/incoming-payments" element={<AdminIncomingPayments />} />
+            <Route path="/admin/financers" element={<AdminFinancers />} />
             <Route path="/admin/analytics" element={<AdminAnalytics />} />
             <Route path="/admin/overview" element={<AdminOverview />} />
             <Route path="*" element={<NotFound />} />

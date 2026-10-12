@@ -17,6 +17,7 @@ import { heartbeatLegCounts } from './lib/autoSendSelection.js';
 import { runOutbox, outboxHealth, brainCallbackTarget } from './lib/financer/brainOutbox.js';
 import { createFinancerRouter } from './routes/financer.js';
 import { createSessionRouter } from './routes/session.js';
+import { createAdminFinancersRouter } from './routes/adminFinancers.js';
 // The LANA send machine (8 Oct 2026): every send recorded before it is
 // broadcast and finished from the chain — the financers' and the treasury's.
 import { defaultSends, sendsHealth } from './lib/financer/sends.js';
@@ -135,6 +136,9 @@ app.use('/api/financer', createFinancerRouter({
 // word) or neither — the sign-in page keeps a session only for the first two
 // (owner, 9 Oct 2026). Signed (NIP-98); before the SPA catch-all, as above.
 app.use('/api/session', createSessionRouter());
+// What each financer still has to pay, confirm, wait for and send (owner, 12 Oct 2026): GET
+// /api/admin/financers-overview, signed admin (requireAdmin), read-only. Before the SPA catch-all, as above.
+app.use('/api/admin', createAdminFinancersRouter());
 
 // Heartbeat status for the admin page. It MUST be registered before the static
 // files and the SPA catch-all below: an /api route declared after them never

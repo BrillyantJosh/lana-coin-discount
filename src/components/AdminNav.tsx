@@ -32,6 +32,7 @@ const sections = [
     label: 'Lana Sales',
     items: [
       { to: '/admin/incoming-payments', label: 'Incoming Payments', desc: 'FIAT from financers' },
+      { to: '/admin/financers', label: 'Financers', desc: 'What each financer still has to pay, confirm and send' },
       { to: '/admin/mandates', label: 'Mandates — financer × round', desc: 'Financing-round mandates from KIND 30960' },
       { to: '/admin/treasury-rounds', label: 'Round payout dates', desc: 'When each round is paid out (from KIND 38888)' },
     ],
