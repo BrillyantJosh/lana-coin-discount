@@ -28,6 +28,7 @@ export interface NoticeText {
   titleLead: { one: string; two: string; many: string };
   and: string;
   titleNone: string;
+  comingSoon: string;
   closed: string;
   registerOne: string;
   registerTwo: string;
@@ -61,6 +62,7 @@ export const NOTICE_TEXT: Record<NoticeLang, NoticeText> = {
     },
     and: 'in',
     titleNone: 'Odkup LAN so prevzela druga podjetja.',
+    comingSoon: 'Kmalu na voljo',
     closed: 'Na Lana.discount LAN ni več mogoče prodati.',
     registerOne: 'Če želite prodati svoje LANE, se registrirajte pri tem podjetju.',
     registerTwo: 'Če želite prodati svoje LANE, se registrirajte pri enem od obeh podjetij.',
@@ -90,6 +92,7 @@ export const NOTICE_TEXT: Record<NoticeLang, NoticeText> = {
     titleLead: { one: SELLING_MOVED.titleLead, two: SELLING_MOVED.titleLead, many: SELLING_MOVED.titleLead },
     and: SELLING_MOVED.and,
     titleNone: SELLING_MOVED.titleNone,
+    comingSoon: SELLING_MOVED.comingSoon,
     closed: SELLING_MOVED.closed,
     registerOne: SELLING_MOVED.registerOne,
     registerTwo: SELLING_MOVED.registerTwo,
@@ -162,6 +165,7 @@ export function SellingMovedNotice({
   signInNote = true,
   answer: givenAnswer,
   headingLevel = 'h1',
+  comingSoon = false,
 }: {
   /** Controlled language (the sign-in page shares it with its form); uncontrolled when omitted. */
   lang?: NoticeLang;
@@ -174,11 +178,17 @@ export function SellingMovedNotice({
   /** The firms, when the page already has them; otherwise the notice reads them itself. */
   answer?: BuyingDealersAnswer | null;
   headingLevel?: 'h1' | 'h2';
+  /**
+   * The home page (owner, 12 Oct 2026): instead of the firms that took over the
+   * buying, only "Coming soon" — no names, no register or sell buttons, and the
+   * firms are not even read.
+   */
+  comingSoon?: boolean;
 }) {
   const [ownLang, setOwnLang] = useNoticeLang();
   const lang = controlledLang ?? ownLang;
   const setLang = onLangChange ?? setOwnLang;
-  const read = useBuyingDealers(givenAnswer === undefined);
+  const read = useBuyingDealers(givenAnswer === undefined && !comingSoon);
   const answer = givenAnswer === undefined ? read : givenAnswer;
   const c = NOTICE_TEXT[lang];
   const buyers = answer?.buyers ?? [];
@@ -201,6 +211,12 @@ export function SellingMovedNotice({
         <LangToggle lang={lang} onChange={setLang} />
       </div>
 
+      {comingSoon ? (
+        <>
+          <Heading className="text-2xl sm:text-3xl font-bold text-foreground leading-snug break-words">{c.comingSoon}</Heading>
+          <p className="mt-3 text-base text-muted-foreground leading-relaxed">{c.closed}</p>
+        </>
+      ) : (<>
       <Heading className="text-2xl sm:text-3xl font-bold text-foreground leading-snug break-words">
         {buyers.length > 0 ? (
           // No second full stop after a name that already ends in one ("d.o.o.").
@@ -259,6 +275,7 @@ export function SellingMovedNotice({
           {c.directory}
         </a>
       )}
+      </>)}
 
       {signInNote && (
         <p className="mt-5 pt-4 border-t border-border text-sm text-muted-foreground leading-relaxed">

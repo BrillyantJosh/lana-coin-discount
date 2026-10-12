@@ -91,7 +91,11 @@ describe('the landing page', () => {
     // The boards' own sources are down here: they are not what is tested.
     stubFetch(TWO_FIRMS, () => undefined);
     const { container } = render(<MemoryRouter><Index /></MemoryRouter>);
-    await expectBothFirms();
+    // Since 12 Oct 2026 the home page names no firm: "Coming soon" only.
+    expect(await screen.findByText('Coming soon')).toBeInTheDocument();
+    expect(screen.queryByTestId('buying-dealers')).not.toBeInTheDocument();
+    expect(screen.queryByText(KROG.name)).not.toBeInTheDocument();
+    expect(screen.queryByText(RAVENA.name)).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Submit an Offer' })).not.toBeInTheDocument();
     expect(container.querySelector('a[href="/offer"]')).toBeNull();
     // The sections that describe selling to us are gone…
@@ -113,7 +117,11 @@ describe('the landing page', () => {
   it('invites no seller to sign in: one sentence says who may (9 Oct 2026)', async () => {
     stubFetch(TWO_FIRMS, () => undefined);
     render(<MemoryRouter><Index /></MemoryRouter>);
-    await expectBothFirms();
+    // Since 12 Oct 2026 the home page names no firm: "Coming soon" only.
+    expect(await screen.findByText('Coming soon')).toBeInTheDocument();
+    expect(screen.queryByTestId('buying-dealers')).not.toBeInTheDocument();
+    expect(screen.queryByText(KROG.name)).not.toBeInTheDocument();
+    expect(screen.queryByText(RAVENA.name)).not.toBeInTheDocument();
     const notice = screen.getByTestId('selling-moved');
     expect(notice.querySelector('a[href="/login"]')).toBeNull();
     expect(within(notice).queryByText(/owe you/)).toBeNull();

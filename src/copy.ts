@@ -1086,6 +1086,8 @@ export const SELLING_MOVED = {
   titleLead: 'The purchase of LANA has been taken over by',
   and: 'and',
   titleNone: 'The purchase of LANA has been taken over by other companies.',
+  /** The home page, 12 Oct 2026 (the owner): no firms named yet, only this. */
+  comingSoon: 'Coming soon',
   closed: 'LANA can no longer be sold on Lana.discount.',
   registerOne: 'To sell your LANA, register with this company.',
   registerTwo: 'To sell your LANA, register with one of the two companies.',

@@ -15,7 +15,7 @@ const HeroSection = () => {
     return (
       <section className="relative overflow-hidden py-10 md:py-20">
         <div className="container mx-auto px-4 sm:px-6 max-w-3xl">
-          <SellingMovedNotice />
+          <SellingMovedNotice comingSoon />
         </div>
       </section>
     );
