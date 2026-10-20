@@ -1261,9 +1261,13 @@ export const FINANCER = {
     ready: 'Confirmed. Ready to send below.',
     sending: 'Confirmed. Its LANA is on the way.',
     done: 'Confirmed and sent.',
-    treasury: 'Settled by the treasury: the money went to its bank account.',
+    // Owner, 20 Oct 2026: the account is Lana.Discount's (the one its administrator manages) — never called "treasury",
+    // which in Slovenian is `zakladnica` and confused people. It used to add "the money went to its bank account"; that is
+    // false for an internal batch (Direct.Fund destination lana_discount: no bank transfer, batch 2026002666), and this page
+    // is not told which kind it was — so the line says only who settled it.
+    treasury: 'Settled by the Lana.Discount account.',
     held:
-      'Held: this batch may already have been paid to the treasury’s bank account, so Lana.Discount’s administrator ' +
+      'Held: this batch may already have been paid to Lana.Discount’s bank account, so Lana.Discount’s administrator ' +
       'decides who settles it. Nothing to do here for now.',
     other: 'Some of its purchases are settled by another financer. Ask the administrator.',
   },
@@ -1307,7 +1311,7 @@ export const FINANCER = {
     NOT_YOUR_BATCH: 'This batch is not yours on Direct.Fund.',
     NOT_FINANCER: 'Direct.Fund does not know this key as a financer. Sign in with the key you use there.',
     BATCH_HELD:
-      'This batch may already have been paid to the treasury’s bank account, so Lana.Discount’s administrator decides ' +
+      'This batch may already have been paid to Lana.Discount’s bank account, so Lana.Discount’s administrator decides ' +
       'who settles it. Please contact us.',
     NOT_LANA_DISCOUNT: 'This is not a Lana Discount batch.',
     BATCH_NOT_PAID: 'Not paid on Direct.Fund yet: pay it there first (»I Have Paid This Batch«).',
@@ -1315,7 +1319,7 @@ export const FINANCER = {
     PAYMENT_NOT_YOURS: 'A payment in it belongs to another financer.',
     PAYMENT_NOT_CONFIRMED: 'A payment in it is not confirmed on Direct.Fund yet.',
     PAYMENT_WITHOUT_REF: 'A payment in it has no purchase attached. Ask the administrator.',
-    OWNER_CONFLICT: 'A purchase in it is already settled by the treasury or by another financer. Ask the administrator.',
+    OWNER_CONFLICT: 'A purchase in it is already settled by the Lana.Discount account or by another financer. Ask the administrator.',
     OWNER_MISMATCH: 'A purchase in it pays its budget’s LANA to another financer. Ask the administrator.',
     NO_TRANSACTIONS: 'Direct.Fund no longer counts any purchase of this batch (cancelled or moved elsewhere). Nothing was confirmed.',
     other: 'Refused ({code}).',
@@ -1600,9 +1604,9 @@ export const FINANCER_SL: FinancerText = {
     ready: 'Potrjen. Pripravljen za pošiljanje spodaj.',
     sending: 'Potrjen. Njegove LANE so na poti.',
     done: 'Potrjen in poslan.',
-    treasury: 'Poravnala ga je zakladnica: denar je šel na njen bančni račun.',
+    treasury: 'Poravnal ga je račun Lana.Discount.',
     held:
-      'Zadržan: ta paket je morda že plačan na bančni račun zakladnice, zato o tem, kdo ga poravna, odloči administrator ' +
+      'Zadržan: ta paket je morda že plačan na bančni račun Lana.Discount, zato o tem, kdo ga poravna, odloči administrator ' +
       'Lana.Discount. Tukaj zaenkrat ni treba storiti ničesar.',
     other: 'Nekatere njegove nakupe poravnava drug financer. Vprašajte administratorja.',
   },
@@ -1642,7 +1646,7 @@ export const FINANCER_SL: FinancerText = {
     NOT_YOUR_BATCH: 'Ta paket na Direct.Fund ni vaš.',
     NOT_FINANCER: 'Direct.Fund tega ključa ne pozna kot financerja. Prijavite se s ključem, ki ga uporabljate tam.',
     BATCH_HELD:
-      'Ta paket je morda že plačan na bančni račun zakladnice, zato o tem, kdo ga poravna, odloči administrator ' +
+      'Ta paket je morda že plačan na bančni račun Lana.Discount, zato o tem, kdo ga poravna, odloči administrator ' +
       'Lana.Discount. Prosimo, obrnite se na nas.',
     NOT_LANA_DISCOUNT: 'To ni paket »Lana Discount«.',
     BATCH_NOT_PAID: 'Na Direct.Fund še ni plačan: najprej ga plačajte tam (»I Have Paid This Batch«).',
@@ -1650,7 +1654,7 @@ export const FINANCER_SL: FinancerText = {
     PAYMENT_NOT_YOURS: 'Eno od plačil v njem pripada drugemu financerju.',
     PAYMENT_NOT_CONFIRMED: 'Eno od plačil v njem na Direct.Fund še ni potrjeno.',
     PAYMENT_WITHOUT_REF: 'Eno od plačil v njem nima pripetega nakupa. Vprašajte administratorja.',
-    OWNER_CONFLICT: 'Nakup v njem že poravnava zakladnica ali drug financer. Vprašajte administratorja.',
+    OWNER_CONFLICT: 'Nakup v njem že poravnava račun Lana.Discount ali drug financer. Vprašajte administratorja.',
     OWNER_MISMATCH: 'Nakup v njem pošilja LANE proračuna drugemu financerju. Vprašajte administratorja.',
     NO_TRANSACTIONS: 'Direct.Fund ne šteje več nobenega nakupa tega paketa (preklicani ali premaknjeni drugam). Nič ni bilo potrjeno.',
     other: 'Zavrnjeno ({code}).',

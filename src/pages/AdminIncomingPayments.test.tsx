@@ -110,15 +110,15 @@ afterEach(() => {
 
 const draw = () => render(<MemoryRouter><AdminIncomingPayments /></MemoryRouter>);
 
-describe('Confirm Received on the treasury account', () => {
+describe('Confirm Received on the Lana.Discount account', () => {
   it('asks for the batch reference typed, then sends {status: received, treasuryReceived: true} and nothing else', async () => {
     draw();
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Received' }));
     const dialog = screen.getByRole('dialog');
-    expect(dialog.textContent).toMatch(/treasury bank account/i);
+    expect(dialog.textContent).toMatch(/Lana\.Discount bank account/i);
     expect(dialog.textContent).toContain('/financer');
 
-    const yes = within(dialog).getByRole('button', { name: 'Received on the treasury account' });
+    const yes = within(dialog).getByRole('button', { name: 'Received on the Lana.Discount account' });
     expect(yes).toBeDisabled();
     fireEvent.click(yes);
     const field = within(dialog).getByLabelText('Type the batch reference to confirm');

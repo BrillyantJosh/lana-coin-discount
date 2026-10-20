@@ -103,6 +103,15 @@ describe('the financer page in Slovenian and English', () => {
     }
   });
 
+  it('the account that settles a batch is "Lana.Discount" — never "treasury" or "zakladnica" (owner, 20 Oct 2026) — and the line says only who settled it, not where its money went', () => {
+    for (const [key, text] of [...en, ...sl]) expect(text, key).not.toMatch(/treasur|zakladnic/i);
+    expect(FINANCER.batchState.treasury).toBe('Settled by the Lana.Discount account.');
+    expect(FINANCER_SL.batchState.treasury).toBe('Poravnal ga je račun Lana.Discount.');
+    // An internal batch (Direct.Fund destination lana_discount) has no bank transfer, and the page cannot tell it from one that had.
+    expect(FINANCER.batchState.treasury).not.toMatch(/bank/i);
+    expect(FINANCER_SL.batchState.treasury).not.toMatch(/bančn/i);
+  });
+
   it('the Slovenian administrator is never "skrbnik" — that word is the caretaker, paid by these very sends', () => {
     const wrong = [...en].filter(([key, text]) => /administrator/i.test(text) && /skrbnik/i.test(sl.get(key) ?? '')).map(([key]) => key);
     expect(wrong).toEqual([]);

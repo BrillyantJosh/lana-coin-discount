@@ -2162,7 +2162,7 @@ router.put('/admin/incoming-batches/:batchRef/status', async (req: Request, res:
   if (status === 'received') {
     if (treasuryReceived !== true) {
       return res.status(400).json({
-        error: 'Confirm only money that arrived on the TREASURY bank account, and say so (treasuryReceived: true). A financer confirms their own internal batches on /financer.',
+        error: 'Confirm only money that arrived on the Lana.Discount bank account, and say so (treasuryReceived: true). A financer confirms their own internal batches on /financer.',
         code: 'TREASURY_FLAG_REQUIRED',
       });
     }
@@ -2907,7 +2907,7 @@ router.post('/admin/send-batch-lana', async (req: Request, res: Response) => {
     // nobody's yet. Asked BEFORE authorisation, because it is the stronger no.
     if (notTreasury > 0) {
       console.warn(`[lana-discount] send-batch-lana refused for ${adminHex.slice(0, 12)}…: ${notTreasury} of ${orders.length} orders are not the treasury's to send — nothing sent`);
-      return res.status(409).json({ error: `${notTreasury} of these LANA orders belong to purchases the treasury does not settle (their financer sends them, or nobody has confirmed them yet) — nothing was sent`, code: 'NOT_TREASURY' });
+      return res.status(409).json({ error: `${notTreasury} of these LANA orders belong to purchases the Lana.Discount account does not settle (their financer sends them, or nobody has confirmed them yet) — nothing was sent`, code: 'NOT_TREASURY' });
     }
     if (unauthorised > 0) {
       console.warn(`[lana-discount] send-batch-lana refused for ${adminHex.slice(0, 12)}…: ${unauthorised} of ${orders.length} orders not authorised — nothing sent`);

@@ -122,7 +122,7 @@ export function judgeFinancerBatch(df: DfBatchByRef, signerHex: string, held: Re
     return { ok: false, code: 'NOT_YOUR_BATCH', error: 'This batch belongs to another financer on Direct.Fund.' };
   }
   if (held.has(b.batchRef)) {
-    return { ok: false, code: 'BATCH_HELD', error: 'This batch was closed while Direct.Fund still showed the treasury bank account; the administrator decides it. Please contact us.' };
+    return { ok: false, code: 'BATCH_HELD', error: 'This batch was closed while Direct.Fund still showed the Lana.Discount bank account; the administrator decides it. Please contact us.' };
   }
   if (b.destinationType !== LANA_DISCOUNT) {
     return { ok: false, code: 'NOT_LANA_DISCOUNT', error: 'This batch is not a Lana Discount batch — it is paid to its recipients by bank, not settled here.' };
@@ -245,7 +245,7 @@ export function recordFinancerConfirm(db: Database.Database, df: DfBatchByRef, s
         // a leg left 'pending' — never.
         const gone = db.prepare("SELECT COUNT(*) AS c FROM brain_lana_orders WHERE transaction_ref = ? AND status IN ('sending', 'sent')").get(ref) as { c: number };
         if (gone.c > 0) {
-          return { batchRef, ok: false, code: 'OWNER_CONFLICT', error: `LANA of purchase ${ref} has already been sent by the treasury.` };
+          return { batchRef, ok: false, code: 'OWNER_CONFLICT', error: `LANA of purchase ${ref} has already been sent by the Lana.Discount account.` };
         }
       }
       // The LANA bought for the financer goes to THEIR budget wallet; a purchase
@@ -417,7 +417,7 @@ export function treasuryMayTick(db: Database.Database, batchRef: string): { ok: 
   const batch = batchRow(db, batchRef);
   if (!batch) return { ok: false, httpStatus: 409, code: 'BATCH_NOT_RECEIVED', error: 'Confirm this batch as received first.' };
   if (batch.settled_by === 'financer') {
-    return { ok: false, httpStatus: 409, code: 'OWNER_CONFLICT', error: 'Its financer settles this batch; the treasury does not tick it.' };
+    return { ok: false, httpStatus: 409, code: 'OWNER_CONFLICT', error: 'Its financer settles this batch; the Lana.Discount account does not tick it.' };
   }
   const rows = db.prepare(`
     SELECT blo.transaction_ref AS ref, ps.settled_by,
@@ -432,7 +432,7 @@ export function treasuryMayTick(db: Database.Database, batchRef: string): { ok: 
   }
   const unowned = rows.filter(r => r.open > 0 && r.settled_by !== 'treasury');
   if (unowned.length > 0) {
-    return { ok: false, httpStatus: 409, code: 'NOT_TREASURY', error: `${unowned.length} purchase(s) of this batch with LANA still to send are not the treasury's — confirm the batch as received on the treasury account first.` };
+    return { ok: false, httpStatus: 409, code: 'NOT_TREASURY', error: `${unowned.length} purchase(s) of this batch with LANA still to send are not the Lana.Discount account's — confirm the batch as received on the Lana.Discount account first.` };
   }
   return { ok: true };
 }

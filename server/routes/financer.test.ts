@@ -508,7 +508,7 @@ describe('POST /api/financer/batches/confirm', () => {
     leg('2026002293-T1');
     const r = await confirm(me, ['2026002293']);
     expect(r.body.results[0]).toMatchObject({ batchRef: '2026002293', ok: false, code: 'BATCH_HELD' });
-    expect(r.body.results[0].error).toMatch(/treasury bank account; the administrator decides it/);
+    expect(r.body.results[0].error).toMatch(/Lana\.Discount bank account; the administrator decides it/);
     nothingWritten();
 
     const listed = (await call(me, 'GET', '/batches')).body.batches.find((b: any) => b.batchRef === '2026002293');

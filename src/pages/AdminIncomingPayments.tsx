@@ -121,7 +121,7 @@ const STATUS_TAB: Record<BatchStatus, TabId> = {
 
 const tabs: { id: TabId; label: string; desc: string; color: string }[] = [
   { id: 'pending_direct', label: 'Pending Direct', desc: 'Awaiting payment on Lana Direct Fund — not yet sent by investors', color: 'text-gray-500' },
-  { id: 'incoming', label: 'Incoming', desc: 'FIAT payments sent by investors. Confirm here only money that arrived on the TREASURY bank account — a financer confirms their own internal Lana Discount batches on /financer and sends the LANA from their own wallet.', color: 'text-amber-500' },
+  { id: 'incoming', label: 'Incoming', desc: 'FIAT payments sent by investors. Confirm here only money that arrived on the Lana.Discount bank account — a financer confirms their own internal Lana Discount batches on /financer and sends the LANA from their own wallet.', color: 'text-amber-500' },
   { id: 'awaiting_lana', label: 'Awaiting LANA', desc: 'FIAT confirmed on the bank account — the LANA goes out on its own, and the batch closes itself once every leg is on chain', color: 'text-blue-500' },
   { id: 'lana_sent', label: 'LANA Sent', desc: 'LANA distributed to recipients', color: 'text-emerald-500' },
 ];
@@ -220,14 +220,14 @@ function TreasuryConfirmDialog(props: {
       onKeyDown={e => { if (e.key === 'Escape') props.onCancel(); }}
     >
       <div className="bg-card rounded-2xl border-2 border-border p-5 w-full max-w-md space-y-3 text-sm">
-        <h2 id="treasury-confirm-title" className="text-base font-bold">Confirm received on the treasury account</h2>
+        <h2 id="treasury-confirm-title" className="text-base font-bold">Confirm received on the Lana.Discount account</h2>
         <p>
           Batch <span className="font-mono font-semibold">{batch.batchRef}</span> · {payer} · {formatFiat(batch.totalFiat, batch.currency)} · {batch.orders.length} payment{batch.orders.length !== 1 ? 's' : ''}
         </p>
         <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-700 dark:text-amber-300">
-          Confirm only money that arrived on the <strong>treasury bank account</strong>. A financer&apos;s Lana Discount batch is internal:
+          Confirm only money that arrived on the <strong>Lana.Discount bank account</strong>. A financer&apos;s Lana Discount batch is internal:
           the financer confirms it on /financer and sends its LANA from their own wallet — confirming it here would make the
-          treasury wallet pay LANA the financer owes.
+          Lana.Discount account pay LANA the financer owes.
         </p>
         <label htmlFor="treasury-confirm-ref" className="block font-medium">
           Type the batch reference to confirm
@@ -252,7 +252,7 @@ function TreasuryConfirmDialog(props: {
             disabled={!matches || busy}
             className="px-3 py-2 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            Received on the treasury account
+            Received on the Lana.Discount account
           </button>
         </div>
       </div>
@@ -953,7 +953,7 @@ const AdminIncomingPayments = () => {
                 })()}
               </div>
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500" title="Pending or in a signed send, of purchases the treasury settles. Financers send their own.">Treasury to Send</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500" title="Pending or in a signed send, of purchases the Lana.Discount account settles. Financers send their own.">Lana.Discount account to Send</p>
                 <p className="text-lg font-bold tabular-nums text-amber-500">{pendingLana.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
               </div>
               <div>
@@ -1118,9 +1118,9 @@ const AdminIncomingPayments = () => {
                             <span
                               data-testid={`settled-by-${batch.batchRef}`}
                               className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 dark:bg-slate-500/10 dark:text-slate-300"
-                              title="Money confirmed on the treasury bank account; the treasury wallet sends the LANA"
+                              title="Money confirmed on the Lana.Discount bank account; the Lana.Discount account sends the LANA"
                             >
-                              Treasury
+                              Lana.Discount account
                             </span>
                           )}
                         </div>
@@ -1146,7 +1146,7 @@ const AdminIncomingPayments = () => {
                               onClick={e => { e.stopPropagation(); setTreasuryConfirm(batch); }}
                               disabled={updating === batch.batchRef}
                               className="px-3 py-2 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 whitespace-nowrap"
-                              title="Only for money that arrived on the TREASURY bank account"
+                              title="Only for money that arrived on the Lana.Discount bank account"
                             >
                               {updating === batch.batchRef ? '...' : 'Confirm Received'}
                             </button>
@@ -1289,7 +1289,7 @@ const AdminIncomingPayments = () => {
                                       className="text-[10px] text-muted-foreground whitespace-nowrap"
                                       title={r.settlementOwnerHex || undefined}
                                     >
-                                      {r.settledBy === 'financer' ? `by financer ${ownerName(r.settlementOwnerHex)}` : r.settledBy === 'treasury' ? 'by treasury' : 'unconfirmed'}
+                                      {r.settledBy === 'financer' ? `by financer ${ownerName(r.settlementOwnerHex)}` : r.settledBy === 'treasury' ? 'by Lana.Discount account' : 'unconfirmed'}
                                     </span>
                                     {r.txHash && (
                                       <a href={`https://chainz.cryptoid.info/lana/tx.dws?${r.txHash}`} target="_blank" rel="noopener noreferrer" className="text-emerald-500 hover:underline font-mono text-[10px]">
