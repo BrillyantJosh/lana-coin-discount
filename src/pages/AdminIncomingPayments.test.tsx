@@ -1,14 +1,12 @@
 /**
- * "CONFIRM RECEIVED" IS FOR THE TREASURY'S BANK ACCOUNT, AND THE ADMIN SAYS SO.
+ * NO "CONFIRM RECEIVED" ON THIS PAGE.
  *
  * Owner, 8 Oct 2026: a financer's Lana Discount share is internal — they pay
  * themselves, confirm on /financer and send the LANA from their own wallet.
- * Confirming such a batch here would make the treasury wallet pay LANA that
- * the financer owes, for money that never reached the treasury. So:
- *   - the click opens a typed confirmation; nothing is sent until the batch's
- *     reference is typed, and a wrong one keeps the button off;
- *   - what is sent is the status and {treasuryReceived: true} — never the
- *     payments (the server builds the batch from Direct.Fund itself);
+ * On 20 Oct 2026 an administrator confirmed another financer's batch here and
+ * the Lana.Discount account's wallet paid what that financer owed; owner,
+ * 21 Oct 2026: not possible through this page any more. So:
+ *   - an incoming batch has no button to confirm it, only who confirms it;
  *   - a batch a financer settles shows who settles it, its legs 'Sending' while
  *     a signed send waits for a block, and none of the treasury's buttons.
  */
@@ -110,41 +108,16 @@ afterEach(() => {
 
 const draw = () => render(<MemoryRouter><AdminIncomingPayments /></MemoryRouter>);
 
-describe('Confirm Received on the Lana.Discount account', () => {
-  it('asks for the batch reference typed, then sends {status: received, treasuryReceived: true} and nothing else', async () => {
+describe('an incoming batch', () => {
+  it('has no Confirm Received button — the financer confirms it on /financer — and nothing is sent', async () => {
     draw();
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm Received' }));
-    const dialog = screen.getByRole('dialog');
-    expect(dialog.textContent).toMatch(/Lana\.Discount bank account/i);
-    expect(dialog.textContent).toContain('/financer');
-
-    const yes = within(dialog).getByRole('button', { name: 'Received on the Lana.Discount account' });
-    expect(yes).toBeDisabled();
-    fireEvent.click(yes);
-    const field = within(dialog).getByLabelText('Type the batch reference to confirm');
-    fireEvent.change(field, { target: { value: '2026002294' } });
-    expect(yes).toBeDisabled();
-    fireEvent.click(yes);
-    expect(puts).toEqual([]);
-
-    fireEvent.change(field, { target: { value: '2026002293' } });
-    expect(yes).toBeEnabled();
-    fireEvent.click(yes);
-    await waitFor(() => expect(puts).toHaveLength(1));
-    expect(puts[0].url).toBe('/api/admin/incoming-batches/2026002293/status');
-    expect(puts[0].body).toEqual({ status: 'received', treasuryReceived: true });
-    expect(screen.queryByRole('dialog')).toBeNull();
-  });
-
-  it('Cancel sends nothing', async () => {
-    draw();
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm Received' }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByTestId('financer-confirms-2026002293')).toHaveTextContent('the financer confirms it on /financer');
+    expect(screen.queryByRole('button', { name: 'Confirm Received' })).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(puts).toEqual([]);
   });
 
-  it('a batch a financer already settles offers no treasury confirmation at all', async () => {
+  it('a batch a financer already settles says so', async () => {
     feed = {
       ...feed,
       lanaOrders: [

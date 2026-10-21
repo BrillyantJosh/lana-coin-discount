@@ -190,75 +190,13 @@ const purposeConfig: Record<string, { label: string; cls: string }> = {
 };
 
 /**
- * "Confirm Received" — for money that arrived on the TREASURY's bank account,
- * and nothing else.
- *
- * Owner, 8 Oct 2026: a financer's Lana Discount share is internal — they pay
- * themselves, confirm the batch on /financer and send its LANA from their own
- * Lana.Discount wallet. Confirming such a batch here would make the treasury's
- * wallet pay LANA the financer owes, for money that never reached the treasury.
- * So the click asks the admin to SAY it, by typing the batch's reference (the
- * server also requires {treasuryReceived: true}, and refuses a batch any of
- * whose purchases a financer already settles).
+ * No "Confirm Received" here any more (owner, 21 Oct 2026). Every batch on this
+ * page is a financer's internal Lana Discount share: the financer confirms it on
+ * /financer and sends its LANA from their own Lana.Discount wallet. On 20 Oct an
+ * administrator confirmed another financer's batch here and the Lana.Discount
+ * account's wallet paid what that financer owed; the server now refuses it too
+ * (lib/financer/confirm.ts financerRefusal).
  */
-function TreasuryConfirmDialog(props: {
-  batch: { batchRef: string; totalFiat: number; currency: string; orders: unknown[] };
-  payer: string;
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const { batch, payer, busy } = props;
-  const [typed, setTyped] = useState('');
-  const matches = typed.trim() === batch.batchRef;
-  return (
-    <div
-      className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="treasury-confirm-title"
-      onKeyDown={e => { if (e.key === 'Escape') props.onCancel(); }}
-    >
-      <div className="bg-card rounded-2xl border-2 border-border p-5 w-full max-w-md space-y-3 text-sm">
-        <h2 id="treasury-confirm-title" className="text-base font-bold">Confirm received on the Lana.Discount account</h2>
-        <p>
-          Batch <span className="font-mono font-semibold">{batch.batchRef}</span> · {payer} · {formatFiat(batch.totalFiat, batch.currency)} · {batch.orders.length} payment{batch.orders.length !== 1 ? 's' : ''}
-        </p>
-        <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-700 dark:text-amber-300">
-          Confirm only money that arrived on the <strong>Lana.Discount bank account</strong>. A financer&apos;s Lana Discount batch is internal:
-          the financer confirms it on /financer and sends its LANA from their own wallet — confirming it here would make the
-          Lana.Discount account pay LANA the financer owes.
-        </p>
-        <label htmlFor="treasury-confirm-ref" className="block font-medium">
-          Type the batch reference to confirm
-        </label>
-        <input
-          id="treasury-confirm-ref"
-          value={typed}
-          onChange={e => setTyped(e.target.value)}
-          autoFocus
-          autoComplete="off"
-          spellCheck={false}
-          placeholder={batch.batchRef}
-          className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono"
-        />
-        <div className="flex justify-end gap-2 pt-1">
-          <button type="button" onClick={props.onCancel} className="px-3 py-2 rounded-lg text-xs font-semibold border border-border text-muted-foreground hover:text-foreground">
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={props.onConfirm}
-            disabled={!matches || busy}
-            className="px-3 py-2 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            Received on the Lana.Discount account
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 const AdminIncomingPayments = () => {
   const { session, isLoading: authLoading, isAdmin } = useAuth();
@@ -293,7 +231,6 @@ const AdminIncomingPayments = () => {
   // /api/admin/brain-callbacks); the public heartbeat carries only the counts (recheck of 9 Oct 2026, M4).
   const [adminLists, setAdminLists] = useState<{ gaveUpKeys: string[]; waitingOver7dKeys: string[]; ownerMismatchRefs: string[] }>({ gaveUpKeys: [], waitingOver7dKeys: [], ownerMismatchRefs: [] });
   // The batch whose treasury receipt is being confirmed (the typed confirmation is open).
-  const [treasuryConfirm, setTreasuryConfirm] = useState<BatchGroup | null>(null);
   const [investorNames, setInvestorNames] = useState<Record<string, string>>({});
   // Sort mode: "latest"  = most recent Lana Discount activity first (default);
   //            "batchRef" = batch number descending (newest batch first);
@@ -475,15 +412,13 @@ const AdminIncomingPayments = () => {
     if (!session) return;
     setUpdating(batch.batchRef);
     try {
-      // Only the status goes. Since 8 Oct 2026 the server builds the batch from
-      // Direct.Fund's own fresh answer and ignored the payments this page used to
-      // send (lib/financer/confirm.ts). 'received' must also SAY the money is on
-      // the treasury's bank account — the typed confirmation below is where the
-      // admin says it; a financer's internal batch is confirmed on /financer.
+      // Only the status goes: the bookkeeping steps of a batch the Lana.Discount
+      // account already settles. 'received' is not offered here (see the note
+      // above the component).
       const res = await signedFetch(`/api/admin/incoming-batches/${encodeURIComponent(batch.batchRef)}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newStatus === 'received' ? { status: newStatus, treasuryReceived: true } : { status: newStatus }),
+        body: JSON.stringify({ status: newStatus }),
       });
       if (!res.ok) {
         // Say WHY. A batch too large to read (2 Oct 2026, 288 payments) and a
@@ -751,19 +686,6 @@ const AdminIncomingPayments = () => {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <AdminNav />
-      {treasuryConfirm && (
-        <TreasuryConfirmDialog
-          batch={treasuryConfirm}
-          payer={investorNames[treasuryConfirm.investorHex] || `${treasuryConfirm.investorHex.slice(0, 8)}...${treasuryConfirm.investorHex.slice(-6)}`}
-          busy={updating === treasuryConfirm.batchRef}
-          onCancel={() => setTreasuryConfirm(null)}
-          onConfirm={() => {
-            const batch = treasuryConfirm;
-            setTreasuryConfirm(null);
-            void updateBatchStatus(batch, 'received');
-          }}
-        />
-      )}
       <div className="max-w-5xl mx-auto px-4 py-6 space-y-5">
         <h1 className="text-lg font-bold">Incoming FIAT Payments</h1>
         <p className="text-sm text-muted-foreground -mt-3">
@@ -1141,18 +1063,9 @@ const AdminIncomingPayments = () => {
                           <p className="text-xl font-bold tabular-nums">{formatFiat(batch.totalFiat, batch.currency)}</p>
                         </div>
                         {confirmReceived ? (
-                          treasuryMayAct ? (
-                            <button
-                              onClick={e => { e.stopPropagation(); setTreasuryConfirm(batch); }}
-                              disabled={updating === batch.batchRef}
-                              className="px-3 py-2 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 whitespace-nowrap"
-                              title="Only for money that arrived on the Lana.Discount bank account"
-                            >
-                              {updating === batch.batchRef ? '...' : 'Confirm Received'}
-                            </button>
-                          ) : (
-                            <span className="text-[11px] text-muted-foreground max-w-[9rem] text-right">confirmed by the financer on /financer</span>
-                          )
+                          <span data-testid={`financer-confirms-${batch.batchRef}`} className="text-[11px] text-muted-foreground max-w-[9rem] text-right">
+                            {settlement.settledBy === 'financer' ? 'confirmed by the financer on /financer' : 'the financer confirms it on /financer'}
+                          </span>
                         ) : legs ? (
                           <div className="text-right min-w-[7.5rem]">
                             {legs.total === 0 ? (

@@ -24,7 +24,7 @@ import { SELLING_CLOSED, refuseSelling } from '../lib/sellingClosed.js';
 import { buyingDealers } from '../lib/buyingDealersShared.js';
 import { migrateFinancerSchema, logFinancerMigration } from '../db/financerSchema.js';
 import { fetchBatchByRef, dfHttpStatus, isBatchRef } from '../lib/financer/dfClient.js';
-import { recordTreasuryReceived, treasuryMayTick } from '../lib/financer/confirm.js';
+import { financerRefusal, recordTreasuryReceived, treasuryMayTick } from '../lib/financer/confirm.js';
 import { rearmCallback, outboxHealth } from '../lib/financer/brainOutbox.js';
 import { financerAdminLists } from '../lib/financer/heartbeatStatus.js';
 // The treasury's manual send records its transaction before broadcasting it,
@@ -2138,7 +2138,9 @@ router.get('/pending-verification', (_req: Request, res: Response) => {
 //   - 'received' means "the money is on the TREASURY's bank account", and must
 //     say so ({treasuryReceived: true}); the batch is built from Direct.Fund's
 //     own fresh answer, never from this body (which the page still sends, and
-//     which is ignored), and it is refused when a financer settles any of it;
+//     which is ignored), and it is refused when a financer settles any of it,
+//     or when Direct.Fund says a financer owns it (21 Oct 2026: never again a
+//     financer's obligation paid from the treasury's wallet);
 //   - 'lana_bought' releases legs to the auto-sender, so it, 'lana_sent' and
 //     'incoming' are only for a batch the treasury settles;
 //   - the brain's fiat-received goes through the outbox, written in the same
@@ -2175,6 +2177,20 @@ router.put('/admin/incoming-batches/:batchRef/status', async (req: Request, res:
         error: dfHttpStatus(err) === 404 ? 'Direct.Fund has no batch with this reference.' : 'Direct.Fund could not be asked about this batch right now. Nothing was changed; try again shortly.',
         code: dfHttpStatus(err) === 404 ? 'BATCH_NOT_FOUND' : 'DF_UNAVAILABLE',
       });
+    }
+    let refusal;
+    try {
+      refusal = await financerRefusal(df);
+    } catch (err: any) {
+      console.warn(`[lana-discount] Treasury confirm of ${batchRef}: Direct.Fund could not say who owns it — ${err?.message || err}`);
+      return res.status(502).json({
+        error: 'Direct.Fund could not say who owns this batch right now. Nothing was changed; try again shortly.',
+        code: 'DF_UNAVAILABLE',
+      });
+    }
+    if (refusal) {
+      console.warn(`[lana-discount] Treasury confirm of ${batchRef} by ${adminHex.slice(0, 12)}… REFUSED: ${refusal.code}${refusal.owners ? ` (${refusal.owners.map(h => h.slice(0, 8)).join(', ')})` : ''}`);
+      return res.status(refusal.httpStatus).json({ error: refusal.error, code: refusal.code, owners: refusal.owners });
     }
     const r = recordTreasuryReceived(db, df, adminHex, { notes: cleanNotes });
     if (r.ok === false) {

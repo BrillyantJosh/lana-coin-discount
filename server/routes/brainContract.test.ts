@@ -35,15 +35,28 @@ vi.mock('../lib/electrum.js', () => ({
 
 const df = {
   batches: new Map<string, unknown>(),
+  /** hex → what Direct.Fund knows of them; anyone else is not an investor there. */
+  investors: new Map<string, { financer?: boolean; lanaDiscountWallet?: string | null; wallets?: Record<string, string> }>(),
   hits: [] as string[],
   auth: [] as Array<string | undefined>,
   down: false,
+  financersDown: false,
 };
 const dfServer = http.createServer((req, res) => {
   df.hits.push(String(req.url));
   df.auth.push(req.headers.authorization);
   res.setHeader('content-type', 'application/json');
   if (df.down) { res.statusCode = 503; res.end('{}'); return; }
+  const f = /^\/api\/admin\/financers\/([0-9a-f]{64})$/.exec(String(req.url));
+  if (f) {
+    if (df.financersDown) { res.statusCode = 503; res.end('{}'); return; }
+    const inv = df.investors.get(f[1]);
+    res.end(JSON.stringify({
+      hexId: f[1], isInvestor: !!inv, financer: !!inv?.financer,
+      lanaDiscountWallet: inv?.lanaDiscountWallet ?? null, lanaDiscountWalletSetAt: null, wallets: inv?.wallets ?? {},
+    }));
+    return;
+  }
   const m = /^\/api\/admin\/batch-by-ref\/([^/]+)$/.exec(String(req.url));
   const b = m && df.batches.get(decodeURIComponent(m[1]));
   if (!b) { res.statusCode = 404; res.end('{"error":"BATCH_NOT_FOUND"}'); return; }
@@ -91,9 +104,11 @@ beforeEach(() => {
   db.prepare("INSERT INTO admin_users (hex_id, label) VALUES (?, 'test')").run(admin.hex);
   db.prepare("INSERT INTO app_settings (key, value) VALUES ('buyback_wallet_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(WALLET2);
   df.batches.clear();
+  df.investors.clear();
   df.hits = [];
   df.auth = [];
   df.down = false;
+  df.financersDown = false;
 });
 
 const brain = async (method: string, path: string, body?: unknown) => {
@@ -264,8 +279,8 @@ describe('PUT /api/admin/incoming-batches/:batchRef/status', () => {
     const r = await asAdmin('PUT', PATH('B1'), pageBody({ treasuryReceived: true }));
     expect(r.status).toBe(200);
     expect(r.body.batch).toMatchObject({ batch_ref: 'B1', status: 'received', settled_by: 'treasury', investor_hex: FIN, total_amount: 30, currency: 'EUR', payment_count: 5 });
-    expect(df.hits).toEqual(['/api/admin/batch-by-ref/B1']);
-    expect(df.auth).toEqual(['Bearer peer-test']);
+    expect(df.hits).toEqual(['/api/admin/batch-by-ref/B1', `/api/admin/financers/${FIN}`]);
+    expect(df.auth).toEqual(['Bearer peer-test', 'Bearer peer-test']);
     expect(owners()).toEqual([
       { transaction_ref: 'T1', owner_hex: FIN, settled_by: 'treasury', batch_ref: 'B1', confirmed_by: admin.hex },
       { transaction_ref: 'T2', owner_hex: FIN, settled_by: 'treasury', batch_ref: 'B1', confirmed_by: admin.hex },
@@ -292,6 +307,45 @@ describe('PUT /api/admin/incoming-batches/:batchRef/status', () => {
     db.prepare("INSERT INTO incoming_batches (batch_ref, investor_hex, total_amount, currency, status, settled_by) VALUES ('B1', ?, 30, 'EUR', 'received', 'financer')").run(FIN);
     expect((await asAdmin('PUT', PATH('B1'), pageBody({ treasuryReceived: true }))).body.code).toBe('OWNER_CONFLICT');
     expect(owners()).toEqual([]);
+  });
+
+  it('refused (409) when Direct.Fund says a financer owns the batch or any purchase of it — nothing is written, no brain call', async () => {
+    // 20 Oct 2026: an administrator confirmed another financer's batch here and
+    // the treasury's wallet paid what that financer owed. Never again.
+    dfBatch('B1', [{ transactionRef: 'T1' }, { transactionRef: 'T2' }]);
+    leg('L1', 'T1');
+    df.investors.set(FIN, { financer: true, wallets: { EUR: WALLET } });
+    const r = await asAdmin('PUT', PATH('B1'), pageBody({ treasuryReceived: true }));
+    expect(r.status).toBe(409);
+    expect(r.body).toMatchObject({ code: 'FINANCER_SETTLES', owners: [FIN] });
+    expect(owners()).toEqual([]);
+    expect(db.prepare('SELECT COUNT(*) c FROM incoming_batches').get()).toEqual({ c: 0 });
+    expect(db.prepare("SELECT batch_ref FROM brain_lana_orders WHERE id = 'L1'").get()).toEqual({ batch_ref: null });
+    expect(outbox()).toEqual([]);
+
+    // Not a financer any more, but a Lana.Discount wallet chosen: still theirs to settle.
+    df.investors.set(FIN, { financer: false, lanaDiscountWallet: WALLET });
+    expect((await asAdmin('PUT', PATH('B1'), pageBody({ treasuryReceived: true }))).body.code).toBe('FINANCER_SETTLES');
+
+    // The batch's investor is not a financer, but a purchase was moved to one.
+    df.investors.clear();
+    df.investors.set(OTHER, { financer: true });
+    dfBatch('B2', [{ transactionRef: 'T3' }, { transactionRef: 'T4', investorHex: OTHER }]);
+    const r2 = await asAdmin('PUT', PATH('B2'), pageBody({ treasuryReceived: true }));
+    expect(r2.status).toBe(409);
+    expect(r2.body).toMatchObject({ code: 'FINANCER_SETTLES', owners: [OTHER] });
+    expect(owners()).toEqual([]);
+  });
+
+  it('refused when Direct.Fund cannot say who owns the batch, or names nobody — fail closed', async () => {
+    dfBatch('B1', [{ transactionRef: 'T1' }]);
+    df.financersDown = true;
+    expect(await asAdmin('PUT', PATH('B1'), pageBody({ treasuryReceived: true }))).toMatchObject({ status: 502, body: { code: 'DF_UNAVAILABLE' } });
+    df.financersDown = false;
+    dfBatch('B2', [{ transactionRef: 'T2', investorHex: '' }], { investorHex: '' });
+    expect(await asAdmin('PUT', PATH('B2'), pageBody({ treasuryReceived: true }))).toMatchObject({ status: 409, body: { code: 'NO_OWNER' } });
+    expect(db.prepare('SELECT COUNT(*) c FROM incoming_batches').get()).toEqual({ c: 0 });
+    expect(outbox()).toEqual([]);
   });
 
   it('Direct.Fund unreachable or without the batch: nothing is written', async () => {

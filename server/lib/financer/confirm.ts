@@ -12,7 +12,10 @@
  *
  *   TREASURY (admin PUT /api/admin/incoming-batches/:ref/status 'received',
  *   with treasuryReceived:true). The old door, now only for money that REALLY
- *   arrived on the treasury's own bank account; the treasury then sends.
+ *   arrived on the treasury's own bank account; the treasury then sends. Never
+ *   for a batch a financer owns (financerRefusal): owner, 21 Oct 2026, after
+ *   an administrator settled a financer's batch here and the treasury's wallet
+ *   paid what that financer owed.
  *
  * Either way the batch is built HERE from Direct.Fund's own answer, read fresh
  * (lib/financer/dfClient.ts) — never from the request body, never from the
@@ -30,7 +33,7 @@
  * and counts now (brainOutbox.queueFiatReceived).
  */
 import type Database from 'better-sqlite3';
-import { DfError, isBatchRef, type DfBatchByRef, type DfBatchPayment } from './dfClient.js';
+import { DfError, fetchFinancer, isBatchRef, type DfBatchByRef, type DfBatchPayment, type DfFinancer } from './dfClient.js';
 import { queueFiatReceived } from './brainOutbox.js';
 
 export type ConfirmCode =
@@ -342,6 +345,50 @@ export async function confirmFinancerBatches(db: Database.Database, signerHex: s
 }
 
 // ─── the treasury's door ──────────────────────────────────────────────────
+
+/** Who owns a batch on Direct.Fund: its financer and each live purchase's (after a reallocation), lower-case, no blanks. */
+export function batchOwners(df: DfBatchByRef): string[] {
+  const owners = new Set<string>();
+  if (lc(df.batch.investorHex)) owners.add(lc(df.batch.investorHex));
+  for (const p of df.payments) if (p.live && lc(p.investorHex)) owners.add(lc(p.investorHex));
+  return [...owners];
+}
+
+/** A key that settles its own batches: a financer on Direct.Fund, or anyone who chose a Lana.Discount wallet there. */
+export function settlesOwnBatches(f: DfFinancer): boolean {
+  return f.isFinancer || !!f.lanaDiscountWallet || Object.keys(f.wallets).length > 0;
+}
+
+export type TreasuryRefusal = { httpStatus: number; code: 'FINANCER_SETTLES' | 'NO_OWNER'; error: string; owners?: string[] };
+
+/**
+ * May the treasury's door take this batch at all? Not when a financer owns it,
+ * or any purchase of it: a financer confirms their own internal batch on
+ * /financer and sends its LANA from their own Lana.Discount wallet. Owner,
+ * 21 Oct 2026: on 20 Oct an administrator confirmed another financer's batch
+ * 2026002666 here and the treasury's wallet sent 18,732.87 LANA that financer
+ * owed. Asked of Direct.Fund fresh, for every owner; a batch that names no
+ * owner is refused too. Throws DfError when Direct.Fund cannot say — the
+ * caller refuses then (fail closed).
+ */
+export async function financerRefusal(
+  df: DfBatchByRef,
+  lookup: (hex: string) => Promise<DfFinancer> = hex => fetchFinancer(hex),
+): Promise<TreasuryRefusal | null> {
+  const owners = batchOwners(df);
+  if (owners.length === 0) {
+    return { httpStatus: 409, code: 'NO_OWNER', error: 'Direct.Fund names no owner for this batch, so it cannot be confirmed here.' };
+  }
+  const answers = await Promise.all(owners.map(hex => lookup(hex)));
+  const financers = answers.filter(settlesOwnBatches).map(f => f.hexId);
+  if (financers.length === 0) return null;
+  return {
+    httpStatus: 409,
+    code: 'FINANCER_SETTLES',
+    error: 'This batch belongs to a financer. The financer confirms it on /financer and sends its LANA from their own Lana.Discount wallet — the Lana.Discount account does not settle it. Nothing was changed.',
+    owners: financers,
+  };
+}
 
 export type TreasuryConfirmResult =
   | { ok: true; transactionRefs: string[]; created: boolean }
