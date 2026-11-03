@@ -1348,6 +1348,7 @@ export const FINANCER = {
     merchant_commission: 'Merchant’s commission',
     caretaker_commission: 'Caretaker',
     lana_purchase: 'Purchase',
+    service_fee: 'Service fee',
   },
   belowDust:
     'On its own, a recipient of it would get less than 0.005 LANA, which the network does not carry. ' +
@@ -1682,6 +1683,7 @@ export const FINANCER_SL: FinancerText = {
     merchant_commission: 'Provizija trgovca',
     caretaker_commission: 'Skrbnik',
     lana_purchase: 'Nakup',
+    service_fee: 'Provizija za storitev',
   },
   belowDust:
     'Sam bi eden od njegovih prejemnikov dobil manj kot 0,005 LANA, česar omrežje ne prenese. ' +
