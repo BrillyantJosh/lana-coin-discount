@@ -1,5 +1,5 @@
 # Build frontend
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 # node:20-alpine ships no prebuilt musl binaries for the native deps
 # (better-sqlite3/sharp), so npm falls back to node-gyp — which needs a
 # toolchain. Latent until a --no-cache rebuild or a base-image bump breaks
@@ -12,7 +12,7 @@ COPY . .
 RUN npm run build
 
 # Production stage — Express server
-FROM node:20-alpine
+FROM node:24-alpine
 # node:20-alpine ships no prebuilt musl binaries for the native deps
 # (better-sqlite3/sharp), so npm falls back to node-gyp — which needs a
 # toolchain. Latent until a --no-cache rebuild or a base-image bump breaks
