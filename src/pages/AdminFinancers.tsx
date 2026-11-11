@@ -7,6 +7,8 @@ import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { knownNames, resolveNames } from '@/lib/counterpartyNames';
 import { formatFiat, formatLana } from '@/lib/money';
+import { representativeText, useFinancerCompanies, type FinancerCompany } from '@/lib/financerCompanies';
+import { CompanyLink } from '@/components/FinancerCompanyName';
 
 /**
  * WHAT EACH FINANCER STILL HAS TO DO (owner, 12 Oct 2026).
@@ -167,14 +169,19 @@ const StageRow = ({ step, title, who, totals, strong, unavailable, children }: R
   );
 };
 
-const FinancerCard = ({ f, name }: { f: FinancerOverview; name: string | null }) => {
+/**
+ * `company`: the financer's company as it is now (src/lib/financerCompanies.ts) — a card is who a financer is today,
+ * so it carries no date. With one, the company is the title and the person its representative under it.
+ */
+const FinancerCard = ({ f, name, company }: { f: FinancerOverview; name: string | null; company: FinancerCompany | null }) => {
   const s = f.stages;
   const wallets = f.wallets ? Object.entries(f.wallets).sort(([a], [b]) => (a < b ? -1 : 1)) : [];
   return (
     <section className="rounded-2xl border-2 border-border bg-card p-4" data-financer={f.hex}>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="text-lg font-bold text-foreground">{name || shortHex(f.hex)}</h2>
+          <h2 className="text-lg font-bold text-foreground">{company ? <CompanyLink company={company} /> : name || shortHex(f.hex)}</h2>
+          {company && <p className="text-[12px] text-muted-foreground">{representativeText(name || shortHex(f.hex))}</p>}
           <p className="font-mono text-[11px] text-muted-foreground break-all" title={f.hex}>{shortHex(f.hex)}</p>
           {f.isFinancer === false && (
             <p className="mt-1 text-[11px] font-semibold text-red-600">Direct.Fund does not know this key as a financer now.</p>
@@ -276,6 +283,7 @@ const AdminFinancers = () => {
   const navigate = useNavigate();
   const [data, setData] = useState<OverviewResponse | null>(null);
   const [names, setNames] = useState<Record<string, string>>(() => knownNames());
+  const companies = useFinancerCompanies();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const namesRef = useRef(names);
@@ -381,7 +389,9 @@ const AdminFinancers = () => {
         )}
 
         <div className="space-y-4">
-          {financers.map(f => <FinancerCard key={f.hex} f={f} name={f.name || names[f.hex] || null} />)}
+          {financers.map(f => (
+            <FinancerCard key={f.hex} f={f} name={f.name || names[f.hex] || null} company={companies.companyFor(f.hex)} />
+          ))}
         </div>
       </div>
     </div>

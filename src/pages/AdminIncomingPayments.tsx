@@ -6,6 +6,8 @@ import { refusalText } from '@/lib/refusalText';
 import { toast } from 'sonner';
 import AdminNav from '@/components/AdminNav';
 import { AdminPagination } from '@/components/AdminPagination';
+import { representativeText, useFinancerCompanies } from '@/lib/financerCompanies';
+import { CompanyLink, FinancerName } from '@/components/FinancerCompanyName';
 
 interface FiatOrder {
   id: string;
@@ -232,6 +234,8 @@ const AdminIncomingPayments = () => {
   const [adminLists, setAdminLists] = useState<{ gaveUpKeys: string[]; waitingOver7dKeys: string[]; ownerMismatchRefs: string[] }>({ gaveUpKeys: [], waitingOver7dKeys: [], ownerMismatchRefs: [] });
   // The batch whose treasury receipt is being confirmed (the typed confirmation is open).
   const [investorNames, setInvestorNames] = useState<Record<string, string>>({});
+  // A financer's company in place of the person, where they act as the financer (src/lib/financerCompanies.ts).
+  const companies = useFinancerCompanies();
   // Sort mode: "latest"  = most recent Lana Discount activity first (default);
   //            "batchRef" = batch number descending (newest batch first);
   //            "amount"   = total FIAT amount descending (largest first).
@@ -1009,6 +1013,13 @@ const AdminIncomingPayments = () => {
               const settlement = settlementOf(batch);
               // The treasury's buttons are for the treasury's batches only (the server refuses the rest: 409).
               const treasuryMayAct = settlement.settledBy !== 'financer';
+              // Who paid it, who settles it and who sends each of its legs name the financer's company only from the
+              // company's `since` on — judged, for all three, by one date: the batch's newest purchase (its orders are
+              // sorted oldest first). A batch is paid and settled after its last purchase, so an older batch keeps the
+              // person, as before; one batch never names two different financers for the same money.
+              const financerAt = batch.orders[batch.orders.length - 1]?.createdAt ?? null;
+              const payerCompany = companies.companyFor(batch.investorHex, financerAt);
+              const settlerCompany = companies.companyFor(settlement.ownerHex, financerAt);
 
               return (
                 <div key={batch.batchRef} className="rounded-xl border overflow-hidden">
@@ -1031,9 +1042,9 @@ const AdminIncomingPayments = () => {
                             <span
                               data-testid={`settled-by-${batch.batchRef}`}
                               className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300"
-                              title="Internal to the financer: confirmed on /financer and sent from the financer's own Lana.Discount wallet"
+                              title={`Internal to the financer: confirmed on /financer and sent from the financer's own Lana.Discount wallet${settlerCompany ? ` · ${representativeText(ownerName(settlement.ownerHex))}` : ''}`}
                             >
-                              Financer settles · {ownerName(settlement.ownerHex)}
+                              Financer settles · {settlerCompany ? <CompanyLink company={settlerCompany} /> : ownerName(settlement.ownerHex)}
                             </span>
                           )}
                           {settlement.settledBy === 'treasury' && (
@@ -1047,9 +1058,12 @@ const AdminIncomingPayments = () => {
                           )}
                         </div>
 
-                        {/* Investor name (who paid FIAT) */}
+                        {/* Investor name (who paid FIAT) — their company from its date on, the person as its representative */}
                         <p className="text-sm font-medium">
-                          {investorNames[batch.investorHex] || `${batch.investorHex.slice(0, 8)}...${batch.investorHex.slice(-6)}`}
+                          <FinancerName
+                            company={payerCompany}
+                            person={investorNames[batch.investorHex] || `${batch.investorHex.slice(0, 8)}...${batch.investorHex.slice(-6)}`}
+                          />
                         </p>
 
                         <p className="text-xs text-muted-foreground mt-0.5">
@@ -1189,9 +1203,11 @@ const AdminIncomingPayments = () => {
                             </div>
                             {recipients.map(r => {
                               const pc = purposeConfig[r.orderType] || { label: r.orderType, cls: 'bg-muted text-muted-foreground' };
+                              // Only the leg's sender is the financer; the wallet it goes TO (a buyer, a caretaker) is never renamed.
+                              const legCompany = r.settledBy === 'financer' ? companies.companyFor(r.settlementOwnerHex, financerAt) : null;
                               return (
                                 <div key={r.id} className="px-4 py-2 text-xs flex items-center justify-between border-t border-purple-500/10">
-                                  <div className="flex items-center gap-3 min-w-0">
+                                  <div className={`flex items-center gap-3 min-w-0${legCompany ? ' flex-wrap gap-y-0.5' : ''}`}>
                                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${pc.cls}`}>{pc.label}</span>
                                     <span className="font-mono text-muted-foreground truncate max-w-[180px]" title={r.toWallet}>
                                       → {shortenWallet(r.toWallet)}
@@ -1199,10 +1215,12 @@ const AdminIncomingPayments = () => {
                                     {/* Who sends this leg: the purchase's owner (purchase_settlement), or nobody until it is confirmed. */}
                                     <span
                                       data-testid={`leg-owner-${r.id}`}
-                                      className="text-[10px] text-muted-foreground whitespace-nowrap"
-                                      title={r.settlementOwnerHex || undefined}
+                                      className={`text-[10px] text-muted-foreground${legCompany ? '' : ' whitespace-nowrap'}`}
+                                      title={legCompany ? `${representativeText(ownerName(r.settlementOwnerHex))} · ${r.settlementOwnerHex}` : r.settlementOwnerHex || undefined}
                                     >
-                                      {r.settledBy === 'financer' ? `by financer ${ownerName(r.settlementOwnerHex)}` : r.settledBy === 'treasury' ? 'by Lana.Discount account' : 'unconfirmed'}
+                                      {r.settledBy === 'financer'
+                                        ? <>by financer {legCompany ? <CompanyLink company={legCompany} /> : ownerName(r.settlementOwnerHex)}</>
+                                        : r.settledBy === 'treasury' ? 'by Lana.Discount account' : 'unconfirmed'}
                                     </span>
                                     {r.txHash && (
                                       <a href={`https://chainz.cryptoid.info/lana/tx.dws?${r.txHash}`} target="_blank" rel="noopener noreferrer" className="text-emerald-500 hover:underline font-mono text-[10px]">

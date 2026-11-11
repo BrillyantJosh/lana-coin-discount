@@ -9,6 +9,8 @@ import { ADMIN_MANDATES, MANDATE, OFFER_STATUS_LABELS } from '@/copy';
 import { toSpreadsheetXml, downloadSpreadsheet, type SheetColumn } from '@/lib/spreadsheet';
 import { fill } from '@/components/MandatePanel';
 import { knownNames, resolveNames } from '@/lib/counterpartyNames';
+import { useFinancerCompanies } from '@/lib/financerCompanies';
+import { FinancerName } from '@/components/FinancerCompanyName';
 import type { RoundState } from '../../server/lib/roundMandate';
 
 /**
@@ -213,6 +215,9 @@ export default function AdminMandates() {
     return next.length ? next : [...CATEGORIES];
   });
   const [names, setNames] = useState<Record<string, string>>(() => knownNames());
+  // A financer's company in place of the person (src/lib/financerCompanies.ts). A mandate has no date of its own —
+  // it is whose the mandate is now — so every place on this page, and the export, shows the company as it is now.
+  const companies = useFinancerCompanies();
   const [expanded, setExpanded] = useState<string | null>(null);
 
   // Restrict dialog — a counterparty, not a mandate: it applies to every
@@ -391,7 +396,9 @@ export default function AdminMandates() {
                     <Fragment key={m.mandateRef}>
                       <tr className={`border-b border-border/50 align-top ${m.status === 'closed' ? 'opacity-60' : ''}`}>
                         <td className="px-3 py-3 min-w-[10rem]">
-                          <div className="font-medium text-foreground">{names[m.financerHex] || `${m.financerHex.slice(0, 12)}…`}</div>
+                          <div className="font-medium text-foreground">
+                            <FinancerName company={companies.companyFor(m.financerHex)} person={names[m.financerHex] || `${m.financerHex.slice(0, 12)}…`} under />
+                          </div>
                           <div className="font-mono text-[11px] text-muted-foreground" title={m.financerHex}>{m.financerHex.slice(0, 12)}…</div>
                           {m.restricted && (
                             <div
@@ -558,6 +565,8 @@ export default function AdminMandates() {
   const exportColumns: SheetColumn<{ m: MandateRow; money: MandateMoney | null }>[] = [
     { header: 'Financer', value: r => names[r.m.financerHex] || '' },
     { header: 'Nostr hex', value: r => r.m.financerHex },
+    // The financer's company as it is now — the same one the row shows; empty for a financer without one.
+    { header: 'Company', value: r => companies.companyFor(r.m.financerHex)?.name ?? '' },
     { header: 'Split', value: r => r.m.split },
     { header: 'Round', value: r => r.m.round },
     { header: 'Status', value: r => r.m.status },
@@ -886,7 +895,10 @@ export default function AdminMandates() {
               {restrictFor.restricted ? ADMIN_MANDATES.restrictLiftTitle : ADMIN_MANDATES.restrictTitle}
             </h2>
             <p className="text-sm text-muted-foreground">
-              {names[restrictFor.financerHex] || restrictFor.financerHex.slice(0, 12) + '…'}
+              <FinancerName
+                company={companies.companyFor(restrictFor.financerHex)}
+                person={names[restrictFor.financerHex] || restrictFor.financerHex.slice(0, 12) + '…'}
+              />
             </p>
             <p className="text-sm text-muted-foreground">
               {restrictFor.restricted ? ADMIN_MANDATES.restrictLiftBody : ADMIN_MANDATES.restrictBody}
@@ -922,7 +934,12 @@ export default function AdminMandates() {
               {releaseFor.released ? ADMIN_MANDATES.releaseWithdraw : ADMIN_MANDATES.releaseTitle}
             </h2>
             <p className="text-sm text-muted-foreground">
-              {fill(MANDATE.roundLabel, { round: releaseFor.round })} · {names[releaseFor.financerHex] || releaseFor.financerHex.slice(0, 12) + '…'} · {fmtLana(releaseFor.remainingLana)} LANA remaining
+              {fill(MANDATE.roundLabel, { round: releaseFor.round })} ·{' '}
+              <FinancerName
+                company={companies.companyFor(releaseFor.financerHex)}
+                person={names[releaseFor.financerHex] || releaseFor.financerHex.slice(0, 12) + '…'}
+              />{' '}
+              · {fmtLana(releaseFor.remainingLana)} LANA remaining
             </p>
             {!releaseFor.released && <p className="text-sm text-muted-foreground">{ADMIN_MANDATES.releaseBody}</p>}
             <label className="block text-xs font-bold text-foreground">{ADMIN_MANDATES.releaseReason}</label>

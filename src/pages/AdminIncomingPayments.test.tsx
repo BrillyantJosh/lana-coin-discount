@@ -9,11 +9,16 @@
  *   - an incoming batch has no button to confirm it, only who confirms it;
  *   - a batch a financer settles shows who settles it, its legs 'Sending' while
  *     a signed send waits for a block, and none of the treasury's buttons.
+ *
+ * Owner, 11 Nov 2026: where the financer is a company, who paid a batch, who
+ * settles it and who sends its legs name the company — from the company's
+ * `since` on, by the batch's date — with the person as its representative.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import AdminIncomingPayments from './AdminIncomingPayments';
+import { FINANCER_COMPANIES_URL, forgetFinancerCompanies, loadFinancerCompanies } from '@/lib/financerCompanies';
 
 const auth = vi.hoisted(() => ({
   session: { nostrHexId: 'c'.repeat(64), profileDisplayName: 'Admin' },
@@ -66,8 +71,15 @@ let rearmReply: { status: number; body: unknown } = { status: 200, body: { ok: t
 /** What the signed admin route GET /api/admin/brain-callbacks answers, and each time it was asked. */
 let adminLists: Record<string, unknown> = {};
 let listReads: Array<{ authorization: string | null }> = [];
+/** Direct.Fund's company list: null = not there yet (404), 'down' = no answer at all. */
+let companies: unknown = null;
+/** The financer's own name, as their profile gives it. */
+let profileName = 'Firma d.o.o.';
 
 beforeEach(() => {
+  forgetFinancerCompanies();
+  companies = null;
+  profileName = 'Firma d.o.o.';
   puts = [];
   heartbeat = { nextAutoSendMin: 3, nextHeartbeatSec: 30 };
   heartbeatReads = 0;
@@ -81,11 +93,15 @@ beforeEach(() => {
     vi.fn(async (url: string, init: any = {}) => {
       const method = String(init.method || 'GET').toUpperCase();
       const reply = (body: unknown, status = 200) => ({ ok: status < 300, status, json: async () => body }) as any;
+      if (url === FINANCER_COMPANIES_URL) {
+        if (companies === 'down') throw new TypeError('Failed to fetch');
+        return companies ? reply(companies) : reply({ error: 'Not found' }, 404);
+      }
       if (url === '/api/admin/incoming-payments') return reply(feed);
       if (url === '/api/admin/reference-rates') return reply({ exchangeRates: { EUR: 0.01 } });
       if (url === '/api/heartbeat-status') { heartbeatReads++; return reply(heartbeat); }
       if (url === '/api/acquisitions/admin/queue') return reply({ offers: [] });
-      if (String(url).startsWith('/api/user/')) return reply({ fullName: 'Firma d.o.o.' });
+      if (String(url).startsWith('/api/user/')) return reply({ fullName: profileName });
       if (method === 'GET' && url === '/api/admin/brain-callbacks') {
         listReads.push({ authorization: new Headers(init.headers).get('Authorization') });
         return reply(adminLists);
@@ -158,6 +174,136 @@ describe('a financer’s batch on its way', () => {
     expect(screen.getByTestId('leg-owner-leg-1')).toHaveTextContent('by financer Firma d.o.o.');
     const link = screen.getByRole('link', { name: `${sendTxid.slice(0, 8)}...` });
     expect(link).toHaveAttribute('href', `https://chainz.cryptoid.info/lana/tx.dws?${sendTxid}`);
+  });
+});
+
+describe('the financer’s company (owner, 11 Nov 2026)', () => {
+  const KROG = 'Krog menjave, trgovanje in kroženje vrednosti d.o.o.';
+  const listCompany = () => {
+    companies = {
+      companies: [{
+        hex: FINANCER_HEX, name: KROG, registrationNumber: '7593074000', taxNumber: '88629830', country: 'SI',
+        host: 'krogmenjave.com', website: 'https://krogmenjave.com/', since: '2026-10-08T23:50:00Z',
+      }],
+      checkedAt: '2026-11-11T10:00:00Z',
+    };
+  };
+  const leg = (over: Record<string, unknown>) => ({
+    transactionRef: 'TX-1', toHex: 'a'.repeat(64), lanaAmount: 1_000_000_000, fiatValue: 1, currency: 'EUR', exchangeRate: 0.01,
+    txHash: null, status: 'pending', brainAuthorized: true, batchRef: '2026002293', createdAt: '2026-10-09 09:00:00',
+    settledBy: 'financer', settlementOwnerHex: FINANCER_HEX, sendTxid: null, ...over,
+  });
+  /** One batch of the financer's, confirmed by them on /financer, its purchase made at `at` — and its caretaker is the financer too. */
+  const onTheWay = (at: string) => {
+    feed = {
+      ...feed,
+      orders: [order({ createdAt: at })],
+      localBatches: [
+        { id: 11, batchRef: '2026002293', investorHex: FINANCER_HEX, totalAmount: 243.89, currency: 'EUR', paymentCount: 1, status: 'received', receivedAt: '2026-10-09 10:00:00', lanaBoughtAt: null, lanaSentAt: null, lanaTxHash: null, notes: null, createdAt: '2026-10-09 10:00:00', settledBy: 'financer' },
+      ],
+      lanaOrders: [
+        leg({ id: 'leg-1', orderType: 'customer_cashback', toWallet: 'LBuyerWa11etAAAAAAAAAAAAAAAAAAAAAA', createdAt: at }),
+        leg({ id: 'leg-2', orderType: 'caretaker_commission', toWallet: 'LCaretakerWa11etBBBBBBBBBBBBBBBBBB', toHex: FINANCER_HEX, createdAt: at }),
+      ],
+    };
+  };
+  const krogLinks = () => screen.queryAllByRole('link', { name: /Krog menjave/ });
+
+  it('a batch from the company’s time names it as who paid, who settles and who sends each leg — the person as its representative — and never renames where a leg goes', async () => {
+    listCompany();
+    profileName = 'Boris';
+    onTheWay('2026-10-09 09:00:00');
+    draw();
+    fireEvent.click(await screen.findByRole('button', { name: /Awaiting LANA/ }));
+    const badge = await screen.findByTestId('settled-by-2026002293');
+    const settles = await within(badge).findByRole('link', { name: /Krog menjave/ });
+    expect(badge).toHaveTextContent(`Financer settles · ${KROG} krogmenjave.com`);
+    expect(badge.getAttribute('title')).toContain('representative: Boris');
+    expect(settles).toHaveAttribute('href', 'https://krogmenjave.com/');
+    expect(settles).toHaveAttribute('target', '_blank');
+    expect(settles).toHaveAttribute('rel', 'noopener noreferrer nofollow');
+    expect(settles).toHaveAttribute('referrerpolicy', 'no-referrer');
+    // Who paid it: the company, the person beside it.
+    await waitFor(() => expect(krogLinks()).toHaveLength(2));
+    expect(screen.getByText('representative: Boris')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('2026002293'));
+    const sender = await screen.findByTestId('leg-owner-leg-1');
+    expect(sender).toHaveTextContent(`by financer ${KROG}`);
+    expect(sender).toHaveAttribute('title', `representative: Boris · ${FINANCER_HEX}`);
+    expect(screen.getByTestId('leg-owner-leg-2')).toHaveTextContent(`by financer ${KROG}`);
+    // The caretaker of this purchase is the financer: the leg TO them is still their wallet, never the company.
+    expect(screen.getByTitle('LCaretakerWa11etBBBBBBBBBBBBBBBBBB')).toHaveTextContent('→ LCaretak...BBBBBB');
+    expect(screen.getByTitle('LBuyerWa11etAAAAAAAAAAAAAAAAAAAAAA')).toHaveTextContent('→ LBuyerWa...AAAAAA');
+    expect(krogLinks()).toHaveLength(4);
+    for (const a of krogLinks()) expect(a).toHaveAttribute('href', 'https://krogmenjave.com/');
+  });
+
+  it('a batch from before the company’s `since` keeps the person everywhere, beside one of the same financer’s from that moment on', async () => {
+    listCompany();
+    profileName = 'Boris';
+    feed = {
+      ...feed,
+      orders: [
+        order({ id: 'o-old', transactionRef: 'TX-OLD', batchRef: '2026002201', batchId: 10, ppId: 7, createdAt: '2026-10-08 23:49:00' }),
+        order({ id: 'o-new', transactionRef: 'TX-1', batchRef: '2026002293', createdAt: '2026-10-08 23:50:00' }),
+      ],
+      lanaOrders: [
+        leg({ id: 'leg-old', transactionRef: 'TX-OLD', orderType: 'customer_cashback', toWallet: 'L1', batchRef: '2026002201', createdAt: '2026-10-08 23:49:00' }),
+        leg({ id: 'leg-new', transactionRef: 'TX-1', orderType: 'customer_cashback', toWallet: 'L2', createdAt: '2026-10-08 23:50:00' }),
+      ],
+    };
+    draw();
+    const newBadge = await screen.findByTestId('settled-by-2026002293');
+    await within(newBadge).findByRole('link', { name: /Krog menjave/ });
+    const newBatch = newBadge.closest('div.rounded-xl') as HTMLElement;
+    expect(within(newBatch).getByText('representative: Boris')).toBeInTheDocument();
+
+    const oldBadge = screen.getByTestId('settled-by-2026002201');
+    expect(oldBadge).toHaveTextContent('Financer settles · Boris');
+    expect(within(oldBadge).queryByRole('link')).toBeNull();
+    const oldBatch = oldBadge.closest('div.rounded-xl') as HTMLElement;
+    expect(within(oldBatch).getByText('Boris')).toBeInTheDocument();
+    expect(within(oldBatch).queryByText(/representative/)).toBeNull();
+    expect(krogLinks()).toHaveLength(2);
+  });
+
+  it('a click on the company opens its site and does nothing else: the batch does not open or close under it', async () => {
+    listCompany();
+    profileName = 'Boris';
+    onTheWay('2026-10-09 09:00:00');
+    draw();
+    fireEvent.click(await screen.findByRole('button', { name: /Awaiting LANA/ }));
+    await waitFor(() => expect(krogLinks()).toHaveLength(2));
+    // jsdom cannot open a tab; what is under test is that the page itself does nothing with the click.
+    const noNavigation = (e: Event) => e.preventDefault();
+    window.addEventListener('click', noNavigation, true);
+    try {
+      for (const link of krogLinks()) {
+        fireEvent.click(link);
+        expect(screen.queryByText(/LANA Recipients/)).toBeNull();
+      }
+    } finally {
+      window.removeEventListener('click', noNavigation, true);
+    }
+    fireEvent.click(screen.getByText('2026002293'));
+    expect(await screen.findByText(/LANA Recipients/)).toBeInTheDocument();
+  });
+
+  it('Direct.Fund not answering: the person, as before — no blank, no error', async () => {
+    companies = 'down';
+    profileName = 'Boris';
+    onTheWay('2026-10-09 09:00:00');
+    const { toast } = await import('sonner');
+    vi.mocked(toast.error).mockClear();
+    draw();
+    fireEvent.click(await screen.findByRole('button', { name: /Awaiting LANA/ }));
+    expect((await loadFinancerCompanies()).size).toBe(0);
+    const badge = await screen.findByTestId('settled-by-2026002293');
+    await waitFor(() => expect(badge).toHaveTextContent('Financer settles · Boris'));
+    expect(krogLinks()).toHaveLength(0);
+    expect(screen.queryByText(/representative/)).toBeNull();
+    expect(toast.error).not.toHaveBeenCalled();
   });
 });
 

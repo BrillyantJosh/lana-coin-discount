@@ -4,11 +4,15 @@
  * Pinned: the page asks the signed overview route; every financer the server names gets a card (a name, else a short
  * hex — never an npub); step 4 (what they must send now) is the highlighted row; a step that has waited over a day
  * says so; txids link to the explorer; a Direct.Fund that could not be read is said, not hidden.
+ *
+ * Since 11 Nov 2026: a financer that is a company is the company — a link to its own site, built from the host
+ * Direct.Fund verified and nothing else — with the person under it as its representative. Any failure: the person.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import AdminFinancers, { ageText, lanaText, parseAt, type OverviewResponse } from './AdminFinancers';
+import { FINANCER_COMPANIES_URL, forgetFinancerCompanies } from '@/lib/financerCompanies';
 
 const auth = vi.hoisted(() => ({
   session: { nostrHexId: 'c'.repeat(64), profileDisplayName: 'Admin' },
@@ -46,10 +50,20 @@ const financer = (hex: string, over: Record<string, unknown> = {}) => ({
 
 let body: OverviewResponse;
 const urls: string[] = [];
-const reply = (value: unknown) =>
-  new Promise<Response>(resolve => setTimeout(() => resolve({ ok: true, status: 200, json: () => Promise.resolve(value) } as Response), 0));
+const reply = (value: unknown, status = 200) =>
+  new Promise<Response>(resolve => setTimeout(() => resolve({ ok: status < 300, status, json: () => Promise.resolve(value) } as Response), 0));
+/** Direct.Fund's company list. By default not there yet (404): every card is the person, as before. */
+let companiesReply: () => Promise<Response>;
+
+const KROG = 'Krog menjave, trgovanje in kroženje vrednosti d.o.o.';
+const company = (over: Record<string, unknown> = {}) => ({
+  hex: BORIS, name: KROG, registrationNumber: '7593074000', taxNumber: '88629830', country: 'SI',
+  host: 'krogmenjave.com', website: 'https://krogmenjave.com/', since: '2026-10-08T23:50:00Z', ...over,
+});
 
 beforeEach(() => {
+  forgetFinancerCompanies();
+  companiesReply = () => reply({ error: 'Not found' }, 404);
   urls.length = 0;
   body = {
     generatedAt: new Date().toISOString(),
@@ -69,6 +83,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn((url: string) => {
     const path = String(url);
     urls.push(path);
+    if (path === FINANCER_COMPANIES_URL) return companiesReply();
     if (path.includes('/admin/financers-overview')) return reply(body);
     if (path.includes('/profiles')) return reply({ names: {} });
     return reply({ offers: [] });
@@ -115,6 +130,57 @@ describe('AdminFinancers', () => {
     expect(gorazd.querySelector('[data-stage="1"]')?.textContent).toContain('Direct.Fund could not be read');
     expect(gorazd.querySelector('[data-stage="4"]')?.getAttribute('data-empty')).toBe('true');
     expect(screen.getByText(/Direct.Fund could not be read for every financer/)).toBeInTheDocument();
+  });
+});
+
+describe('a financer that is a company (owner, 11 Nov 2026)', () => {
+  it('the company is the card’s title — a link to its own site and nowhere else — and the person its representative under it', async () => {
+    body.financers[0].name = 'Boris';
+    companiesReply = () => reply({ companies: [company()], checkedAt: new Date().toISOString() });
+    show();
+    const boris = await card(BORIS);
+    const heading = await within(boris).findByRole('heading', { name: /Krog menjave/ });
+    const link = within(heading).getByRole('link');
+    expect(link).toHaveAttribute('href', 'https://krogmenjave.com/');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer nofollow');
+    expect(link).toHaveAttribute('referrerpolicy', 'no-referrer');
+    expect(link).toHaveTextContent(`${KROG} krogmenjave.com`);
+    expect(within(boris).getByText('representative: Boris')).toBeInTheDocument();
+    expect(within(boris).getByTitle(BORIS)).toHaveTextContent(`${BORIS.slice(0, 8)}…${BORIS.slice(-6)}`);
+    // A financer without a company is exactly as before.
+    const gorazd = await card(GORAZD);
+    expect(within(gorazd).getByRole('heading', { name: `${GORAZD.slice(0, 8)}…${GORAZD.slice(-6)}` })).toBeInTheDocument();
+    expect(within(gorazd).queryByText(/representative/)).toBeNull();
+  });
+
+  it('a host that is not a plain public name gives the company’s name as plain text, and no link', async () => {
+    companiesReply = () => reply({ companies: [company({ host: 'javascript:alert(document.cookie)', website: 'javascript:alert(1)' })] });
+    show();
+    const boris = await card(BORIS);
+    const heading = await within(boris).findByRole('heading', { name: KROG });
+    expect(within(heading).queryByRole('link')).toBeNull();
+    for (const a of within(boris).getAllByRole('link')) expect(a.getAttribute('href')).not.toMatch(/^javascript:/i);
+  });
+
+  it('Direct.Fund not answering, or answering what fails the checks: the person, as before — no blank, no error', async () => {
+    const failures = [
+      () => Promise.reject(new TypeError('Failed to fetch')),
+      () => reply({ companies: [company({ hex: BORIS.toUpperCase() })] }),
+      () => reply('<html>Bad gateway</html>', 502),
+    ];
+    for (const failing of failures) {
+      forgetFinancerCompanies();
+      companiesReply = failing;
+      urls.length = 0;
+      const { unmount } = show();
+      const boris = await card(BORIS);
+      await waitFor(() => expect(urls).toContain(FINANCER_COMPANIES_URL));
+      expect(within(boris).getByRole('heading', { name: 'Boris d.o.o.' })).toBeInTheDocument();
+      expect(within(boris).queryByText(/representative/)).toBeNull();
+      expect(screen.queryByText(/Krog menjave/)).toBeNull();
+      unmount();
+    }
   });
 });
 
