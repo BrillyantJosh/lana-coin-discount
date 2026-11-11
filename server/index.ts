@@ -100,7 +100,7 @@ installJsonBodies(app);
 // be active, and if the database cannot say, the request keeps the limit.
 // See lib/apiRateLimit.ts and isActiveMachineKey in lib/apiKeyAuth.ts.
 // Direct.Fund's peer read (11 Nov 2026) is let past the same way, with its own
-// key and on its own paths only: isFundPeerRequest in lib/fundPeer.ts.
+// key and on its own paths only: isFundReadRequest in lib/fundPeer.ts.
 app.use('/api', apiRateLimit());
 
 // API routes
@@ -143,8 +143,8 @@ app.use('/api/session', createSessionRouter());
 // /api/admin/financers-overview, signed admin (requireAdmin), read-only. Before the SPA catch-all, as above.
 app.use('/api/admin', createAdminFinancersRouter());
 // Direct.Fund's machine reads (11 Nov 2026): POST /api/peer/fund/purchase-sends, the LANA side of the purchases its
-// accounting lists. Bearer FUND_PEER_KEY — the secret this server already presents to Direct.Fund — and read-only.
-// Before the SPA catch-all, as above.
+// accounting lists. Bearer FUND_READ_KEY — Direct.Fund's key for these reads alone, never FUND_PEER_KEY (brain and the
+// auditor hold that value too) — and read-only. Before the SPA catch-all, as above.
 app.use('/api/peer/fund', createFundPeerRouter());
 
 // Heartbeat status for the admin page. It MUST be registered before the static

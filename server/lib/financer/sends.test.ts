@@ -1424,10 +1424,12 @@ describe("what POST /api/peer/fund/purchase-sends reads of this machine's own bo
     read = readPurchaseSends(db, ['T1']);
     expect(read.purchases.T1.legs.map(l => [l.status, l.tx_hash, l.send_txid])).toEqual(ids.map(() => ['sent', r.txid, r.txid]));
     expect(read.purchases.T1.legs.every(l => l.completed_at === sendRow(r.txid).confirmed_at)).toBe(true);
+    // key_wallets: the wallet, then the other address of the key that signed it (here the uncompressed one).
     expect(read.sends).toEqual({
       [r.txid]: {
-        sender: 'financer', owner_hex: OWNER, wallet_id: key.address, paying_lanoshis: paying, fee_lanoshis: sendRow(r.txid).fee_lanoshis,
-        state: 'confirmed', block_height: 1_067_600, confirmed_at: sendRow(r.txid).confirmed_at, created_at: sendRow(r.txid).created_at, chain_txid: r.txid,
+        sender: 'financer', owner_hex: OWNER, wallet_id: key.address, key_wallets: [key.address, throwawayWallet(false, key.privateKey).address],
+        paying_lanoshis: paying, fee_lanoshis: sendRow(r.txid).fee_lanoshis, state: 'confirmed', block_height: 1_067_600,
+        confirmed_at: sendRow(r.txid).confirmed_at, created_at: sendRow(r.txid).created_at, chain_txid: r.txid,
       },
     });
     expect(JSON.stringify(read)).not.toContain(r.rawTx.slice(0, 64));

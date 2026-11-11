@@ -1,17 +1,19 @@
 // @vitest-environment node
 /**
- * POST /api/peer/fund/purchase-sends — DIRECT.FUND READS THE LANA SIDE OF ITS PURCHASES, WITH ITS PEER KEY.
+ * POST /api/peer/fund/purchase-sends — DIRECT.FUND READS THE LANA SIDE OF ITS PURCHASES, WITH ITS OWN READ KEY.
  *
  * The real router (routes/fundPeer.ts) on the production DDL (roundMandateTestKit), behind the JSON bodies and the
  * /api rate limiter exactly as server/index.ts mounts them. What is pinned:
- *   - the key: FUND_PEER_KEY unset is 503 for everybody (fails closed); no key, another scheme or another key is 401;
- *     the right key is 200 — compared timing-safe, a key of another length refused, never a throw;
+ *   - the key: FUND_READ_KEY unset is 503 for everybody, and so is FUND_READ_KEY set to FUND_PEER_KEY's value (fails
+ *     closed); FUND_PEER_KEY — the value brain and the auditor hold too — never opens it (401), nor does no key,
+ *     another scheme or another key; the right key is 200 — compared timing-safe, a key of another length refused,
+ *     never a throw;
  *   - the body: { tx_refs: string[1..500] } or 400 BAD_TX_REFS, nothing read;
  *   - the answer: a financer's purchase with its legs and the confirmed send that paid them, the treasury's, a send
- *     booked under a mined copy's id, a purchase nobody confirmed — and never raw_tx, the coins, the legs a send
- *     carried or a leg's must-spend outpoints;
+ *     booked under a mined copy's id, a purchase nobody confirmed, each send's key_wallets — and never raw_tx, the
+ *     coins, the legs a send carried, a leg's must-spend outpoints, or a cashback leg's customer key and wallet;
  *   - the limiter: the right key on this route is never counted nor refused; anybody else on the same IP still is,
- *     and so is the peer key on any other path and a wrong key on this one;
+ *     and so is the read key on any other path, a wrong key on this one and FUND_PEER_KEY;
  *   - the router is mounted at /api/peer/fund behind the limiter and before the SPA catch-all.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
@@ -30,11 +32,14 @@ import { getDbHandle } from '../db/index.js';
 import { createFundPeerRouter } from './fundPeer';
 import { installJsonBodies } from '../lib/jsonBodies';
 import { apiRateLimit } from '../lib/apiRateLimit';
-import { FUND_PEER_ROUTES } from '../lib/fundPeer';
+import { FUND_READ_ROUTES } from '../lib/fundPeer';
 import { COPY_OUTCOME } from '../lib/financer/sends';
 
 const db: Database.Database = getDbHandle();
-const KEY = 'peer-test-0123456789abcdef';
+/** FUND_READ_KEY: Direct.Fund's key for this read. */
+const KEY = 'read-test-0123456789abcdef';
+/** FUND_PEER_KEY: Direct.Fund's PEER_API_KEY, which lana-brain and lana-audit hold too. */
+const PEER = 'peer-test-0123456789abcdef';
 const FIN = 'f1'.repeat(32);
 const PATH = '/api/peer/fund/purchase-sends';
 const RAW = '0100000001' + 'de'.repeat(120);
@@ -113,14 +118,17 @@ function seed() {
   leg('wait-mer', 'T-WAIT', 'merchant_commission', 1_000_000_000, 'pending', null, null);
 }
 
-const saved = process.env.FUND_PEER_KEY;
+const saved = { read: process.env.FUND_READ_KEY, peer: process.env.FUND_PEER_KEY };
 beforeEach(() => {
-  process.env.FUND_PEER_KEY = KEY;
+  process.env.FUND_READ_KEY = KEY;
+  process.env.FUND_PEER_KEY = PEER;
   seed();
 });
 afterAll(() => {
-  if (saved === undefined) delete process.env.FUND_PEER_KEY;
-  else process.env.FUND_PEER_KEY = saved;
+  for (const [name, value] of [['FUND_READ_KEY', saved.read], ['FUND_PEER_KEY', saved.peer]] as const) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
 });
 
 // ─── the key ──────────────────────────────────────────────────────────────
@@ -129,16 +137,41 @@ describe('who may read', () => {
   beforeAll(() => serve(appWith()));
   afterAll(stop);
 
-  it('FUND_PEER_KEY not configured here: 503 for everybody — a bearer of any key, or of none, is not let in', async () => {
+  it('FUND_READ_KEY not configured here: 503 for everybody — a bearer of any key, FUND_PEER_KEY too, or of none, is not let in', async () => {
     for (const unset of ['', '   ']) {
-      process.env.FUND_PEER_KEY = unset;
-      for (const auth of [`Bearer ${KEY}`, 'Bearer ', null]) {
+      process.env.FUND_READ_KEY = unset;
+      for (const auth of [`Bearer ${KEY}`, `Bearer ${PEER}`, 'Bearer ', null]) {
         const r = await post({ tx_refs: ['T-FIN'] }, auth);
         expect(r.status, `${JSON.stringify(unset)} ${auth}`).toBe(503);
-        expect(r.body).toMatchObject({ code: 'PEER_KEY_UNSET' });
+        expect(r.body).toMatchObject({ code: 'READ_KEY_UNSET' });
         expect(r.text).not.toContain('T-FIN');
       }
     }
+    delete process.env.FUND_READ_KEY;
+    expect(await post({ tx_refs: ['T-FIN'] }, `Bearer ${PEER}`)).toMatchObject({ status: 503, body: { code: 'READ_KEY_UNSET' } });
+  });
+
+  it('FUND_PEER_KEY never opens it: Direct.Fund, brain and the auditor all hold that value — 401', async () => {
+    const r = await post({ tx_refs: ['T-FIN'] }, `Bearer ${PEER}`);
+    expect(r.status).toBe(401);
+    expect(r.body).toMatchObject({ code: 'READ_KEY_REFUSED' });
+    expect(r.text).not.toContain('fin-inv');
+  });
+
+  it('FUND_READ_KEY set to FUND_PEER_KEY\'s value is no key of its own: 503 for everybody, that very key included', async () => {
+    process.env.FUND_READ_KEY = PEER;
+    for (const auth of [`Bearer ${PEER}`, `Bearer ${KEY}`, null]) {
+      const r = await post({ tx_refs: ['T-FIN'] }, auth);
+      expect(r.status, String(auth)).toBe(503);
+      expect(r.body).toMatchObject({ code: 'READ_KEY_SHARED' });
+      expect(r.text).not.toContain('fin-inv');
+    }
+    // Spaces around either value change nothing: both are read trimmed.
+    process.env.FUND_READ_KEY = ` ${PEER} `;
+    expect((await post({ tx_refs: ['T-FIN'] }, `Bearer ${PEER}`)).body).toMatchObject({ code: 'READ_KEY_SHARED' });
+    // With FUND_PEER_KEY unset there is nothing to share it with: the key reads.
+    process.env.FUND_PEER_KEY = '';
+    expect((await post({ tx_refs: ['T-FIN'] }, `Bearer ${PEER}`)).status).toBe(200);
   });
 
   it('no key, another scheme, another key, a key of another length, the key padded inside: 401', async () => {
@@ -146,7 +179,7 @@ describe('who may read', () => {
       'Bearer ldk_contract_test', `Bearer ${KEY.slice(0, 8)} ${KEY.slice(8)}`]) {
       const r = await post({ tx_refs: ['T-FIN'] }, auth);
       expect(r.status, String(auth)).toBe(401);
-      expect(r.body).toMatchObject({ code: 'PEER_KEY_REFUSED' });
+      expect(r.body).toMatchObject({ code: 'READ_KEY_REFUSED' });
       expect(r.text).not.toContain('fin-inv');
     }
   });
@@ -159,7 +192,7 @@ describe('who may read', () => {
   it('the key is checked before the body: a refused caller is not told what is wrong with what it sent', async () => {
     const r = await post({ tx_refs: [] }, 'Bearer wrong');
     expect(r.status).toBe(401);
-    expect(r.body.code).toBe('PEER_KEY_REFUSED');
+    expect(r.body.code).toBe('READ_KEY_REFUSED');
   });
 });
 
@@ -202,8 +235,10 @@ describe('what it answers', () => {
         'T-TRE': {
           settlement: { settled_by: 'treasury', owner_hex: FIN, batch_ref: 'B-TRE', created_at: '2026-10-20 08:00:00' },
           legs: [
-            expect.objectContaining({ id: 'tre-mer', status: 'sent', tx_hash: S_TRE, send_txid: S_TRE }),
-            expect.objectContaining({ id: 'tre-cb', order_type: 'customer_cashback', status: 'pending', tx_hash: null, send_txid: null, completed_at: null }),
+            expect.objectContaining({ id: 'tre-mer', to_wallet: 'Ltre-mer', status: 'sent', tx_hash: S_TRE, send_txid: S_TRE }),
+            // The customer's key and wallet are not given out.
+            expect.objectContaining({ id: 'tre-cb', order_type: 'customer_cashback', to_hex: null, to_wallet: null, lana_amount: 900_000_000,
+              status: 'pending', tx_hash: null, send_txid: null, completed_at: null }),
           ],
         },
         'T-CPY': {
@@ -213,16 +248,21 @@ describe('what it answers', () => {
         'T-WAIT': { settlement: null, legs: [expect.objectContaining({ id: 'wait-mer', status: 'pending' })] },
         'T-NONE': { settlement: null, legs: [] },
       },
+      // RAW is no transaction, so no key to read: key_wallets is wallet_id alone (both forms of a real key: purchaseSends.test.ts).
       sends: {
-        [S_FIN]: { sender: 'financer', owner_hex: FIN, wallet_id: 'LFinWallet', paying_lanoshis: 13_343_359_375, fee_lanoshis: 1_060_000, state: 'confirmed',
-          block_height: 1_067_600, confirmed_at: '2026-10-20 09:10:00', created_at: '2026-10-20 09:00:00', chain_txid: S_FIN },
-        [S_TRE]: { sender: 'treasury', owner_hex: null, wallet_id: 'LTreasuryWallet', paying_lanoshis: 13_343_359_375, fee_lanoshis: 1_060_000, state: 'confirmed',
-          block_height: 1_067_600, confirmed_at: '2026-10-20 09:10:00', created_at: '2026-10-20 09:00:00', chain_txid: S_TRE },
-        [S_CPY]: { sender: 'financer', owner_hex: FIN, wallet_id: 'LFinWallet', paying_lanoshis: 13_343_359_375, fee_lanoshis: 1_060_000, state: 'confirmed',
-          block_height: 1_067_600, confirmed_at: '2026-10-20 09:10:00', created_at: '2026-10-20 09:00:00', chain_txid: COPY },
+        [S_FIN]: { sender: 'financer', owner_hex: FIN, wallet_id: 'LFinWallet', key_wallets: ['LFinWallet'], paying_lanoshis: 13_343_359_375,
+          fee_lanoshis: 1_060_000, state: 'confirmed', block_height: 1_067_600, confirmed_at: '2026-10-20 09:10:00', created_at: '2026-10-20 09:00:00',
+          chain_txid: S_FIN },
+        [S_TRE]: { sender: 'treasury', owner_hex: null, wallet_id: 'LTreasuryWallet', key_wallets: ['LTreasuryWallet'], paying_lanoshis: 13_343_359_375,
+          fee_lanoshis: 1_060_000, state: 'confirmed', block_height: 1_067_600, confirmed_at: '2026-10-20 09:10:00', created_at: '2026-10-20 09:00:00',
+          chain_txid: S_TRE },
+        [S_CPY]: { sender: 'financer', owner_hex: FIN, wallet_id: 'LFinWallet', key_wallets: ['LFinWallet'], paying_lanoshis: 13_343_359_375,
+          fee_lanoshis: 1_060_000, state: 'confirmed', block_height: 1_067_600, confirmed_at: '2026-10-20 09:10:00', created_at: '2026-10-20 09:00:00',
+          chain_txid: COPY },
       },
     });
     expect(r.body.sends[COPY]).toBeUndefined();
+    expect(r.text).not.toContain('Ltre-cb');
   });
 
   it('never the signed bytes, the coins, the legs a send carried or a leg\'s must-spend outpoints — by name or by value', async () => {
@@ -271,21 +311,30 @@ describe('the /api rate limit', () => {
     expect((await post({ tx_refs: ['T-FIN'] })).status).toBe(200);
   });
 
+  it('counts and refuses FUND_PEER_KEY on this route: it is not the read key', async () => {
+    await serve(appWith(apiRateLimit(3)));
+    expect(await statuses(4, () => post({ tx_refs: ['T-FIN'] }, `Bearer ${PEER}`))).toEqual([401, 401, 401, 429]);
+  });
+
   it('counts the right key on any other path: it opens this route only', async () => {
     await serve(appWith(apiRateLimit(3)));
     const elsewhere = () => fetch(base + '/api/health', { headers: { authorization: `Bearer ${KEY}` } }).then(r => ({ status: r.status }));
     expect(await statuses(4, elsewhere)).toEqual([200, 200, 200, 429]);
   });
 
-  it('counts everyone while FUND_PEER_KEY is not configured', async () => {
-    process.env.FUND_PEER_KEY = '';
+  it('counts everyone while FUND_READ_KEY is not configured, or is FUND_PEER_KEY\'s value', async () => {
+    process.env.FUND_READ_KEY = '';
     await serve(appWith(apiRateLimit(3)));
     expect(await statuses(4, () => post({ tx_refs: ['T-FIN'] }))).toEqual([503, 503, 503, 429]);
+    await stop();
+    process.env.FUND_READ_KEY = PEER;
+    await serve(appWith(apiRateLimit(3)));
+    expect(await statuses(4, () => post({ tx_refs: ['T-FIN'] }, `Bearer ${PEER}`))).toEqual([503, 503, 503, 429]);
   });
 
   it('the paths the limiter lets the key past are the paths the router answers', async () => {
     await serve(appWith(apiRateLimit(1)));
-    for (const r of FUND_PEER_ROUTES) {
+    for (const r of FUND_READ_ROUTES) {
       expect(r.method).toBe('POST');
       expect(await statuses(3, () => post({ tx_refs: ['T-FIN'] }, `Bearer ${KEY}`, r.path))).toEqual([200, 200, 200]);
     }

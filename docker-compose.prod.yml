@@ -14,6 +14,12 @@ services:
       # Must equal PEER_API_KEY in lana-direct-fund's .env. Unset only costs
       # the admin Incoming Payments page its live Direct.Fund column.
       - FUND_PEER_KEY=${FUND_PEER_KEY:-}
+      # Direct.Fund's own key for its accounting read here (POST
+      # /api/peer/fund/purchase-sends). Must equal LANA_DISCOUNT_READ_KEY in
+      # lana-direct-fund's .env and must NOT be FUND_PEER_KEY's value (brain and
+      # the auditor hold that one too: the read then answers 503). Unset: the
+      # read answers 503 and Direct.Fund refuses its accounting export.
+      - FUND_READ_KEY=${FUND_READ_KEY:-}
       - LETSENCRYPT_HOST=www.lana.discount,lana.discount
       - LETSENCRYPT_EMAIL=josh@lanaworld.app
     extra_hosts:

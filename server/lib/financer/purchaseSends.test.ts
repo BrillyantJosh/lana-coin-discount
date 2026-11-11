@@ -4,13 +4,16 @@
  *
  * Against the production DDL (roundMandateTestKit → db/financerSchema.ts), with the rows written exactly as the
  * send machine writes them (sends.ts: announce, recordTreasurySend, finish, release — the copy's last_outcome built
- * from its own COPY_OUTCOME). What is pinned: who settles each purchase, every leg as stored, the sends the legs name
- * and nothing else, a mined copy reported under the send it copies, the old legs that have only a hash, every
- * purchase asked about answered, and none of the signed bytes, coins or must-spend outpoints ever in the answer. The
- * same read over the real machine's own bookings is the last block of sends.test.ts; the route is
- * routes/fundPeer.test.ts.
+ * from its own COPY_OUTCOME). What is pinned: who settles each purchase, every leg as stored (but the customer's key and
+ * wallet on a cashback leg), the sends the legs name and nothing else, both addresses of the key that signed each send
+ * (the treasury's real bytes, from either of its addresses), a mined copy reported under the send it copies, the old
+ * legs that have only a hash, every purchase asked about answered, and none of the signed bytes, coins or must-spend
+ * outpoints ever in the answer. The same read over the real machine's own bookings is the last block of
+ * sends.test.ts; the route is routes/fundPeer.test.ts.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 vi.mock('../../db/index.js', async () => {
@@ -21,6 +24,9 @@ vi.mock('../../db/index.js', async () => {
 import { createMandateTestDb } from '../roundMandateTestKit';
 import { COPY_OUTCOME } from './sends';
 import { parsePurchaseSendsRequest, readPurchaseSends, MAX_TX_REFS } from './purchaseSends';
+import { decodeTx, encodeTxHex, p2pkhScriptSigHex, parseP2pkhScriptSig, txidOfRaw } from '../../shared/lana-tx/codec';
+import { addressOfPublicKey } from '../../shared/lana-tx/address';
+import { throwawayWallet } from '../../shared/lana-tx/fixtures/wallets';
 
 const FIN = 'f1'.repeat(32);
 const OTHER_FIN = 'e2'.repeat(32);
@@ -31,6 +37,34 @@ const RAW = '0100000001' + 'de'.repeat(120);
 const COIN = `${'ab'.repeat(32)}:1`;
 const MUST = `${'cd'.repeat(32)}:0`;
 const tx = (c: string) => c.repeat(64);
+
+/** The treasury's real auto-send of 3 Sep 2026 (public chain bytes): one input, unlocked with the UNCOMPRESSED key of Lg7iw2aQ…. */
+const mainnet = JSON.parse(fs.readFileSync(new URL('../../shared/lana-tx/fixtures/mainnet-txs.json', import.meta.url), 'utf8')) as {
+  cases: { name: string; txid: string; from: string }[];
+  transactions: Record<string, string>;
+};
+const AUTO_SEND = mainnet.cases.find(c => c.name === 'ld-auto-send')!;
+const TREASURY_RAW = mainnet.transactions[AUTO_SEND.txid];
+const TREASURY_UNCOMPRESSED = AUTO_SEND.from;
+/** The same key in its 33-byte form, worked out by OpenSSL (node:crypto) — not by the code under test — and its address. */
+const TREASURY_KEY = parseP2pkhScriptSig(decodeTx(TREASURY_RAW).inputs[0].scriptSigHex)!.publicKey;
+const TREASURY_KEY_COMPRESSED = Buffer.from(
+  crypto.ECDH.convertKey(Buffer.from(TREASURY_KEY).toString('hex'), 'secp256k1', 'hex', 'hex', 'compressed') as string, 'hex');
+const TREASURY_COMPRESSED = addressOfPublicKey(TREASURY_KEY_COMPRESSED);
+
+/**
+ * `raw` with each input unlocked by the compressed form of its key, as the treasury signs when it sends from its
+ * compressed address (treasuryAutoSend.ts: when the uncompressed one lists no coins). The signatures no longer verify
+ * — the read only reads the keys.
+ */
+function withCompressedKeys(raw: string): string {
+  const t = decodeTx(raw);
+  for (const input of t.inputs) {
+    const sig = parseP2pkhScriptSig(input.scriptSigHex)!;
+    input.scriptSigHex = p2pkhScriptSigHex(sig.signatureDer, TREASURY_KEY_COMPRESSED, sig.hashType);
+  }
+  return encodeTxHex(t);
+}
 
 let db: Database.Database;
 let seq = 0;
@@ -44,25 +78,26 @@ const own = (ref: string, settledBy: 'financer' | 'treasury', owner: string, bat
   db.prepare('INSERT INTO purchase_settlement (transaction_ref, owner_hex, settled_by, batch_ref, confirmed_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .run(ref, owner, settledBy, batch, confirmedBy, at);
 
-interface LegSpec { type?: string; lanoshis?: number; status?: string; txHash?: string | null; sendTxid?: string | null; mustSpend?: string | null; completedAt?: string | null }
+interface LegSpec { type?: string; lanoshis?: number; status?: string; txHash?: string | null; sendTxid?: string | null; mustSpend?: string | null;
+  completedAt?: string | null; toHex?: string; toWallet?: string }
 const leg = (id: string, ref: string, o: LegSpec = {}) => {
   db.prepare(`INSERT INTO brain_lana_orders (id, transaction_ref, order_type, to_wallet, to_hex, lana_amount, fiat_value, currency, exchange_rate,
                 status, tx_hash, send_txid, must_spend_json, completed_at, brain_authorized, batch_ref, created_at)
               VALUES (?, ?, ?, ?, ?, ?, 5.25, 'EUR', 0.128, ?, ?, ?, ?, ?, 1, 'B1', ?)`)
-    .run(id, ref, o.type ?? 'merchant_commission', `L${id}Wallet`, o.type === 'investor_lana' ? FIN : CUSTOMER, o.lanoshis ?? 1_004_492_188,
-      o.status ?? 'pending', o.txHash ?? null, o.sendTxid ?? null, o.mustSpend ?? null, o.completedAt ?? null,
+    .run(id, ref, o.type ?? 'merchant_commission', o.toWallet ?? `L${id}Wallet`, o.toHex ?? (o.type === 'investor_lana' ? FIN : CUSTOMER),
+      o.lanoshis ?? 1_004_492_188, o.status ?? 'pending', o.txHash ?? null, o.sendTxid ?? null, o.mustSpend ?? null, o.completedAt ?? null,
       `2026-10-20 08:00:${String(++seq).padStart(2, '0')}`);
   return id;
 };
 
 interface SendSpec { sender?: 'financer' | 'treasury'; owner?: string | null; wallet?: string; orderIds?: string[]; paying?: number; fee?: number;
-  state?: string; lastOutcome?: string | null; releaseReason?: string | null; height?: number | null; confirmedAt?: string | null }
+  state?: string; lastOutcome?: string | null; releaseReason?: string | null; height?: number | null; confirmedAt?: string | null; raw?: string }
 const send = (txid: string, o: SendSpec = {}) => {
   const sender = o.sender ?? 'financer';
   db.prepare(`INSERT INTO lana_sends (txid, sender, owner_hex, wallet_id, raw_tx, order_ids_json, inputs_json, paying_lanoshis, fee_lanoshis,
                 state, broadcasts, last_outcome, release_reason, block_height, confirmed_at, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 3, ?, ?, ?, ?, '2026-10-20 09:00:00', '2026-10-20 09:10:00')`)
-    .run(txid, sender, o.owner === undefined ? (sender === 'financer' ? FIN : null) : o.owner, o.wallet ?? 'LFinancerWallet', RAW,
+    .run(txid, sender, o.owner === undefined ? (sender === 'financer' ? FIN : null) : o.owner, o.wallet ?? 'LFinancerWallet', o.raw ?? RAW,
       JSON.stringify(o.orderIds ?? []), JSON.stringify([COIN]), o.paying ?? 4_018_000_000, o.fee ?? 1_000_000,
       o.state ?? 'confirmed', o.lastOutcome ?? null, o.releaseReason ?? null,
       o.height === undefined ? ((o.state ?? 'confirmed') === 'confirmed' ? 1_067_600 : null) : o.height,
@@ -70,7 +105,7 @@ const send = (txid: string, o: SendSpec = {}) => {
 };
 
 const LEG_KEYS = ['completed_at', 'currency', 'exchange_rate', 'fiat_value', 'id', 'lana_amount', 'order_type', 'send_txid', 'status', 'to_hex', 'to_wallet', 'tx_hash'];
-const SEND_KEYS = ['block_height', 'chain_txid', 'confirmed_at', 'created_at', 'fee_lanoshis', 'owner_hex', 'paying_lanoshis', 'sender', 'state', 'wallet_id'];
+const SEND_KEYS = ['block_height', 'chain_txid', 'confirmed_at', 'created_at', 'fee_lanoshis', 'key_wallets', 'owner_hex', 'paying_lanoshis', 'sender', 'state', 'wallet_id'];
 
 /** Asserts nothing private is in the answer, by name or by value. */
 function expectNothingPrivate(answer: unknown) {
@@ -128,10 +163,12 @@ describe('readPurchaseSends', () => {
       currency: 'EUR', exchange_rate: 0.128, status: 'sent', tx_hash: S, send_txid: S, completed_at: '2026-10-20 09:10:00',
     });
     for (const l of a.purchases.T1.legs) expect(Object.keys(l).sort()).toEqual(LEG_KEYS);
+    // RAW is no transaction: no key to read, so key_wallets is wallet_id alone.
     expect(a.sends).toEqual({
       [S]: {
-        sender: 'financer', owner_hex: FIN, wallet_id: 'LFinancerWallet', paying_lanoshis: 14_830_448_438, fee_lanoshis: 1_120_000,
-        state: 'confirmed', block_height: 1_067_600, confirmed_at: '2026-10-20 09:10:00', created_at: '2026-10-20 09:00:00', chain_txid: S,
+        sender: 'financer', owner_hex: FIN, wallet_id: 'LFinancerWallet', key_wallets: ['LFinancerWallet'], paying_lanoshis: 14_830_448_438,
+        fee_lanoshis: 1_120_000, state: 'confirmed', block_height: 1_067_600, confirmed_at: '2026-10-20 09:10:00', created_at: '2026-10-20 09:00:00',
+        chain_txid: S,
       },
     });
     expect(Object.keys(a.sends[S]).sort()).toEqual(SEND_KEYS);
@@ -146,6 +183,87 @@ describe('readPurchaseSends', () => {
     const a = readPurchaseSends(db, ['T2'], NOW);
     expect(a.purchases.T2.settlement).toEqual({ settled_by: 'treasury', owner_hex: FIN, batch_ref: 'B-TRE-1', created_at: '2026-10-20 08:00:00' });
     expect(a.sends[S]).toMatchObject({ sender: 'treasury', owner_hex: null, wallet_id: 'LTreasuryWallet', state: 'confirmed', chain_txid: S });
+  });
+
+  it("a customer_cashback leg: the customer's key and wallet are not given out — every other leg's are, and the rest of the cashback leg as stored", () => {
+    const S = tx('4');
+    const SHOPPER = 'cb'.repeat(32);
+    own('T10', 'financer', FIN, 'B-FIN-5');
+    const ids = [
+      leg('k-inv', 'T10', { type: 'investor_lana' }),
+      leg('k-mer', 'T10', { type: 'merchant_commission', toHex: 'aa'.repeat(32), toWallet: 'LMerchantWallet' }),
+      leg('k-ct', 'T10', { type: 'caretaker_commission', toHex: 'bb'.repeat(32), toWallet: 'LCaretakerWallet' }),
+      leg('k-cb', 'T10', { type: 'customer_cashback', lanoshis: 3_446_289_063, toHex: SHOPPER, toWallet: 'LShopperWallet' }),
+    ];
+    for (const id of ids) db.prepare("UPDATE brain_lana_orders SET status = 'sent', tx_hash = ?, send_txid = ? WHERE id = ?").run(S, S, id);
+    send(S, { orderIds: ids });
+    const a = readPurchaseSends(db, ['T10'], NOW);
+    expect(a.purchases.T10.legs.map(l => [l.id, l.to_hex, l.to_wallet])).toEqual([
+      ['k-inv', FIN, 'Lk-invWallet'],
+      ['k-mer', 'aa'.repeat(32), 'LMerchantWallet'],
+      ['k-ct', 'bb'.repeat(32), 'LCaretakerWallet'],
+      ['k-cb', null, null],
+    ]);
+    expect(a.purchases.T10.legs[3]).toEqual({
+      id: 'k-cb', order_type: 'customer_cashback', to_hex: null, to_wallet: null, lana_amount: 3_446_289_063, fiat_value: 5.25, currency: 'EUR',
+      exchange_rate: 0.128, status: 'sent', tx_hash: S, send_txid: S, completed_at: null,
+    });
+    const json = JSON.stringify(a);
+    expect(json).not.toContain(SHOPPER);
+    expect(json).not.toContain('LShopperWallet');
+  });
+
+  it("a treasury send names both addresses of its key: the real auto-send from Lg7iw2aQ… (the uncompressed key), then the same key's compressed address", () => {
+    expect(TREASURY_UNCOMPRESSED).toBe('Lg7iw2aQp8qazNsZVZFhf4rP7bikSrLRxB');
+    expect(TREASURY_COMPRESSED).toBe('LQRjjnBLq5tdTnrxe7Ug8GsCVdSC1AJUFQ');
+    const S = AUTO_SEND.txid;
+    own('T11', 'treasury', FIN, 'B-TRE-2', 'a0'.repeat(32));
+    leg('u-mer', 'T11', { status: 'sent', txHash: S, sendTxid: S });
+    send(S, { sender: 'treasury', wallet: TREASURY_UNCOMPRESSED, raw: TREASURY_RAW, orderIds: ['u-mer'] });
+    const a = readPurchaseSends(db, ['T11'], NOW);
+    expect(a.sends[S]).toMatchObject({ sender: 'treasury', owner_hex: null, wallet_id: TREASURY_UNCOMPRESSED, key_wallets: [TREASURY_UNCOMPRESSED, TREASURY_COMPRESSED] });
+    expect(JSON.stringify(a)).not.toContain(TREASURY_RAW.slice(0, 64));
+  });
+
+  it('the treasury sending from its COMPRESSED address (its uncompressed one listed no coins): key_wallets still names Lg7iw2aQ…', () => {
+    // What the registrar knows is Lg7iw2aQ…; asked about the compressed address alone, it names nobody, and
+    // Direct.Fund booked such a send as a LANA loan from an unknown owner (review of 11 Nov 2026).
+    const raw = withCompressedKeys(TREASURY_RAW);
+    const S = txidOfRaw(raw);
+    own('T12', 'treasury', FIN, 'B-TRE-3', 'a0'.repeat(32));
+    leg('z-mer', 'T12', { status: 'sent', txHash: S, sendTxid: S });
+    send(S, { sender: 'treasury', wallet: TREASURY_COMPRESSED, raw, orderIds: ['z-mer'] });
+    const a = readPurchaseSends(db, ['T12'], NOW);
+    expect(a.sends[S]).toMatchObject({ sender: 'treasury', wallet_id: TREASURY_COMPRESSED, key_wallets: [TREASURY_COMPRESSED, TREASURY_UNCOMPRESSED] });
+    expect(JSON.stringify(a)).not.toContain(raw.slice(0, 64));
+  });
+
+  it('key_wallets: every key the inputs reveal, both addresses each, once; a signature alone, or no point on the curve, adds nothing; bytes that do not decode leave wallet_id alone', () => {
+    const other = throwawayWallet(true);
+    const otherUncompressed = throwawayWallet(false, other.privateKey).address;
+    const t = decodeTx(TREASURY_RAW);
+    const first = t.inputs[0];
+    const sig = parseP2pkhScriptSig(first.scriptSigHex)!;
+    const pushed = Buffer.concat([Buffer.from(sig.signatureDer), Buffer.from([sig.hashType])]);
+    const offCurve = Uint8Array.from([0x04, ...Array(64).fill(0x11)]);
+    t.inputs = [
+      first,
+      { ...first, vout: first.vout + 1 },
+      // A pay-to-public-key coin: unlocked by the signature alone, no key in the input.
+      { ...first, vout: first.vout + 2, scriptSigHex: pushed.length.toString(16).padStart(2, '0') + pushed.toString('hex') },
+      { ...first, vout: first.vout + 3, scriptSigHex: p2pkhScriptSigHex(sig.signatureDer, offCurve, sig.hashType) },
+      { ...first, vout: first.vout + 4, scriptSigHex: p2pkhScriptSigHex(sig.signatureDer, other.publicKey, sig.hashType) },
+    ];
+    const raw = encodeTxHex(t);
+    const S = txidOfRaw(raw);
+    own('T13', 'treasury', FIN, 'B-TRE-4', 'a0'.repeat(32));
+    leg('m-mer', 'T13', { status: 'sent', txHash: S, sendTxid: S });
+    leg('n-mer', 'T13', { status: 'sent', txHash: tx('5'), sendTxid: tx('5') });
+    send(S, { sender: 'treasury', wallet: TREASURY_UNCOMPRESSED, raw, orderIds: ['m-mer'] });
+    send(tx('5'), { sender: 'treasury', wallet: 'LNotDecodedWallet', orderIds: ['n-mer'] });
+    const a = readPurchaseSends(db, ['T13'], NOW);
+    expect(a.sends[S].key_wallets).toEqual([TREASURY_UNCOMPRESSED, TREASURY_COMPRESSED, otherUncompressed, other.address]);
+    expect(a.sends[tx('5')].key_wallets).toEqual(['LNotDecodedWallet']);
   });
 
   it("a send booked under a mined COPY's id: the legs' tx_hash is the copy's, the send is reported once, under its own id, chain_txid the copy's", () => {
