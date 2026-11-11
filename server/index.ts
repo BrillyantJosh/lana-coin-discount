@@ -18,6 +18,7 @@ import { runOutbox, outboxHealth, brainCallbackTarget } from './lib/financer/bra
 import { createFinancerRouter } from './routes/financer.js';
 import { createSessionRouter } from './routes/session.js';
 import { createAdminFinancersRouter } from './routes/adminFinancers.js';
+import { createFundPeerRouter } from './routes/fundPeer.js';
 // The LANA send machine (8 Oct 2026): every send recorded before it is
 // broadcast and finished from the chain — the financers' and the treasury's.
 import { defaultSends, sendsHealth } from './lib/financer/sends.js';
@@ -98,6 +99,8 @@ installJsonBodies(app);
 // "Bearer ldk_": the whole key must hash to a row in api_keys and that row must
 // be active, and if the database cannot say, the request keeps the limit.
 // See lib/apiRateLimit.ts and isActiveMachineKey in lib/apiKeyAuth.ts.
+// Direct.Fund's peer read (11 Nov 2026) is let past the same way, with its own
+// key and on its own paths only: isFundPeerRequest in lib/fundPeer.ts.
 app.use('/api', apiRateLimit());
 
 // API routes
@@ -139,6 +142,10 @@ app.use('/api/session', createSessionRouter());
 // What each financer still has to pay, confirm, wait for and send (owner, 12 Oct 2026): GET
 // /api/admin/financers-overview, signed admin (requireAdmin), read-only. Before the SPA catch-all, as above.
 app.use('/api/admin', createAdminFinancersRouter());
+// Direct.Fund's machine reads (11 Nov 2026): POST /api/peer/fund/purchase-sends, the LANA side of the purchases its
+// accounting lists. Bearer FUND_PEER_KEY — the secret this server already presents to Direct.Fund — and read-only.
+// Before the SPA catch-all, as above.
+app.use('/api/peer/fund', createFundPeerRouter());
 
 // Heartbeat status for the admin page. It MUST be registered before the static
 // files and the SPA catch-all below: an /api route declared after them never

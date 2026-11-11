@@ -178,6 +178,16 @@ const FINAL_REFUSAL = /^refused-final#(\d+)/;
 const HEX = /^(?:[0-9a-f]{2})+$/;
 const TXID = /^[0-9a-f]{64}$/;
 
+/**
+ * The copy a send was confirmed as (finish), from its last_outcome; null for one confirmed under its own id, and for
+ * one not confirmed. Module-level so the accounting read (purchaseSends.ts) reads it exactly as the pages do.
+ */
+export function copyTxidOf(row: { state: string; last_outcome: string | null }): string | null {
+  const outcome = row.state === 'confirmed' ? String(row.last_outcome ?? '') : '';
+  const id = outcome.startsWith(COPY_OUTCOME) ? outcome.slice(COPY_OUTCOME.length, COPY_OUTCOME.length + 64) : '';
+  return TXID.test(id) ? id : null;
+}
+
 export type SendState = 'announced' | 'mempool' | 'confirmed' | 'released';
 export type Sender = 'treasury' | 'financer';
 
@@ -740,13 +750,6 @@ export function createSends(deps: SendsDeps): Sends {
     if (orderIds.length === 0) return [];
     const rows = db.prepare(`SELECT DISTINCT transaction_ref FROM brain_lana_orders WHERE id IN (${orderIds.map(() => '?').join(',')}) AND transaction_ref IS NOT NULL AND transaction_ref != ''`).all(...orderIds) as Array<{ transaction_ref: string }>;
     return rows.map(r => r.transaction_ref).sort();
-  };
-
-  /** The copy a send was confirmed as (finish), from its last_outcome; null for one confirmed under its own id. */
-  const copyTxidOf = (row: SendRow): string | null => {
-    const outcome = row.state === 'confirmed' ? String(row.last_outcome ?? '') : '';
-    const id = outcome.startsWith(COPY_OUTCOME) ? outcome.slice(COPY_OUTCOME.length, COPY_OUTCOME.length + 64) : '';
-    return TXID.test(id) ? id : null;
   };
 
   const viewOf = (row: SendRow): SendView => {

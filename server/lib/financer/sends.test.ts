@@ -27,6 +27,7 @@ import {
   noteUnownedMismatch, forgetUnownedMismatches,
   REFUSALS_TO_RELEASE, REBROADCAST_FOR_S, MAX_ORDER_IDS, OWNER_MISMATCH_LISTED, MIN_SPENDER_DEPTH, type PrepareAnswer, type SendableAnswer, type Sends, type SendsDeps,
 } from './sends';
+import { readPurchaseSends } from './purchaseSends';
 import type { BroadcastOutcome, ListedOutput, PayoutChain } from './payoutChain';
 import type { PaymentRead, PaymentReader } from './chainPayment';
 import type { FinancerWalletCheck } from './registrarWallet';
@@ -1402,5 +1403,49 @@ describe('one Lana.Discount wallet per currency (owner, 9 Oct 2026): a purchase\
     db.prepare("UPDATE brain_lana_orders SET status = 'sending' WHERE transaction_ref = 'T2'").run();
     db.prepare("UPDATE brain_lana_orders SET status = 'cancelled' WHERE transaction_ref = 'T3'").run();
     expect(financerCurrencies(db, OWNER)).toEqual({ currencies: ['EUR', 'GBP'], unknownRefs: ['T5'] });
+  });
+});
+
+// ─── what Direct.Fund's accounting reads of it (purchaseSends.ts) ─────────
+
+describe("what POST /api/peer/fund/purchase-sends reads of this machine's own bookings", () => {
+  const paying = Object.values(AMOUNT).reduce((s, v) => s + v, 0);
+
+  it('on its way, then confirmed under its own id: the legs name the send, and the send is reported once with its block', async () => {
+    const ids = purchase();
+    const r = await announced(ids);
+    let read = readPurchaseSends(db, ['T1']);
+    expect(read.purchases.T1.settlement).toMatchObject({ settled_by: 'financer', owner_hex: OWNER, batch_ref: 'B1' });
+    expect(read.purchases.T1.legs.map(l => [l.id, l.status, l.tx_hash, l.send_txid])).toEqual(ids.map(id => [id, 'sending', null, r.txid]));
+    expect(read.sends).toEqual({ [r.txid]: expect.objectContaining({ sender: 'financer', owner_hex: OWNER, wallet_id: key.address, state: 'mempool', chain_txid: null }) });
+
+    proof.reads.set(r.txid, { state: 'confirmed', lanoshis: 1n, height: 1_067_600, confirmations: 1, nTime: nowSec(), blockTime: nowSec() });
+    await sends.round();
+    read = readPurchaseSends(db, ['T1']);
+    expect(read.purchases.T1.legs.map(l => [l.status, l.tx_hash, l.send_txid])).toEqual(ids.map(() => ['sent', r.txid, r.txid]));
+    expect(read.purchases.T1.legs.every(l => l.completed_at === sendRow(r.txid).confirmed_at)).toBe(true);
+    expect(read.sends).toEqual({
+      [r.txid]: {
+        sender: 'financer', owner_hex: OWNER, wallet_id: key.address, paying_lanoshis: paying, fee_lanoshis: sendRow(r.txid).fee_lanoshis,
+        state: 'confirmed', block_height: 1_067_600, confirmed_at: sendRow(r.txid).confirmed_at, created_at: sendRow(r.txid).created_at, chain_txid: r.txid,
+      },
+    });
+    expect(JSON.stringify(read)).not.toContain(r.rawTx.slice(0, 64));
+  });
+
+  it("booked under a mined COPY's id: the legs carry the copy's hash, the send is reported under its own id with chain_txid the copy's", async () => {
+    const ids = purchase();
+    const r = await announced(ids);
+    const copy = malleated(r.rawTx);
+    const copyId = txidOfRaw(copy);
+    proof.reads.set(r.txid, { state: 'not_found' });
+    net.onChain(copy, key.address, 1_067_700);
+    proof.reads.set(copyId, inBlock(1_067_700));
+    minutes(3);
+    await sends.round();
+    const read = readPurchaseSends(db, ['T1']);
+    expect(read.purchases.T1.legs.map(l => [l.status, l.tx_hash, l.send_txid])).toEqual(ids.map(() => ['sent', copyId, r.txid]));
+    expect(Object.keys(read.sends)).toEqual([r.txid]);
+    expect(read.sends[r.txid]).toMatchObject({ state: 'confirmed', block_height: 1_067_700, paying_lanoshis: paying, chain_txid: copyId });
   });
 });
