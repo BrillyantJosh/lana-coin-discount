@@ -13,29 +13,23 @@
  * would refuse the second as a replay — two components mounting together, a
  * double click or React StrictMode all do exactly that.
  *
- * The key is read from the stored session rather than passed in, so a small
- * component deep in a page can sign without having the session drilled into it.
+ * The key is taken from this tab's memory (lib/heldKey.ts) rather than passed
+ * in, so a small component deep in a page can sign without having the session
+ * drilled into it. Until 25. 11. 2026 it was read from the stored session in
+ * localStorage, where it sat in plain text; it is not there any more.
  *
- * Vendored into lana-brain, lana-direct-fund and lana-coin-discount; the only
- * differences between the copies are SESSION_KEY and, here, nip98Headers'
- * `key`: the sign-in asks the server who a key is before it keeps a session
- * (src/lib/sessionRole.ts), so that one request signs with a key not stored yet.
+ * Vendored into lana-brain, lana-direct-fund and lana-coin-discount; the
+ * differences between the copies are where the key comes from (here, since
+ * 25. 11. 2026, this tab's memory) and, here, nip98Headers' `key`: the sign-in
+ * asks the server who a key is before it keeps a session (src/lib/sessionRole.ts),
+ * so that one request signs with a key not held yet.
  */
 import { finalizeEvent } from 'nostr-tools/pure';
-
-const SESSION_KEY = 'lana_discount_session';
+import { heldPrivateKey } from './heldKey';
 
 function storedPrivateKey(): string | null {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw) as { nostrPrivateKey?: string; expiresAt?: number };
-    if (typeof s?.expiresAt === 'number' && s.expiresAt <= Date.now()) return null;
-    const sk = String(s?.nostrPrivateKey || '').trim().toLowerCase();
-    return /^[0-9a-f]{64}$/.test(sk) ? sk : null;
-  } catch {
-    return null;
-  }
+  const sk = String(heldPrivateKey() || '').trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(sk) ? sk : null;
 }
 
 function hexToBytes(hex: string): Uint8Array {

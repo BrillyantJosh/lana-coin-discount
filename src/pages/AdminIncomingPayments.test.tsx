@@ -19,6 +19,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { MemoryRouter } from 'react-router-dom';
 import AdminIncomingPayments from './AdminIncomingPayments';
 import { FINANCER_COMPANIES_URL, forgetFinancerCompanies, loadFinancerCompanies } from '@/lib/financerCompanies';
+import { holdKey, forgetHeldKey } from '@/lib/heldKey';
 
 const auth = vi.hoisted(() => ({
   session: { nostrHexId: 'c'.repeat(64), profileDisplayName: 'Admin' },
@@ -119,6 +120,7 @@ beforeEach(() => {
   );
 });
 afterEach(() => {
+  forgetHeldKey();
   vi.unstubAllGlobals();
 });
 
@@ -313,10 +315,9 @@ describe('the financer’s company (owner, 11 Nov 2026)', () => {
 // purchases come from the signed admin route, asked only while a count is > 0.
 describe('the heartbeat line', () => {
   const withWallet = () => { feed = { ...feed, buybackBalance: { wallet: 'LKs7QqC2TVJ4y92waNrBjVZQB2oFhcmZqB', balanceLana: 0 } }; };
-  /** A session that holds its key, so signedFetch signs (src/lib/nip98Fetch.ts reads it from here). */
+  /** A session that holds its key, so signedFetch signs (src/lib/nip98Fetch.ts takes it from this tab's memory, lib/heldKey.ts, since 25. 11. 2026). */
   const withKey = () => {
-    const session = JSON.stringify({ nostrPrivateKey: '01'.repeat(32), expiresAt: Date.now() + 60_000 });
-    vi.stubGlobal('localStorage', { getItem: (k: string) => (k === 'lana_discount_session' ? session : null), setItem: () => {}, removeItem: () => {} });
+    holdKey('ab'.repeat(32), '01'.repeat(32), false);
   };
 
   it('says when brain calls were taken but are still not approved after 7 days (amber), and when financer purchases name another investor (red) — which ones from the signed admin route', async () => {

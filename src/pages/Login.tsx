@@ -6,6 +6,8 @@ import { SellingMovedNotice, NOTICE_TEXT, useNoticeLang } from '@/components/Sel
 import { SELLING_CLOSED } from '@/lib/sellingClosed';
 import { landingFor } from '@/lib/sessionRole';
 import { SIGN_IN_GATE_TEXT, type SignInGateText } from '@/copy';
+import { SaveKeyOptions, SavedKeyUnlock, useSaveKeyChoice, useVaultErrorText, useVaultInfo } from '@/components/KeyVaultPanel';
+import { vaultT } from '@/lib/vaultText';
 
 const QrScanner = lazy(() => import('@/components/QrScanner'));
 
@@ -24,10 +26,12 @@ function refusedText(gate: SignInGateText, refusal: SignInRefusal, reason: strin
 const Login = () => {
   const [wif, setWif] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [rememberMe, setRememberMe] = useState(true);
   const [relays, setRelays] = useState<string[]>([]);
   const [showQrScanner, setShowQrScanner] = useState(false);
-  const { login, session, refusal, refusalReason } = useAuth();
+  const { login, unlock, session, locked, refusal, refusalReason } = useAuth();
+  const [vault, refreshVault] = useVaultInfo();
+  // Offered by default only while nothing is saved here yet (one saved key per device).
+  const saveKey = useSaveKeyChoice(!vault);
   const navigate = useNavigate();
   const { toast } = useToast();
   // Where to go once signed in: a financer to /financer, an administrator where
@@ -40,6 +44,8 @@ const Login = () => {
   const t = NOTICE_TEXT[lang];
   const gate = SIGN_IN_GATE_TEXT[lang];
   const refused = refusal ? refusedText(gate, refusal, refusalReason) : null;
+  const vt = vaultT(lang);
+  const explain = useVaultErrorText(lang);
 
   // If already logged in, go where that key lands
   useEffect(() => {
@@ -63,10 +69,12 @@ const Login = () => {
 
     setIsLoading(true);
     try {
-      const signedIn = await login(wif, relays, rememberMe);
+      const signedIn = await login(wif, relays, true, saveKey.choice);
+      saveKey.clear();
       toast({ title: "Welcome!", description: "Login successful." });
       navigate(landingFor(signedIn, next));
     } catch (error) {
+      refreshVault();
       // Said on the page itself, in the reader's language (below), not in a toast that goes away.
       if (error instanceof SignInRefused) {
         setWif('');
@@ -74,7 +82,7 @@ const Login = () => {
       }
       toast({
         title: "Login failed",
-        description: error instanceof Error ? error.message : "Invalid WIF key",
+        description: error instanceof Error ? explain(error) : "Invalid WIF key",
         variant: "destructive",
       });
     } finally {
@@ -139,7 +147,30 @@ const Login = () => {
             )}
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
+          {/* The key saved encrypted on this device (passkey or password), if there is one (25. 11. 2026) */}
+          {vault && (
+            <div className="space-y-3">
+              <SavedKeyUnlock
+                lang={lang}
+                info={vault}
+                label={locked?.nostrHexId === vault.pubkey ? (locked.profileName || locked.profileDisplayName) : undefined}
+                allowRemove
+                onRemoved={refreshVault}
+                onUnlock={async (password) => {
+                  try {
+                    const signedIn = await unlock(password, relays);
+                    navigate(landingFor(signedIn, next));
+                  } catch (error) {
+                    if (error instanceof SignInRefused) return; // said above, in the reader's language
+                    throw error;
+                  }
+                }}
+              />
+              <p className="text-center text-xs text-muted-foreground">{vt('vault.orOtherKey')}</p>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-6" autoComplete="off">
             <div className="space-y-2">
               <label htmlFor="wif" className="text-sm font-medium text-foreground">
                 {t.signInKeyLabel}
@@ -167,18 +198,7 @@ const Login = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="remember"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-              />
-              <label htmlFor="remember" className="text-sm text-muted-foreground">
-                {t.signInRemember}
-              </label>
-            </div>
+            <SaveKeyOptions lang={lang} state={saveKey} disabled={isLoading} />
 
             <button
               type="submit"
