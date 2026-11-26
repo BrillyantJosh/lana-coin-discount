@@ -30,8 +30,8 @@ const Login = () => {
   const [showQrScanner, setShowQrScanner] = useState(false);
   const { login, unlock, session, locked, refusal, refusalReason } = useAuth();
   const [vault, refreshVault] = useVaultInfo();
-  // Offered by default only while nothing is saved here yet (one saved key per device).
-  const saveKey = useSaveKeyChoice(!vault);
+  // Saving is asked for, never assumed (26. 11. 2026).
+  const saveKey = useSaveKeyChoice(false);
   const navigate = useNavigate();
   const { toast } = useToast();
   // Where to go once signed in: a financer to /financer, an administrator where

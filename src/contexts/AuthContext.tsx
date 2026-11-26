@@ -3,7 +3,8 @@ import { convertWifToIds } from '@/lib/crypto';
 import { SimplePool } from 'nostr-tools';
 import { askSessionRole, type SessionRole } from '@/lib/sessionRole';
 import { holdKey, forgetHeldKey, onHeldKeyChange, heldKeyHex } from '@/lib/heldKey';
-import { VaultError, discardSavedRecord, saveVault, unlockVault, type VaultMethod } from '@/lib/keyVault';
+import { VaultError, checkNewPassword, discardSavedRecord, saveVault, unlockVault, type SavedRecord, type VaultMethod } from '@/lib/keyVault';
+import { tellKeyNotSaved } from '@/components/KeyVaultPanel';
 
 /**
  * Why there is no session although a key was given (owner, 9 Oct 2026): NOT_ALLOWED — the server says the key is
@@ -224,12 +225,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Saving comes FIRST, right after the click: a passkey can only be created while the browser still counts the
     // person's click, and the checks below wait on the network. If the sign-in then fails or is refused, exactly
     // what was saved here is taken back.
-    const savedRecord = save
-      ? await saveVault(derivedIds.lanaPrivateKey, derivedIds.nostrHexId, save.method, save.password ?? '', save.repeat)
-      : null;
+    // A password typed wrong (too short, the two not the same) is said before anything happens.
+    if (save?.method === 'password') checkNewPassword(save.password ?? '', save.repeat);
+    // The same identity's saved key is replaced (a forgotten password); another identity's never is. Saving never
+    // stands between a person and their sign-in (26. 11. 2026: Android tills were thrown out when it failed): it is
+    // said afterwards instead.
+    let savedRecord: SavedRecord | null = null;
+    let saveProblem: unknown = null;
+    if (save) {
+      try {
+        savedRecord = await saveVault(derivedIds.lanaPrivateKey, derivedIds.nostrHexId, save.method, save.password ?? '', save.repeat, undefined, true);
+      } catch (error) {
+        saveProblem = error;
+      }
+    }
+    const lang = typeof navigator !== 'undefined' && String(navigator.language || '').toLowerCase().startsWith('sl') ? 'sl' : 'en';
     try {
       // a key saved just now is held like an unlocked one: forgotten after 15 minutes without use
-      return await finishLogin(derivedIds, relays, rememberMe, !!save);
+      const signedIn = await finishLogin(derivedIds, relays, rememberMe, !!savedRecord);
+      if (saveProblem) tellKeyNotSaved(saveProblem, lang);
+      return signedIn;
     } catch (error) {
       if (savedRecord) discardSavedRecord(savedRecord);
       throw error;

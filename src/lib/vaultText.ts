@@ -7,7 +7,7 @@ export type VaultLang = 'en' | 'sl';
 const TEXT = {
   "en": {
     "savedTitle": "Key saved on this device",
-    "unlockPasskey": "Unlock with passkey",
+    "unlockPasskey": "Sign in with passkey",
     "unlockPassword": "Unlock",
     "password": "Password of the saved key",
     "passwordPlaceholder": "Password of the saved key",
@@ -17,8 +17,8 @@ const TEXT = {
     "removeConfirm": "Unlock and remove",
     "cancel": "Cancel",
     "orOtherKey": "or sign in with a key",
-    "saveLabel": "Save my key encrypted on this device",
-    "saveHint": "Next time: unlock with a passkey (Face ID, Touch ID, iCloud Keychain) or a password, without your card.",
+    "saveLabel": "Remember me on this device (passkey)",
+    "saveHint": "Next time you sign in with Face ID or your fingerprint, no card needed. The key is encrypted on this device only.",
     "noSaveHint": "Not saved: the key stays only in this tab until you close it or sign out.",
     "methodPasskey": "Passkey (Face ID, Touch ID, iCloud Keychain)",
     "methodPassword": "Password",
@@ -45,12 +45,16 @@ const TEXT = {
       "passkey_no_prf": "This passkey cannot protect a key (no PRF). Choose a password instead.",
       "passkey_cancelled": "The passkey was cancelled.",
       "verify_failed": "Saving could not be checked; nothing was saved.",
-      "cancelled": "Cancelled."
-    }
+      "cancelled": "Cancelled.",
+      "device_failed": "This device could not check the password just now (not enough memory). Close other tabs and try again, or sign in with your key below."
+    },
+    "forgotHint": "Forgot the password? Below, scan or type your key and tick “Save my key encrypted on this device” — the saved key is replaced.",
+    "tapToSave": "Tap “Sign in” to save your key with a passkey.",
+    "notSaved": "You are signed in, but your key was NOT saved on this device:"
   },
   "sl": {
     "savedTitle": "Ključ, shranjen na tej napravi",
-    "unlockPasskey": "Odkleni s passkeyem",
+    "unlockPasskey": "Vstopi s passkeyem",
     "unlockPassword": "Odkleni",
     "password": "Geslo shranjenega ključa",
     "passwordPlaceholder": "Geslo shranjenega ključa",
@@ -60,8 +64,8 @@ const TEXT = {
     "removeConfirm": "Odkleni in odstrani",
     "cancel": "Prekliči",
     "orOtherKey": "ali se prijavi s ključem",
-    "saveLabel": "Shrani moj ključ šifrirano na tej napravi",
-    "saveHint": "Naslednjič: odkleni s passkeyem (Face ID, Touch ID, iCloud Keychain) ali z geslom, brez kartice.",
+    "saveLabel": "Zapomni si me na tej napravi (passkey)",
+    "saveHint": "Naslednjič vstopiš s Face ID ali prstnim odtisom, brez kartice. Ključ je šifriran samo na tej napravi.",
     "noSaveHint": "Ni shranjen: ključ ostane samo v tem zavihku, dokler ga ne zapreš ali se ne odjaviš.",
     "methodPasskey": "Passkey (Face ID, Touch ID, iCloud Keychain)",
     "methodPassword": "Geslo",
@@ -88,8 +92,12 @@ const TEXT = {
       "passkey_no_prf": "Ta passkey ne more zaščititi ključa (brez PRF). Izberi geslo.",
       "passkey_cancelled": "Passkey je bil preklican.",
       "verify_failed": "Shranjevanja ni bilo mogoče preveriti; nič ni shranjeno.",
-      "cancelled": "Preklicano."
-    }
+      "cancelled": "Preklicano.",
+      "device_failed": "Ta naprava gesla trenutno ni mogla preveriti (premalo pomnilnika). Zapri druge zavihke in poskusi znova ali se spodaj prijavi s ključem."
+    },
+    "forgotHint": "Ne veš gesla? Spodaj skeniraj ali vnesi svoj ključ in obkljukaj »Shrani moj ključ šifrirano na tej napravi« — shranjeni ključ se zamenja.",
+    "tapToSave": "Tapni »Prijava«, da ključ shraniš s passkeyem.",
+    "notSaved": "Prijava je uspela, ključ pa NI shranjen na tej napravi:"
   }
 } as const;
 
